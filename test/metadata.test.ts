@@ -248,7 +248,7 @@ describe("kept registry documents", () => {
       cache.set(`corgi ${url}`, encode(doc), Date.now());
       expect(new TextDecoder().decode(cache.get(`corgi ${url}`)!.bytes)).toBe(JSON.stringify(doc));
     }
-    expect(await readdir(join(dir, "metadata"))).toEqual(["_", "x.test"]);
+    expect((await readdir(join(dir, "metadata"))).sort()).toEqual(["_", "x.test"]);
   });
 
   it("keeps nothing the registry says not to store, nor what is not a document", async () => {
