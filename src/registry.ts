@@ -79,19 +79,26 @@ export interface RegistryOptions {
 
 /**
  * When a kept document answers without asking the registry. `revalidate`: while the registry's
- * `max-age` lasts, then asked with its ETag. `prefer`: whenever there is one; a pick it cannot
- * satisfy asks once. `only`: whenever there is one, and nothing is ever asked.
+ * `max-age` lasts, or while it was read after `before` (pnpm's release-age window), then asked
+ * with its ETag. `prefer`: whenever there is one. `only`: whenever there is one, and nothing is
+ * ever asked. A pick a document answered unasked cannot satisfy asks once, in any mode but
+ * `only`; under `revalidate`, so does a pick of a tag written out.
  */
 export type CacheMode = "revalidate" | "prefer" | "only";
 
 export interface Kept {
   bytes: Uint8Array;
   etag?: string;
-  /** Still inside the `max-age` it was served with. */
-  fresh: boolean;
+  /** When the registry last sent it or said it had not changed, in epoch ms. */
+  at: number;
+  /** Seconds it stays fresh from `at`, as the registry said. */
+  maxAge?: number;
 }
 
-/** Documents by url and media type. Synchronous: see `src/metadata.ts`. */
+/**
+ * Documents by url and media type. Synchronous: see `src/metadata.ts`. A full packument may
+ * come back cut to the fields the resolver reads.
+ */
 export interface DocumentCache {
   mode: CacheMode;
   get(key: string): Kept | undefined;
@@ -205,22 +212,33 @@ export function createRegistry(options: RegistryOptions = {}): Registry {
   const before = options.before;
   const excluded = globs(options.exclude ?? []);
   const cache = options.cache;
-  /** Names answered from a kept document without asking; and those asked again since. */
+  /** Names answered from a kept document without asking; and those asked about since. */
   const unasked = new Set<string>();
   const rechecked = new Set<string>();
 
   /**
    * The kept document for a request, and whether it answers without one. When it does not, its
-   * ETag goes with the request.
+   * ETag goes with the request. A full document answers for the abbreviated one: it has every
+   * field the other has.
    */
-  function kept(name: string, url: string, accept: string): { doc?: Kept; use: boolean } {
+  function kept(name: string, url: string, accept: string): Found {
     if (!cache) return { use: false };
     const doc = cache.get(keyOf(url, accept));
-    if (!doc || rechecked.has(name) || (cache.mode === "revalidate" && !doc.fresh)) {
-      return { doc, use: false };
-    }
-    if (!doc.fresh) unasked.add(name);
-    return { doc, use: true };
+    if (rechecked.has(name)) return { doc, use: false };
+    const full = !doc && accept === CORGI ? cache.get(keyOf(url, FULL)) : undefined;
+    const found = doc ?? full;
+    if (!found || !current(name, found)) return { doc, use: false };
+    // Fresh or not, it may predate a publish: `pick` asks once when it falls short.
+    unasked.add(name);
+    return { doc: found, use: true, full: full !== undefined };
+  }
+
+  /** Whether a kept document answers unasked, as `CacheMode` says. */
+  function current(name: string, doc: Kept): boolean {
+    if (cache!.mode !== "revalidate") return true;
+    if (doc.maxAge !== undefined && Date.now() - doc.at < doc.maxAge * 1000) return true;
+    // Read since the cutoff, it has every version a pick may see: none newer is eligible.
+    return before !== undefined && doc.at >= before && !excluded(name);
   }
 
   const offline = (name: string) =>
@@ -320,11 +338,12 @@ export function createRegistry(options: RegistryOptions = {}): Registry {
     name: string,
     accept: string,
     big?: () => void,
+    found?: Found,
   ): Promise<TextView | undefined> {
     const url = path(name);
-    const { doc, use } = kept(name, url, accept);
+    const { doc, use, full } = found ?? kept(name, url, accept);
     const hit = () => {
-      if (accept === CORGI) corgiBytes.set(name, doc!.bytes.byteLength);
+      if (accept === CORGI && !full) corgiBytes.set(name, doc!.bytes.byteLength);
       return viewOf(url, doc!.bytes);
     };
     if (use) return hit();
@@ -398,9 +417,12 @@ export function createRegistry(options: RegistryOptions = {}): Registry {
   }
 
   async function loadPinned(name: string, version: string): Promise<Manifest | undefined> {
-    // A document that answers unasked beats any route.
-    if (cache && cache.mode !== "revalidate" && cache.get(keyOf(path(name), CORGI))) {
-      const found = (await memo(peeks, name, () => peek(name, CORGI)))?.version(version);
+    // A document that answers unasked beats any route. One that does not is read only once.
+    const ready = cache && !peeks.has(name) ? kept(name, path(name), CORGI) : undefined;
+    if (ready?.use) {
+      const found = (await memo(peeks, name, () => peek(name, CORGI, undefined, ready)))?.version(
+        version,
+      );
       if (found) return found;
     }
     // A document a range asked for has the version, or the route below is right.
@@ -415,7 +437,7 @@ export function createRegistry(options: RegistryOptions = {}): Registry {
       if (found) return found;
     }
     const found = await raced(name, version, (early) =>
-      memo(peeks, name, () => peek(name, CORGI, early)),
+      memo(peeks, name, () => peek(name, CORGI, early, ready)),
     );
     if (found || first) return found;
     // A version the CDN's copy lacks may be newer than the copy: the route is the origin.
@@ -509,6 +531,8 @@ export function createRegistry(options: RegistryOptions = {}): Registry {
     const name = spec.fetchName;
     const found = pinned === undefined ? undefined : await loadPinned(name, pinned);
     if (found) return found;
+    // A tag written out, `foo@latest`, is what it points at now, as npm reads it: revalidated.
+    if (spec.type === "tag" && cache?.mode === "revalidate") recheck(name);
     try {
       return pickManifest(await view(name), spec, options);
     } catch (error) {
@@ -516,10 +540,16 @@ export function createRegistry(options: RegistryOptions = {}): Registry {
       const { code } = error as { code?: string };
       const miss = code === "ETARGET" || code === "ENOVERSIONS";
       if (!miss || !unasked.has(name) || rechecked.has(name)) throw error;
-      rechecked.add(name);
-      for (const memos of [corgis, peeks, aged, times]) memos.delete(name);
+      recheck(name);
       return pickManifest(await view(name), spec, options);
     }
+  }
+
+  /** Ask the registry about a name from now on, forgetting what kept documents answered. */
+  function recheck(name: string): void {
+    if (rechecked.has(name)) return;
+    rechecked.add(name);
+    if (unasked.has(name)) for (const memos of [corgis, peeks, aged, times]) memos.delete(name);
   }
 
   return {
@@ -531,6 +561,13 @@ export function createRegistry(options: RegistryOptions = {}): Registry {
     pinned: (name, version) => loadPinned(name, version),
     pick,
   };
+}
+
+/** A kept document for a request, whether it answers unasked, and whether it is the full form. */
+interface Found {
+  doc?: Kept;
+  use: boolean;
+  full?: boolean;
 }
 
 /** Where a document is kept: the abbreviated and full forms of one url are two documents. */

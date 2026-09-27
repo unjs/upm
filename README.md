@@ -257,8 +257,14 @@ project. It does not select versions or rewrite the lockfile. Missing cached
 packages still need to be downloaded, so this is not an offline mode.
 
 Registry documents that upm reads while resolving are kept in the store's `metadata`
-directory. Within the `max-age` the registry sent (five minutes on npmjs), a kept document
-is used without a request; after that, upm asks with its ETag and reuses it on a `304`.
+directory, under paths named after the registry and package
+(`metadata/registry.npmjs.org/@scope/name/`), so deleting a directory forgets those
+documents. A full document is kept cut down to the fields upm reads. A kept document is used
+without a request within the `max-age` the registry sent (five minutes on npmjs), and, while
+`min-release-age` is on, for as long as it was fetched after the cutoff: any version it lacks
+is too new to pick. After that, upm asks with its ETag and reuses it on a `304`. A tag
+written out, such as `upm exec foo@latest`, is always asked about. When a document used
+without asking cannot satisfy a range or pin, upm asks the registry once.
 
 `--offline` never uses the network. An install from a current lockfile works when the
 store already holds its packages, which a past install on the same machine leaves there.

@@ -693,10 +693,26 @@ describe("exec", () => {
     const installed = await readdir(join(dir, "home", ".upm", "exec"));
     expect(installed).toHaveLength(1);
 
-    // A tag asks the registry again, but finds its versions already installed.
+    // A tag is picked from the document the first run kept: read since the release cutoff,
+    // it lacks no version the cutoff lets through. Without a cutoff it is asked for again.
     requests = [];
     const again = await exec("hi");
     expect(again).toMatchObject({ code: 0, stderr: "" });
+    expect(requests).toEqual([]);
+    const flags = [
+      "--dir",
+      join(dir, "work"),
+      "--store",
+      join(dir, "store"),
+      "--registry",
+      registry,
+    ];
+    const uncut = await upm(CLI, ["exec", "hi"], { npm_config_min_release_age: "0" }, flags);
+    expect(uncut).toMatchObject({ code: 0, stderr: "" });
+    expect(requests).toEqual(["/hi"]);
+    // A tag written out asks what it points at now.
+    requests = [];
+    expect(await exec("hi@latest")).toMatchObject({ code: 0, stderr: "" });
     expect(requests).toEqual(["/hi"]);
 
     // An exact version installed once asks nothing, and the command's exit code is upm's.
@@ -955,14 +971,13 @@ describe("startup budget", () => {
     // its other builds, the same modules (paired median +0.1 ms, an A/A pair +0.8 ms); 422,633
     // with npm's command names and flags, the same modules (paired medians -1.7 and -1.0 ms in
     // two orders, an A/A pair -0.2 ms); 425,154 once `run` installs first, the same modules
-    // (paired medians -1.0 and -0.5 ms in two orders, an A/A pair +0.3 ms); 427,179 with
-    // `offline`, the same modules (paired medians -1.3 and -2.1 ms, an A/A pair -0.9 ms);
-    // 432,738 once the registry client keeps documents, the same modules: the disk half is
-    // `metadata.ts`, loaded only to resolve (paired medians +0.7 and -0.6 ms, an A/A pair +0.5).
+    // (paired medians -1.0 and -0.5 ms in two orders, an A/A pair +0.3 ms); 434,755 with
+    // `offline` and kept registry documents, the same modules: the disk half is `metadata.ts`,
+    // loaded only to resolve (paired medians -2.6 and -1.3 ms, an A/A pair -2.4).
     const modules = await reachable();
     const bytes = [...modules.values()].reduce((total, size) => total + size, 0);
     expect(modules.size).toBeLessThanOrEqual(27); // `upm.ts` is the bin, `cli.ts` the program
-    expect(bytes).toBeLessThanOrEqual(434_000);
+    expect(bytes).toBeLessThanOrEqual(436_000);
     // Found through `import()` by the commands that read a project, like the pools: each holds
     // its worker's whole code in the build.
     const lazy = [

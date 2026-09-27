@@ -74,10 +74,11 @@ compatibility. Keep this page about open work, not completed implementation step
 - **Kept registry documents are never reclaimed:** the store's `metadata` directory keeps
   every document any resolve read, and `prune` walks only `files` and `index`. The same
   retention question as the compile cache and exec projects; one rule could serve all three.
-  A torn file is a miss, so deleting any of them is always safe. Start at `src/metadata.ts`.
+  A torn file is a miss, so deleting any of them is always safe, and the paths name the
+  registry and package, ready for a `upm cache clean <name>`. Start at `src/metadata.ts`.
 - **npm's commands need the network:** `upm publish`, `version`, `login` and the rest run
-  `upm exec npm`, which asks the registry for npm's `latest` once the kept document is past
-  its five minutes (a `304`; `--prefer-offline` skips it). npm on `PATH` would be faster but
+  `upm exec npm`, which asks the registry for npm's `latest` once the kept document is older
+  than the release cutoff, a day by default (a `304`; `--prefer-offline` skips it). npm on `PATH` would be faster but
   is not what exec runs. Commands that read the tree (`ls`, `outdated`, `explain`, `fund`) or need
   `package-lock.json` (`audit`) are not passed on. Start at `NPM` in `src/cli.ts`.
 - **No audit:** `npm audit` needs `package-lock.json`, so there is no way to check the tree
@@ -184,13 +185,14 @@ Unranked: take a fresh profile before choosing one. Use [perf.md](perf.md) for e
   (`prefetch` in `src/api.ts`): what only an off-platform build reaches is never fetched. A
   regression here shows as extra store indexes on a cold install; check the index count
   against the platform's tree, not only the wall time, when touching `onPick` or `libcOf`.
-- Kept registry documents (`src/metadata.ts`) are stored as sent, zstd level 1 (gzip where
-  Node lacks zstd): 102 MB as sent was 25 MB on disk for a `nuxt` + `vite` + `vitest` tree, at
-  no measurable cost to a cold resolve. Trimmed to what the resolver reads they were 5.7 MB
-  and read faster (332 ms warm, against 455), but the parse cost a cold resolve 18%; a trim
-  over the bytes without parsing was slower than `JSON.parse`. A trim that runs where nothing
-  waits on it (`prune`, or after the walk) would get both. Of the other codecs, brotli 0-1
-  compresses nearly as fast but reads twice as slow, and gzip 1 is four times slower.
+- Kept registry documents (`src/metadata.ts`) are stored uncompressed: `upm lock` on `nuxt`
+  over kept documents took 297 ms, against 326 ms with zstd level 1, for 60 MB on disk
+  against 19 MB. Full packuments are trimmed by structure (`trimPackument`) to a
+  fifth to a half, at about the cost of one `JSON.parse` of them, with a cold `nuxt` or `next`
+  install unchanged; a trim of the abbreviated documents cost a cold resolve 18% and is not
+  done. The release-age window made `upm lock` over documents past their `max-age` 299 ms
+  where revalidating them took 993 ms (`next`: 214 against 624). Writing documents after the
+  walk, where nothing waits on them, is untried.
 - For large archives, check both many-file and few-file shapes. Helper startup and retained
   buffers can cost more than parallel writes save. Include peak memory in the result.
 - For warm installs, profile planning, messages and index work before adding more threads.

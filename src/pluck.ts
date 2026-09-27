@@ -9,35 +9,44 @@
 // member is decoded and parsed; on anything unexpected the caller parses the document whole.
 import type { Manifest } from "./types.ts";
 
-const QUOTE = 0x22;
+export const QUOTE = 0x22;
 const BACKSLASH = 0x5c;
-const COLON = 0x3a;
-const OPEN = 0x7b;
+export const COLON = 0x3a;
+export const OPEN = 0x7b;
 
 /** Byte class: 1 a quote, 2 opens an object or array, 3 closes one, 4 whitespace. */
-const CLASS = new Uint8Array(256);
+export const CLASS = new Uint8Array(256);
 CLASS[QUOTE] = 1;
 CLASS[OPEN] = CLASS[0x5b] = 2;
 CLASS[0x7d] = CLASS[0x5d] = 3;
 CLASS[0x20] = CLASS[0x0a] = CLASS[0x0d] = CLASS[0x09] = 4;
 
-function space(bytes: Uint8Array, i: number): number {
+export function space(bytes: Uint8Array, i: number): number {
   while (CLASS[bytes[i]!] === 4) i++;
   return i;
 }
 
 /** The index after the string opening at `i`, or -1 when it never closes. */
-function stringEnd(bytes: Uint8Array, i: number): number {
-  for (i++; i < bytes.length; i++) {
+export function stringEnd(bytes: Uint8Array, i: number): number {
+  const short = Math.min(bytes.length, i + 256);
+  for (i++; i < short; i++) {
     const c = bytes[i];
     if (c === QUOTE) return i + 1;
     if (c === BACKSLASH) i++;
   }
-  return -1;
+  // A long one, a readme say: the next quote by native search, then whether it is escaped.
+  for (;;) {
+    const quote = bytes.indexOf(QUOTE, i);
+    if (quote < 0) return -1;
+    let slash = quote - 1;
+    while (slash >= i && bytes[slash] === BACKSLASH) slash--;
+    if ((quote - slash) % 2 === 1) return quote + 1; // after an even run of backslashes
+    i = quote + 1;
+  }
 }
 
 /** The index after the object opening at `i`, or -1. Structure only, nothing is checked. */
-function objectEnd(bytes: Uint8Array, i: number): number {
+export function objectEnd(bytes: Uint8Array, i: number): number {
   for (let depth = 0; i < bytes.length; i++) {
     const k = CLASS[bytes[i]!];
     if (k === 1) {
@@ -53,7 +62,7 @@ const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 
 /** Whether `needle` is written at `i`. A helper, not a closure: a closed-over `i` would live on the heap and slow the loop. */
-function at(bytes: Uint8Array, i: number, needle: Uint8Array): boolean {
+export function at(bytes: Uint8Array, i: number, needle: Uint8Array): boolean {
   for (let j = 0; j < needle.length; j++) if (bytes[i + j] !== needle[j]) return false;
   return true;
 }
