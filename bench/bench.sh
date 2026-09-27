@@ -159,12 +159,13 @@ timed_install() {
   echo "$ms $ok $rss $one $user $sys"
 }
 
-progress() { # phase iter ms ok pkgs rss_bytes user_us sys_us
-  printf '   %-6s %2d  %8s ms  ok=%-5s %5s pkgs  %6s MB rss  %8s ms cpu\n' "$1" "$2" "$3" "$4" "$5" \
+progress() { # runner phase iter ms ok pkgs rss_bytes user_us sys_us
+  local runner="$1"; shift
+  printf '   %-7s %-6s %2d  %8s ms  ok=%-5s %5s pkgs  %6s MB rss  %8s ms cpu\n' "$runner" "$1" "$2" "$3" "$4" "$5" \
     "$(( ${6:-0} / 1000000 ))" "$(( (${7:-0} + ${8:-0}) / 1000 ))"
   # Every fixture installs something: a success with nothing in node_modules went elsewhere.
   if [ "$4" = true ] && [ "${5:-0}" = 0 ]; then
-    echo "   ! $1 run $2 succeeded with no packages in the project: check where it installed" >&2
+    echo "   ! $runner $1 run $2 succeeded with no packages in the project: check where it installed" >&2
   fi
 }
 
@@ -232,56 +233,53 @@ for r in $RUNNERS; do
   echo "  $r $(runner_version "$r")  ${RUNNER_ENTRY[$r]}"
 done
 
+# One timed sample of one phase for one runner. The pair's project and cache carry over from
+# its previous sample, so warm follows cold and repeat follows warm.
+sample() { # runner fixture phase iter
+  local runner="$1" fixture="$2" phase="$3" i="$4"
+  local pair="$WORK/$runner-$fixture"
+  local proj="$pair/project" cache="$pair/cache" log="$LOGDIR/$runner-$fixture.log"
+  local ms ok rss one user sys bytes pkgs
+  case "$phase" in
+    cold) reset_project "$proj" "$fixture"; rm -rf "$cache"; mkdir -p "$cache" ;;
+    warm) rm -rf "$proj/node_modules" ;;
+  esac
+  read -r ms ok rss one user sys <<<"$(timed_install "$runner" "$proj" "$cache" "$log" "$pair/usage")"
+  read -r bytes pkgs <<<"$(tree_stats "$proj")"
+  emit "$runner" "${VERSION[$runner]}" "$fixture" "$phase" "$i" "$ms" "$ok" "$bytes" "$pkgs" \
+    "$(cache_bytes "$cache")" "${SIZE[$runner]}" "${PACKED[$runner]}" "$rss" "$one" "$user" "$sys"
+  progress "$runner" "$phase" "$i" "$ms" "$ok" "$pkgs" "$rss" "$user" "$sys"
+}
+
+declare -A VERSION=() SIZE=()
+for r in $RUNNERS; do
+  VERSION[$r]="$(runner_version "$r")"
+  SIZE[$r]="$(runner_bytes "$r" 2>/dev/null)"
+done
+read -ra RUNNER_LIST <<<"$RUNNERS"
+n=${#RUNNER_LIST[@]}
+
+# Rounds, not one manager's samples back to back: each round runs every manager once, so a
+# slow minute of network or registry lands on all of them instead of whichever ran then.
+# Each round starts one manager later, so none always runs first.
 for fixture in $FIXTURES; do
-  for runner in $RUNNERS; do
-    version="$(runner_version "$runner")"
-    size="$(runner_bytes "$runner" 2>/dev/null)"
-    packed="${PACKED[$runner]}"
-    pair="$WORK/$runner-$fixture"
-    proj="$pair/project"
-    cache="$pair/cache"
-    log="$LOGDIR/$runner-$fixture.log"
-    usage="$pair/usage"
-    : > "$log"
-
-    avail="$(free_mb)"
-    if [ "$avail" -lt "$MIN_FREE_MB" ]; then
-      die "only ${avail}MB free, below --min-free ${MIN_FREE_MB}MB; stopping before $runner/$fixture"
-    fi
-
-    echo "== $runner / $fixture (${avail}MB free)"
-
-    # ---- cold: empty cache, no lockfile, no node_modules
-    for i in $(seq 1 "$COLD_RUNS"); do
-      reset_project "$proj" "$fixture"
-      rm -rf "$cache"; mkdir -p "$cache"
-      read -r ms ok rss one user sys <<<"$(timed_install "$runner" "$proj" "$cache" "$log" "$usage")"
-      read -r bytes pkgs <<<"$(tree_stats "$proj")"
-      emit "$runner" "$version" "$fixture" cold "$i" "$ms" "$ok" "$bytes" "$pkgs" "$(cache_bytes "$cache")" "$size" "$packed" "$rss" "$one" "$user" "$sys"
-      progress cold "$i" "$ms" "$ok" "$pkgs" "$rss" "$user" "$sys"
+  avail="$(free_mb)"
+  [ "$avail" -ge "$MIN_FREE_MB" ] || die "only ${avail}MB free, below --min-free ${MIN_FREE_MB}MB; stopping before $fixture"
+  echo "== $fixture (${avail}MB free)"
+  for r in $RUNNERS; do : > "$LOGDIR/$r-$fixture.log"; done
+  round=0
+  for phase in cold warm repeat; do
+    case "$phase" in cold) runs=$COLD_RUNS ;; warm) runs=$WARM_RUNS ;; repeat) runs=$REPEAT_RUNS ;; esac
+    for i in $(seq 1 "$runs"); do
+      for j in $(seq 0 $((n - 1))); do
+        sample "${RUNNER_LIST[$(( (round + j) % n ))]}" "$fixture" "$phase" "$i"
+      done
+      round=$((round + 1))
     done
-
-    # ---- warm: cache and lockfile kept, tree removed
-    for i in $(seq 1 "$WARM_RUNS"); do
-      rm -rf "$proj/node_modules"
-      read -r ms ok rss one user sys <<<"$(timed_install "$runner" "$proj" "$cache" "$log" "$usage")"
-      read -r bytes pkgs <<<"$(tree_stats "$proj")"
-      emit "$runner" "$version" "$fixture" warm "$i" "$ms" "$ok" "$bytes" "$pkgs" "$(cache_bytes "$cache")" "$size" "$packed" "$rss" "$one" "$user" "$sys"
-      progress warm "$i" "$ms" "$ok" "$pkgs" "$rss" "$user" "$sys"
-    done
-
-    # ---- repeat: everything already in place, so this is the no-op cost
-    for i in $(seq 1 "$REPEAT_RUNS"); do
-      read -r ms ok rss one user sys <<<"$(timed_install "$runner" "$proj" "$cache" "$log" "$usage")"
-      read -r bytes pkgs <<<"$(tree_stats "$proj")"
-      emit "$runner" "$version" "$fixture" repeat "$i" "$ms" "$ok" "$bytes" "$pkgs" "$(cache_bytes "$cache")" "$size" "$packed" "$rss" "$one" "$user" "$sys"
-      progress repeat "$i" "$ms" "$ok" "$pkgs" "$rss" "$user" "$sys"
-    done
-
-    if [ "$KEEP" = 0 ]; then
-      rm -rf "$pair"
-    fi
   done
+  if [ "$KEEP" = 0 ]; then
+    for r in $RUNNERS; do rm -rf "$WORK/$r-$fixture"; done
+  fi
 done
 
 echo

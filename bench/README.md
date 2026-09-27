@@ -20,7 +20,7 @@ node chart.ts                      # re-render the charts for the newest run
 | `-r, --runners`              | all                     | comma separated runner names                  |
 | `-f, --fixtures`             | `nitro,nuxt,next`       | comma separated fixture names                 |
 | `--cold/--warm/--repeat <n>` | 3 / 3 / 3               | samples per phase for each runner and fixture |
-| `--keep`                     | off                     | keep each project and cache after it runs     |
+| `--keep`                     | off                     | keep each project and cache after its fixture |
 | `--min-free <mb>`            | 3072                    | stop before the disk gets this full           |
 | `-o, --out <file>`           | `results/<stamp>.jsonl` | results file                                  |
 | `--no-chart`                 | off                     | skip the SVG charts                           |
@@ -34,8 +34,10 @@ node chart.ts                      # re-render the charts for the newest run
 1. Rebuilds `../dist` so upm is always this working tree.
 2. Downloads every manager with jup and runs its `--version` once, so no download lands in a
    timed run.
-3. For each fixture and runner, runs the three phases below in order, then deletes that
-   project and cache (unless `--keep`).
+3. For each fixture, runs the three phases below in order, in rounds: each round runs every
+   runner once, starting one runner later than the round before. A slow minute of network then
+   lands on every manager, not on whichever ran its samples back to back. Then it deletes the
+   fixture's projects and caches (unless `--keep`).
 4. Writes `results/<stamp>.jsonl` and, beside it, charts for each phase and measure:
    `<stamp>.<phase>.svg`, `.memory.svg`, `.cpu.svg`, plus `<stamp>.size.svg`. A full suite
    (all runners, default fixtures) also refreshes the committed [`charts/`](charts) that the
