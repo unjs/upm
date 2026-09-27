@@ -26,7 +26,10 @@ KEEP=0
 CHART=1
 DRY=0
 MIN_FREE_MB=3072
-WORK="${BENCH_WORK:-$HERE/.work}"
+# Outside the repo: aube and nub install into the nearest directory above with `workspaces` or
+# a pnpm-workspace.yaml, member or not, and this repo has both. `check_work` holds any override
+# to the same rule.
+WORK="${BENCH_WORK:-${XDG_CACHE_HOME:-$HOME/.cache}/upm-bench}"
 OUT=""
 
 die() { echo "bench: $*" >&2; exit 1; }
@@ -159,6 +162,23 @@ timed_install() {
 progress() { # phase iter ms ok pkgs rss_bytes user_us sys_us
   printf '   %-6s %2d  %8s ms  ok=%-5s %5s pkgs  %6s MB rss  %8s ms cpu\n' "$1" "$2" "$3" "$4" "$5" \
     "$(( ${6:-0} / 1000000 ))" "$(( (${7:-0} + ${8:-0}) / 1000 ))"
+  # Every fixture installs something: a success with nothing in node_modules went elsewhere.
+  if [ "$4" = true ] && [ "${5:-0}" = 0 ]; then
+    echo "   ! $1 run $2 succeeded with no packages in the project: check where it installed" >&2
+  fi
+}
+
+# A package.json or workspace file above the projects is a root a manager may install into
+# instead of the project: see WORK.
+check_work() {
+  local dir; dir="$(cd "$WORK" && pwd -P)"
+  while [ "$dir" != / ]; do
+    dir="$(dirname "$dir")"
+    for f in package.json pnpm-workspace.yaml aube-workspace.yaml; do
+      [ -e "$dir/$f" ] && die "$dir/$f is above the work directory $WORK; set BENCH_WORK elsewhere"
+    done
+  done
+  return 0
 }
 
 command -v perl >/dev/null || die "perl is needed to measure memory and CPU (measure.pl)"
@@ -171,6 +191,7 @@ echo "bench: results  : $OUT"
 [ "$DRY" = 1 ] && exit 0
 
 mkdir -p "$WORK"
+check_work
 LOGDIR="$WORK/logs"; mkdir -p "$LOGDIR"
 # `ulimit -c 0` covers anything this script starts, but a runner that raises it again leaves
 # one behind anyway. On the way out, drop what this run dropped: `core.<pid>`, younger than

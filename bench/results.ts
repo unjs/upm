@@ -216,10 +216,12 @@ export function aggregate(
     (row.ok ? entry.times : entry.failedTimes).push(value(row)!);
     entry.samples++;
     entry.suspect ||=
-      row.phase === "cold" &&
-      row.ok &&
-      row.cache_bytes !== undefined &&
-      row.cache_bytes < 1_000_000;
+      (row.phase === "cold" &&
+        row.ok &&
+        row.cache_bytes !== undefined &&
+        row.cache_bytes < 1_000_000) ||
+      // Every fixture installs something: nothing in the project means it went elsewhere.
+      (row.ok && row.packages === 0);
     if (row.ok && row.packages !== undefined) entry.packages.push(row.packages);
   }
   for (const entry of groups.values()) {
@@ -328,14 +330,14 @@ export function range(values: number[]): string {
 export function warnings(data: Benchmark): string[] {
   const suspect = data.runners.flatMap((runner) =>
     data.fixtures.flatMap((fixture) =>
-      data.groups.get(key("cold", runner, fixture))?.suspect
+      PHASES.some((phase) => data.groups.get(key(phase, runner, fixture))?.suspect)
         ? [`${runner.name} ${runner.version}/${fixture}`]
         : [],
     ),
   );
   return suspect.length
     ? [
-        `▲ Small private cache after a successful cold run; check cache isolation: ${suspect.join(", ")}.`,
+        `▲ A small private cache after a cold run, or no packages in the project; check isolation: ${suspect.join(", ")}.`,
       ]
     : [];
 }
