@@ -94,6 +94,7 @@ upm dedupe                           # reduce duplicate versions already locked
 upm install --production             # skip packages used only by dev dependencies
 upm install --frozen-lockfile        # CI: fail if the lockfile is missing or stale
 upm install --verify                 # check sizes and links, not file hashes
+upm install --offline                # no network: install from upm.lock and the store
 upm lock                             # write upm.lock without installing packages
 upm resolve vue@^3                   # show which registry version matches
 upm fetch nanoid                     # cache this package, without its dependencies
@@ -254,6 +255,12 @@ upm ci --omit=dev                    # the same, in npm's words
 `--frozen-lockfile` fails if `upm.lock` is missing, invalid, or out of date with the
 project. It does not select versions or rewrite the lockfile. Missing cached
 packages still need to be downloaded, so this is not an offline mode.
+
+`--offline` never uses the network. An install from a current lockfile works when the
+store already holds its packages, which a past install on the same machine leaves there.
+Anything that needs the registry (`add`, a stale or missing lockfile) or a download
+fails at once with `EOFFLINE`, including a missing optional package. upm keeps no
+registry metadata on disk, so it cannot resolve new packages offline.
 
 `--production` skips packages used only by `devDependencies`. It uses the same
 lockfile as a development install; it does not create a smaller lockfile.
@@ -495,7 +502,7 @@ Settings are read in this order, with later values taking priority:
 3. Project config: `.npmrc` at the project root.
 4. Environment variables such as `npm_config_registry` and `npm_config_save_exact`.
 5. The `--registry <url>` option, for the default registry only, and
-   `--min-release-age <days>`, `--before <date>` and `--min-release-age-exclude <glob>`.
+   `--min-release-age <days>`, `--before <date>`, `--min-release-age-exclude <glob>` and `--offline`.
 
 A scope's registry still takes priority for packages in that scope, even with
 `--registry`.
@@ -516,6 +523,7 @@ setting has no form there.
 | `min-release-age`                                     | `npm_config_min_release_age`               | Minimum age in days of newly picked versions. Defaults to `1`; `0` turns it off.                                   |
 | `before`                                              | `npm_config_before`                        | Only pick versions published on or before this date.                                                               |
 | `min-release-age-exclude`                             | `npm_config_min_release_age_exclude`       | Package names or globs never held back by [release age](#release-age). A `key[]=` list or a comma-separated value. |
+| `offline`                                             | `npm_config_offline`                       | `true` never uses the network, as `--offline`.                                                                     |
 |                                                       | `npm_config_userconfig`                    | Path of the user config file, instead of `~/.npmrc`.                                                               |
 | `globalconfig` (user config only)                     | `npm_config_globalconfig`                  | Path of the global config file.                                                                                    |
 | `prefix` (user config only)                           | `npm_config_prefix`, `PREFIX`              | The global config file is `<prefix>/etc/npmrc`.                                                                    |

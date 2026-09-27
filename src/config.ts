@@ -27,6 +27,8 @@ export interface Config {
   before?: number;
   /** `min-release-age-exclude`: names or globs the cutoff never applies to. */
   releaseAgeExclude: string[];
+  /** `offline`: never ask the registry or download a tarball. */
+  offline: boolean;
 }
 
 const NPMRC = ".npmrc";
@@ -140,6 +142,7 @@ export function toConfig(layers: Record<string, string>[], registry?: string): C
     releaseAgeExclude: [
       ...new Set((merged["min-release-age-exclude"] ?? "").split(",").map((v) => v.trim())),
     ].filter(Boolean),
+    offline: merged.offline === "true",
   };
 }
 
@@ -197,6 +200,7 @@ export function readConfig(
     minReleaseAge?: number;
     before?: string;
     minReleaseAgeExclude?: string[];
+    offline?: boolean;
   } = {},
   home = builtin.os.homedir(),
 ): Config {
@@ -219,6 +223,7 @@ export function readConfig(
   if (flags.minReleaseAgeExclude) {
     cli["min-release-age-exclude"] = flags.minReleaseAgeExclude.join(",");
   }
+  if (flags.offline !== undefined) cli.offline = `${flags.offline}`;
   return toConfig([global, user, project, fromEnv, cli], flags.registry);
 }
 

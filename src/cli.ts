@@ -71,6 +71,7 @@ Options
                        run --workspaces: run the root first
   --json               print JSON
   --lock               fetch: use ${LOCKFILE}
+  --offline            never use the network; fail if the registry or a download is needed
   -O, --optional       add: save to optionalDependencies
   -p, --package <spec> exec: install a package for the command (repeatable)
   -y, --yes            exec: accepted for npx compatibility; no prompts
@@ -101,7 +102,7 @@ Notes
   prune removes unused project entries and unindexed content, keeping package indexes
   and files under an hour old. The shared store can grow.
   Config: --registry > npm_config_* > project .npmrc > ~/.npmrc > global npmrc.
-  Supports registries, credentials, save-exact and \${VAR} values.
+  Supports registries, credentials, save-exact, offline and \${VAR} values.
   New picks skip versions under min-release-age days old (default 1; 0 turns it off),
   or newer than before=<date>; min-release-age-exclude[] names or globs are exempt.
 
@@ -182,6 +183,8 @@ export interface Cli {
   minReleaseAgeExclude?: string[];
   /** `-s`, `-q` or a low `--loglevel`: no progress notes, run banner or install summary. */
   quiet?: boolean;
+  /** `--offline`: never ask the registry or download a tarball. */
+  offline?: boolean;
 }
 
 /** `resolvePool` left to the pool to size by the cores; the user did not ask for a count. */
@@ -344,6 +347,8 @@ export function parseArgv(argv: string[]): Cli {
       cli.production = true;
     } else if (arg === "--lock") {
       cli.lock = true;
+    } else if (arg === "--offline") {
+      cli.offline = true;
     } else if (arg === "--frozen-lockfile") {
       cli.frozen = true;
     } else if (arg === "--verify") {
@@ -536,6 +541,7 @@ async function dispatch(cli: Cli, fromProject: boolean): Promise<string> {
     minReleaseAge: cli.minReleaseAge,
     before: cli.before,
     minReleaseAgeExclude: cli.minReleaseAgeExclude,
+    offline: cli.offline,
     log: note,
   };
   const store = { ...base, store: cli.store };
@@ -664,6 +670,7 @@ async function runCommand(cli: Cli): Promise<number> {
       minReleaseAge: cli.minReleaseAge,
       before: cli.before,
       minReleaseAgeExclude: cli.minReleaseAgeExclude,
+      offline: cli.offline,
       store: cli.store,
     });
   } catch (error) {
@@ -694,6 +701,7 @@ async function execCommand(cli: Cli): Promise<number> {
     minReleaseAge: cli.minReleaseAge,
     before: cli.before,
     minReleaseAgeExclude: cli.minReleaseAgeExclude,
+    offline: cli.offline,
     store: cli.store,
     packages: cli.packages,
     call: cli.call !== undefined,

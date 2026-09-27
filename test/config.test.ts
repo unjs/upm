@@ -21,6 +21,7 @@ const DEFAULTS = {
   saveExact: false,
   before: expect.any(Number),
   releaseAgeExclude: [],
+  offline: false,
 };
 
 describe("parseNpmrc", () => {
@@ -234,6 +235,11 @@ describe("toConfig", () => {
     expect(toConfig([{ "save-exact": "true" }]).saveExact).toBe(true);
     expect(toConfig([{ "save-exact": "true" }, { "save-exact": "false" }]).saveExact).toBe(false);
   });
+
+  it("reads offline", () => {
+    expect(toConfig([{ offline: "true" }]).offline).toBe(true);
+    expect(toConfig([{ offline: "true" }, { offline: "false" }]).offline).toBe(false);
+  });
 });
 
 describe("authFor", () => {
@@ -302,6 +308,7 @@ describe("readConfig", () => {
       saveExact: true,
       before: expect.any(Number),
       releaseAgeExclude: [],
+      offline: false,
     });
     process.env.npm_config_registry = "https://env.test";
     expect(readConfig(dir).registry).toBe("https://env.test");
@@ -319,6 +326,16 @@ describe("readConfig", () => {
       releaseAgeExclude: ["a", "b"],
     });
     expect(readConfig(dir).releaseAgeExclude).toEqual(["@acme/*"]);
+  });
+
+  it("takes offline from the file, and the option over it either way", async () => {
+    dir = await mkdtemp(join(tmpdir(), "upm-npmrc-"));
+    isolate();
+    await writeFile(join(dir, ".npmrc"), "offline=true\n");
+    expect(readConfig(dir).offline).toBe(true);
+    expect(readConfig(dir, { offline: false }).offline).toBe(false);
+    await writeFile(join(dir, ".npmrc"), "");
+    expect(readConfig(dir, { offline: true }).offline).toBe(true);
   });
 
   it("finds the global file under the prefix, as npm's --location=global writes it", async () => {

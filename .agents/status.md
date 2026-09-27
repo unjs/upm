@@ -113,8 +113,8 @@ These need a scope decision, not just a patch:
   the tree; make that a fast path only if it shows in a profile. Publishing a manifest with a
   `workspace:` range is another manager's job: `upm publish` is npm's, which keeps it.
 - `.npmrc` is read for the registry, `@scope:registry`, the credential keys, `save-exact`,
-  `min-release-age`, `before` and `min-release-age-exclude`, from the project, user and global
-  files and `npm_config_*`. Not npm's own built-in npmrc, and no `proxy`, `strict-ssl`,
+  `min-release-age`, `before`, `min-release-age-exclude` and `offline`, from the project,
+  user and global files and `npm_config_*`. Not npm's own built-in npmrc, and no `proxy`, `strict-ssl`,
   `cafile` or `always-auth`: those need an HTTP layer upm does not have. `upm login` and
   `upm config set` are npm's, run through exec. A credential is sent under its
   `//host/path/`, and to the rest of that host as npm's same-host fallback does — where two
@@ -180,8 +180,10 @@ Unranked: take a fresh profile before choosing one. Use [perf.md](perf.md) for e
   (`prefetch` in `src/api.ts`): what only an off-platform build reaches is never fetched. A
   regression here shows as extra store indexes on a cold install; check the index count
   against the platform's tree, not only the wall time, when touching `onPick` or `libcOf`.
-- A revalidated metadata cache may help repeated resolves on slow links. Keep disk storage
-  outside the portable registry client; define freshness, failure and eviction rules first.
+- A revalidated metadata cache may help repeated resolves on slow links, and would let
+  `offline` resolve (today it fails any registry question: `offlineRegistry` in `src/api.ts`).
+  Keep disk storage outside the portable registry client; define freshness, failure and
+  eviction rules first, and whether an offline pick may skip the release age's `time` read.
 - For large archives, check both many-file and few-file shapes. Helper startup and retained
   buffers can cost more than parallel writes save. Include peak memory in the result.
 - For warm installs, profile planning, messages and index work before adding more threads.

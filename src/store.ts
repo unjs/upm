@@ -63,6 +63,8 @@ export interface StoreOptions {
   stall?: number;
   /** Check that stored content still matches its index instead of trusting it. Default false. */
   verify?: boolean;
+  /** A tarball not already here fails with `EOFFLINE` instead of being downloaded. */
+  offline?: boolean;
 }
 
 export interface Store {
@@ -364,6 +366,11 @@ export function createStore(options: StoreOptions = {}): Store {
    */
   async function pull(tarball: Tarball, signal: Signal, open?: Open): Promise<Pulled> {
     if (typeof tarball !== "string") return { bytes: [await readLocal(tarball.path)] };
+    if (options.offline) {
+      throw Object.assign(new Error(`offline: ${tarball} is not in the store`), {
+        code: "EOFFLINE",
+      });
+    }
     let last: unknown;
     // What the last answer asked us to wait, which beats guessing when the server said.
     let asked = 0;

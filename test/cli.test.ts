@@ -32,6 +32,7 @@ describe("parseArgv", () => {
       command: "install",
       frozen: true,
     });
+    expect(parseArgv(["i", "--offline"])).toMatchObject({ command: "install", offline: true });
     expect(parseArgv(["i", "vue"])).toMatchObject({ command: "install", specs: ["vue"] });
   });
 
@@ -953,11 +954,12 @@ describe("startup budget", () => {
     // its other builds, the same modules (paired median +0.1 ms, an A/A pair +0.8 ms); 422,633
     // with npm's command names and flags, the same modules (paired medians -1.7 and -1.0 ms in
     // two orders, an A/A pair -0.2 ms); 425,154 once `run` installs first, the same modules
-    // (paired medians -1.0 and -0.5 ms in two orders, an A/A pair +0.3 ms).
+    // (paired medians -1.0 and -0.5 ms in two orders, an A/A pair +0.3 ms); 427,179 with
+    // `offline`, the same modules (paired medians -1.3 and -2.1 ms, an A/A pair -0.9 ms).
     const modules = await reachable();
     const bytes = [...modules.values()].reduce((total, size) => total + size, 0);
     expect(modules.size).toBeLessThanOrEqual(27); // `upm.ts` is the bin, `cli.ts` the program
-    expect(bytes).toBeLessThanOrEqual(426_000);
+    expect(bytes).toBeLessThanOrEqual(428_000);
     // Found through `import()` by the commands that read a project, like the pools: each holds
     // its worker's whole code in the build.
     const lazy = [
