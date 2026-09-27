@@ -139,11 +139,17 @@ export interface RegistryAccess {
   /** Names or globs the cutoff never applies to, in place of `.npmrc`'s list. */
   minReleaseAgeExclude?: string[];
   /**
-   * Never ask the registry or download a tarball, over `.npmrc` and `npm_config_offline`: what
-   * would need either fails with `EOFFLINE`. An install from a current lockfile into a store
-   * that holds its packages needs neither. Default: npm's config, else false.
+   * Never ask the registry or download a tarball, over `.npmrc` and `npm_config_offline`: a pick
+   * reads the documents kept from earlier runs, and what needs more fails with `EOFFLINE`. An
+   * install from a current lockfile into a store that holds its packages needs neither.
+   * Default: npm's config, else false.
    */
   offline?: boolean;
+  /**
+   * Pick from a kept document however old, over `.npmrc`'s `prefer-offline`: the registry is
+   * asked for a name only when none is kept, or the kept one cannot satisfy the spec.
+   */
+  preferOffline?: boolean;
 }
 
 export interface StoreAccess {
@@ -1624,8 +1630,11 @@ interface OpenRegistry extends Registry {
  * registry, as with 0.
  */
 async function openRegistry(ctx: Context, size = ctx.resolvePool): Promise<OpenRegistry> {
-  const { registry, scopes, auth, before, releaseAgeExclude: exclude, offline } = settings(ctx);
-  if (offline) return offlineRegistry(registry, hostsOf(ctx));
+  const { registry, scopes, auth, before, releaseAgeExclude: exclude } = settings(ctx);
+  const { offline, preferOffline } = settings(ctx);
+  const mode = offline ? "only" : preferOffline ? "prefer" : "revalidate";
+  const { createDocumentCache, metadataDir } = await import("./metadata.ts");
+  const metadata = { dir: metadataDir(storeDir(ctx.options.store)), mode } as const;
   const loaded = await import("./registry-pool.ts").catch(() => undefined);
   if (!loaded && size !== 0) ctx.noThreads();
   const pool = loaded
@@ -1639,30 +1648,25 @@ async function openRegistry(ctx: Context, size = ctx.resolvePool): Promise<OpenR
         strict: size !== undefined && size > 0,
         warn: (message) => ctx.log(message, "debug"),
         noThreads: ctx.noThreads,
+        metadata,
       })
-    : { ...createRegistry({ registry, scopes, auth, before, exclude }), close() {} };
+    : {
+        ...createRegistry({
+          registry,
+          scopes,
+          auth,
+          before,
+          exclude,
+          cache: createDocumentCache(metadata),
+        }),
+        close() {},
+      };
   // Before the first question: `fetch` takes the dispatcher of the moment it is called, so a
   // request made while the swap is in flight opens its socket on the agent about to be dropped
   // and the next request connects again (+20 ms on a one-package install). The wait is the
   // fetch machinery loading (~25 ms), which the first question pays for either way.
   await cacheLookups();
   return pool;
-}
-
-/** The registry under `offline`: every question fails at once, naming the package. */
-function offlineRegistry(base: string, baseFor: BaseFor): OpenRegistry {
-  const refuse = async (name: string): Promise<never> => {
-    throw fail(`offline: cannot ask the registry for ${name}`, "EOFFLINE");
-  };
-  return {
-    base,
-    baseFor,
-    packument: refuse,
-    view: refuse,
-    manifest: refuse,
-    pinned: refuse,
-    close() {},
-  };
 }
 
 async function pickAll(ctx: Context, specs: string[]): Promise<Manifest[]> {

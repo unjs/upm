@@ -33,6 +33,7 @@ describe("parseArgv", () => {
       frozen: true,
     });
     expect(parseArgv(["i", "--offline"])).toMatchObject({ command: "install", offline: true });
+    expect(parseArgv(["add", "x", "--prefer-offline"]).preferOffline).toBe(true);
     expect(parseArgv(["i", "vue"])).toMatchObject({ command: "install", specs: ["vue"] });
   });
 
@@ -224,7 +225,7 @@ describe("npm's spellings", () => {
 
   it("accepts npm's flags for what upm already does, and nothing else", () => {
     const noops = ["--ignore-scripts", "--no-audit", "--no-fund", "--no-progress"];
-    noops.push("--prefer-offline", "--legacy-peer-deps", "--force", "-S", "--save", "-P");
+    noops.push("--legacy-peer-deps", "--force", "-S", "--save", "-P");
     noops.push("--save-prod");
     expect(parseArgv(["add", "x", ...noops])).toEqual({
       command: "add",
@@ -955,11 +956,13 @@ describe("startup budget", () => {
     // with npm's command names and flags, the same modules (paired medians -1.7 and -1.0 ms in
     // two orders, an A/A pair -0.2 ms); 425,154 once `run` installs first, the same modules
     // (paired medians -1.0 and -0.5 ms in two orders, an A/A pair +0.3 ms); 427,179 with
-    // `offline`, the same modules (paired medians -1.3 and -2.1 ms, an A/A pair -0.9 ms).
+    // `offline`, the same modules (paired medians -1.3 and -2.1 ms, an A/A pair -0.9 ms);
+    // 432,738 once the registry client keeps documents, the same modules: the disk half is
+    // `metadata.ts`, loaded only to resolve (paired medians +0.7 and -0.6 ms, an A/A pair +0.5).
     const modules = await reachable();
     const bytes = [...modules.values()].reduce((total, size) => total + size, 0);
     expect(modules.size).toBeLessThanOrEqual(27); // `upm.ts` is the bin, `cli.ts` the program
-    expect(bytes).toBeLessThanOrEqual(428_000);
+    expect(bytes).toBeLessThanOrEqual(434_000);
     // Found through `import()` by the commands that read a project, like the pools: each holds
     // its worker's whole code in the build.
     const lazy = [

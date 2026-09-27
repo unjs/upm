@@ -1,7 +1,7 @@
 // Read-only npm registry client: packuments and single manifests, memoized per request.
 import { fetching } from "./dns.ts";
 import { createAdaptiveLimiter, isThrottle, retryAfter } from "./limit.ts";
-import { asOf, viewOf as parsedView } from "./pick.ts";
+import { asOf, pickManifest, viewOf as parsedView } from "./pick.ts";
 import type { PackumentView, PickOptions } from "./pick.ts";
 import { pluckModified, pluckTags, pluckTimes, pluckVersion } from "./pluck.ts";
 import { concat, sleep } from "./runtime.ts";
@@ -73,6 +73,31 @@ export interface RegistryOptions {
   before?: number;
   /** `min-release-age-exclude`: names, or globs with `*`, `**` and `?`, never filtered. */
   exclude?: string[];
+  /** Documents kept from earlier runs. None by default; `src/metadata.ts` keeps them on disk. */
+  cache?: DocumentCache;
+}
+
+/**
+ * When a kept document answers without asking the registry. `revalidate`: while the registry's
+ * `max-age` lasts, then asked with its ETag. `prefer`: whenever there is one; a pick it cannot
+ * satisfy asks once. `only`: whenever there is one, and nothing is ever asked.
+ */
+export type CacheMode = "revalidate" | "prefer" | "only";
+
+export interface Kept {
+  bytes: Uint8Array;
+  etag?: string;
+  /** Still inside the `max-age` it was served with. */
+  fresh: boolean;
+}
+
+/** Documents by url and media type. Synchronous: see `src/metadata.ts`. */
+export interface DocumentCache {
+  mode: CacheMode;
+  get(key: string): Kept | undefined;
+  set(key: string, bytes: Uint8Array, etag?: string, maxAge?: number): void;
+  /** The registry said it has not changed: fresh again. */
+  touch(key: string): void;
 }
 
 export interface Registry {
@@ -97,8 +122,9 @@ export interface Registry {
    */
   pinned(name: string, version: string): Promise<Manifest | undefined>;
   /**
-   * The walk's pick in one call, for a registry that can do it nearer the bytes: `pinned` first
-   * when there is a version to try, then the usual pick. Without it the two are asked in turn.
+   * The walk's pick in one call: `pinned` first when there is a version to try, then the usual
+   * pick. Without it the two are asked in turn. The client's own asks the registry again when
+   * a document kept from an earlier run cannot satisfy the spec.
    */
   pick?(spec: Spec, pinned?: string, options?: PickOptions): Promise<Manifest>;
 }
@@ -178,9 +204,42 @@ export function createRegistry(options: RegistryOptions = {}): Registry {
   const times = new Map<string, Promise<Record<string, string> | undefined>>();
   const before = options.before;
   const excluded = globs(options.exclude ?? []);
+  const cache = options.cache;
+  /** Names answered from a kept document without asking; and those asked again since. */
+  const unasked = new Set<string>();
+  const rechecked = new Set<string>();
+
+  /**
+   * The kept document for a request, and whether it answers without one. When it does not, its
+   * ETag goes with the request.
+   */
+  function kept(name: string, url: string, accept: string): { doc?: Kept; use: boolean } {
+    if (!cache) return { use: false };
+    const doc = cache.get(keyOf(url, accept));
+    if (!doc || rechecked.has(name) || (cache.mode === "revalidate" && !doc.fresh)) {
+      return { doc, use: false };
+    }
+    if (!doc.fresh) unasked.add(name);
+    return { doc, use: true };
+  }
+
+  const offline = (name: string) =>
+    fail(`offline: cannot ask the registry for ${name}`, "EOFFLINE");
+
+  /** Keep what the registry sent, unless it said not to. */
+  function keep(url: string, accept: string, response: Response, bytes: Uint8Array): void {
+    const control = response.headers.get("cache-control") ?? "";
+    if (!cache || /no-store/i.test(control)) return;
+    const maxAge = /max-age=(\d+)/i.exec(control)?.[1];
+    const etag = response.headers.get("etag") ?? undefined;
+    cache.set(keyOf(url, accept), bytes, etag, maxAge === undefined ? undefined : +maxAge);
+  }
 
   /** The response body, retried and validated as `get` says. */
   async function get(name: string, url: string, accept: string): Promise<Uint8Array> {
+    const { doc, use } = kept(name, url, accept);
+    if (use) return doc!.bytes;
+    if (cache?.mode === "only") throw offline(name);
     return await limit(async (signal) => {
       let last: unknown;
       // What the last answer asked us to wait, which beats guessing when the server said.
@@ -190,7 +249,7 @@ export function createRegistry(options: RegistryOptions = {}): Registry {
         let response: Response;
         try {
           response = await request(url, {
-            headers: headers(url, accept),
+            headers: headers(url, accept, doc?.etag),
             // Without this one dead socket hangs the whole install.
             signal: AbortSignal.timeout(TIMEOUT),
           });
@@ -205,7 +264,15 @@ export function createRegistry(options: RegistryOptions = {}): Registry {
           );
           continue;
         }
-        if (response.ok) return await body(response, url);
+        if (response.status === 304 && doc) {
+          cache!.touch(keyOf(url, accept));
+          return doc.bytes;
+        }
+        if (response.ok) {
+          const bytes = await body(response, url);
+          keep(url, accept, response, bytes);
+          return bytes;
+        }
         if (response.status === 404) {
           throw fail(`Package "${name}" not found in registry`, "E404");
         }
@@ -225,9 +292,11 @@ export function createRegistry(options: RegistryOptions = {}): Registry {
   // parseDep validates the name and gives the escaped registry path form.
   const path = (name: string) => `${baseFor(name)}/${parseDep(name, "").escapedName}`;
 
-  function headers(url: string, accept: string): Record<string, string> {
+  function headers(url: string, accept: string, etag?: string): Record<string, string> {
     const authorization = authFor(auth, url);
-    return authorization ? { accept, authorization } : { accept };
+    const sent: Record<string, string> = authorization ? { accept, authorization } : { accept };
+    if (etag) sent["if-none-match"] = etag;
+    return sent;
   }
 
   async function loadPackument(name: string): Promise<TextView> {
@@ -252,13 +321,21 @@ export function createRegistry(options: RegistryOptions = {}): Registry {
     accept: string,
     big?: () => void,
   ): Promise<TextView | undefined> {
+    const url = path(name);
+    const { doc, use } = kept(name, url, accept);
+    const hit = () => {
+      if (accept === CORGI) corgiBytes.set(name, doc!.bytes.byteLength);
+      return viewOf(url, doc!.bytes);
+    };
+    if (use) return hit();
+    if (cache?.mode === "only") return undefined;
     return await limit(async (signal) => {
       let response: Response;
       // Not from a gate the registry has pulled back: it asked for fewer.
       const late = big && limit.limit >= start ? setTimeout(big, LATE_MS) : undefined;
       try {
-        response = await request(path(name), {
-          headers: headers(path(name), accept),
+        response = await request(url, {
+          headers: headers(url, accept, doc?.etag),
           signal: AbortSignal.timeout(TIMEOUT),
         });
       } catch (error) {
@@ -267,11 +344,17 @@ export function createRegistry(options: RegistryOptions = {}): Registry {
       } finally {
         clearTimeout(late);
       }
+      if (response.status === 304 && doc) {
+        cache!.touch(keyOf(url, accept));
+        return hit();
+      }
       if (!response.ok && isThrottle(response.status)) signal.throttled();
       if (!response.ok || !response.body) return undefined;
       const [bytes, size] = await read(response, big);
       if (accept === CORGI) corgiBytes.set(name, size);
-      return bytes === undefined ? undefined : viewOf(path(name), bytes);
+      if (bytes === undefined) return undefined;
+      keep(url, accept, response, bytes);
+      return viewOf(url, bytes);
     });
   }
 
@@ -315,6 +398,11 @@ export function createRegistry(options: RegistryOptions = {}): Registry {
   }
 
   async function loadPinned(name: string, version: string): Promise<Manifest | undefined> {
+    // A document that answers unasked beats any route.
+    if (cache && cache.mode !== "revalidate" && cache.get(keyOf(path(name), CORGI))) {
+      const found = (await memo(peeks, name, () => peek(name, CORGI)))?.version(version);
+      if (found) return found;
+    }
     // A document a range asked for has the version, or the route below is right.
     const known = corgis.get(name) ?? peeks.get(name);
     if (known) {
@@ -357,7 +445,9 @@ export function createRegistry(options: RegistryOptions = {}): Registry {
     } catch (error) {
       // No such version, or a registry that does not serve the per-version route at all.
       const { code, status } = error as { code?: string; status?: number };
-      const missing = code === "E404" || (code === "EREGISTRY" && (status ?? 500) < 500);
+      // Offline, a route never kept is a miss: a kept document may still have the version.
+      const missing =
+        code === "E404" || code === "EOFFLINE" || (code === "EREGISTRY" && (status ?? 500) < 500);
       if (!missing) throw error;
       return undefined;
     }
@@ -415,6 +505,23 @@ export function createRegistry(options: RegistryOptions = {}): Registry {
   const view = (name: string) =>
     before === undefined ? corgi(name) : memo(aged, name, () => loadAged(name));
 
+  async function pick(spec: Spec, pinned?: string, options?: PickOptions): Promise<Manifest> {
+    const name = spec.fetchName;
+    const found = pinned === undefined ? undefined : await loadPinned(name, pinned);
+    if (found) return found;
+    try {
+      return pickManifest(await view(name), spec, options);
+    } catch (error) {
+      // A document kept from an earlier run may predate what is asked for: ask once.
+      const { code } = error as { code?: string };
+      const miss = code === "ETARGET" || code === "ENOVERSIONS";
+      if (!miss || !unasked.has(name) || rechecked.has(name)) throw error;
+      rechecked.add(name);
+      for (const memos of [corgis, peeks, aged, times]) memos.delete(name);
+      return pickManifest(await view(name), spec, options);
+    }
+  }
+
   return {
     base,
     baseFor,
@@ -422,8 +529,12 @@ export function createRegistry(options: RegistryOptions = {}): Registry {
     packument: async (name) => (await view(name)).whole(),
     manifest: (name, version) => loadManifest(name, version),
     pinned: (name, version) => loadPinned(name, version),
+    pick,
   };
 }
+
+/** Where a document is kept: the abbreviated and full forms of one url are two documents. */
+const keyOf = (url: string, accept: string) => `${accept === CORGI ? "corgi" : "full"} ${url}`;
 
 interface TextView extends PackumentView {
   /** Whether the bytes are a document at all. Parses them whole to say so. */

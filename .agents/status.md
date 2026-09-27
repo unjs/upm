@@ -71,10 +71,14 @@ compatibility. Keep this page about open work, not completed implementation step
 - **Compile cache is never reclaimed:** the bin's V8 cache in `~/.upm/compile-cache` gains
   entries for every new build and Node version, and nothing removes old ones. Needs a
   retention rule and a place to apply it, `prune` or the bin's start. Start at `src/upm.ts`.
+- **Kept registry documents are never reclaimed:** the store's `metadata` directory keeps
+  every document any resolve read, and `prune` walks only `files` and `index`. The same
+  retention question as the compile cache and exec projects; one rule could serve all three.
+  A torn file is a miss, so deleting any of them is always safe. Start at `src/metadata.ts`.
 - **npm's commands need the network:** `upm publish`, `version`, `login` and the rest run
-  `upm exec npm`, which asks the registry for npm's `latest` on every run (about 250 ms) and
-  fails offline unless the project installs npm. npm on `PATH` would be faster but is not
-  what exec runs. Commands that read the tree (`ls`, `outdated`, `explain`, `fund`) or need
+  `upm exec npm`, which asks the registry for npm's `latest` once the kept document is past
+  its five minutes (a `304`; `--prefer-offline` skips it). npm on `PATH` would be faster but
+  is not what exec runs. Commands that read the tree (`ls`, `outdated`, `explain`, `fund`) or need
   `package-lock.json` (`audit`) are not passed on. Start at `NPM` in `src/cli.ts`.
 - **No audit:** `npm audit` needs `package-lock.json`, so there is no way to check the tree
   for advisories. A native `upm audit` needs no npm: POST every locked name and its
@@ -113,7 +117,7 @@ These need a scope decision, not just a patch:
   the tree; make that a fast path only if it shows in a profile. Publishing a manifest with a
   `workspace:` range is another manager's job: `upm publish` is npm's, which keeps it.
 - `.npmrc` is read for the registry, `@scope:registry`, the credential keys, `save-exact`,
-  `min-release-age`, `before`, `min-release-age-exclude` and `offline`, from the project,
+  `min-release-age`, `before`, `min-release-age-exclude`, `offline` and `prefer-offline`, from the project,
   user and global files and `npm_config_*`. Not npm's own built-in npmrc, and no `proxy`, `strict-ssl`,
   `cafile` or `always-auth`: those need an HTTP layer upm does not have. `upm login` and
   `upm config set` are npm's, run through exec. A credential is sent under its
@@ -180,10 +184,13 @@ Unranked: take a fresh profile before choosing one. Use [perf.md](perf.md) for e
   (`prefetch` in `src/api.ts`): what only an off-platform build reaches is never fetched. A
   regression here shows as extra store indexes on a cold install; check the index count
   against the platform's tree, not only the wall time, when touching `onPick` or `libcOf`.
-- A revalidated metadata cache may help repeated resolves on slow links, and would let
-  `offline` resolve (today it fails any registry question: `offlineRegistry` in `src/api.ts`).
-  Keep disk storage outside the portable registry client; define freshness, failure and
-  eviction rules first, and whether an offline pick may skip the release age's `time` read.
+- Kept registry documents (`src/metadata.ts`) are stored as sent, zstd level 1 (gzip where
+  Node lacks zstd): 102 MB as sent was 25 MB on disk for a `nuxt` + `vite` + `vitest` tree, at
+  no measurable cost to a cold resolve. Trimmed to what the resolver reads they were 5.7 MB
+  and read faster (332 ms warm, against 455), but the parse cost a cold resolve 18%; a trim
+  over the bytes without parsing was slower than `JSON.parse`. A trim that runs where nothing
+  waits on it (`prune`, or after the walk) would get both. Of the other codecs, brotli 0-1
+  compresses nearly as fast but reads twice as slow, and gzip 1 is four times slower.
 - For large archives, check both many-file and few-file shapes. Helper startup and retained
   buffers can cost more than parallel writes save. Include peak memory in the result.
 - For warm installs, profile planning, messages and index work before adding more threads.

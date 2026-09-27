@@ -22,6 +22,7 @@ const DEFAULTS = {
   before: expect.any(Number),
   releaseAgeExclude: [],
   offline: false,
+  preferOffline: false,
 };
 
 describe("parseNpmrc", () => {
@@ -239,6 +240,7 @@ describe("toConfig", () => {
   it("reads offline", () => {
     expect(toConfig([{ offline: "true" }]).offline).toBe(true);
     expect(toConfig([{ offline: "true" }, { offline: "false" }]).offline).toBe(false);
+    expect(toConfig([{ "prefer-offline": "true" }]).preferOffline).toBe(true);
   });
 });
 
@@ -309,6 +311,7 @@ describe("readConfig", () => {
       before: expect.any(Number),
       releaseAgeExclude: [],
       offline: false,
+      preferOffline: false,
     });
     process.env.npm_config_registry = "https://env.test";
     expect(readConfig(dir).registry).toBe("https://env.test");

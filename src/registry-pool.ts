@@ -5,7 +5,8 @@
 // before the threads are up, and everything after one dies, runs here as it always did.
 import type { Worker } from "node:worker_threads";
 import { builtin } from "./builtin.ts";
-import { pickManifest } from "./pick.ts";
+import { createDocumentCache } from "./metadata.ts";
+import type { MetadataOptions } from "./metadata.ts";
 import type { PickOptions } from "./pick.ts";
 import { createRegistry } from "./registry.ts";
 import type { Registry, RegistryOptions } from "./registry.ts";
@@ -33,6 +34,8 @@ export interface PoolOptions extends RegistryOptions {
   graceMs?: number;
   /** The distinct name whose question starts the threads; 0 starts them now. */
   startAt?: number;
+  /** Documents kept on disk, by every thread: each opens the directory itself. */
+  metadata?: MetadataOptions;
 }
 
 /** What the pool tells a thread at start: the registry, and the request gate it runs. */
@@ -45,6 +48,7 @@ export interface WorkerData {
   min: number;
   before?: number;
   exclude?: string[];
+  metadata?: MetadataOptions;
 }
 
 /** One question. `pick` is the walk's usual pick: the pinned version first when there is one. */
@@ -117,7 +121,8 @@ interface Slot {
  * plain registry.
  */
 export function createRegistryPool(options: PoolOptions = {}): RegistryPool {
-  const local = createRegistry(options);
+  const cache = options.metadata && createDocumentCache(options.metadata);
+  const local = createRegistry({ ...options, cache });
   // Three did as well as two and better than four on `nuxt`; each is an isolate to boot
   // (~30 ms of another core, ~20 MB), so a machine with few cores gets fewer.
   const size = options.fetch ? 0 : (options.size ?? Math.min(3, cpus() - 1));
@@ -161,6 +166,7 @@ export function createRegistryPool(options: PoolOptions = {}): RegistryPool {
           min: min[i]!,
           before: options.before,
           exclude: options.exclude,
+          metadata: options.metadata,
         };
         const worker = new builtin.workers.Worker(entry, { workerData });
         const slot: Slot = { worker, ready: false, pending: new Map() };
@@ -242,9 +248,8 @@ export function createRegistryPool(options: PoolOptions = {}): RegistryPool {
     return pickHere(q.spec, q.pinned, q.options);
   }
 
-  async function pickHere(spec: Spec, pinned?: string, pick?: PickOptions): Promise<Manifest> {
-    const found = pinned === undefined ? undefined : await local.pinned(spec.fetchName, pinned);
-    return found ?? pickManifest(await local.view(spec.fetchName), spec, pick);
+  function pickHere(spec: Spec, pinned?: string, pick?: PickOptions): Promise<Manifest> {
+    return local.pick!(spec, pinned, pick);
   }
 
   function ask(name: string, question: Asked): Promise<Manifest | undefined> {

@@ -4,7 +4,7 @@
 // document cloned back can cost the receiver as much as parsing it. See .agents/perf.md.
 import { builtin } from "./builtin.ts";
 import { cacheLookups } from "./dns.ts";
-import { pickManifest } from "./pick.ts";
+import { createDocumentCache } from "./metadata.ts";
 import { createRegistry } from "./registry.ts";
 import type { Registry } from "./registry.ts";
 import type { Answer, Asked, Question, WorkerData } from "./registry-pool.ts";
@@ -13,14 +13,14 @@ import type { Manifest } from "./types.ts";
 async function answer(registry: Registry, q: Asked): Promise<Manifest | undefined> {
   if (q.op === "pinned") return await registry.pinned(q.name, q.version);
   if (q.op === "manifest") return await registry.manifest(q.name, q.version);
-  const { fetchName } = q.spec;
-  const found = q.pinned === undefined ? undefined : await registry.pinned(fetchName, q.pinned);
-  return found ?? pickManifest(await registry.view(fetchName), q.spec, q.options);
+  return await registry.pick!(q.spec, q.pinned, q.options);
 }
 
 const port = builtin.workers.parentPort;
 if (port) {
-  const registry = createRegistry(builtin.workers.workerData as WorkerData);
+  const data = builtin.workers.workerData as WorkerData;
+  const cache = data.metadata && createDocumentCache(data.metadata);
+  const registry = createRegistry({ ...data, cache });
   port.on("message", (question: Question) => {
     void answer(registry, question).then(
       (found) => port.postMessage({ id: question.id, found } satisfies Answer),

@@ -242,7 +242,7 @@ describe("api", () => {
     await expect(stat(join(dir, "upm.lock"))).rejects.toThrow();
   });
 
-  it("installs offline from the lockfile and the store, and fails fast on what needs more", async () => {
+  it("installs offline from the lockfile, the store and kept documents, and fails fast on more", async () => {
     await writeFile(join(dir, "package.json"), JSON.stringify({ dependencies: { nanoid: "^5" } }));
     await upm.install(base);
     const nm = join(dir, "node_modules");
@@ -256,8 +256,10 @@ describe("api", () => {
     await rm(nm, { recursive: true });
     await expect(upm.install(fresh)).rejects.toMatchObject({ code: "EOFFLINE" });
     await expect(upm.add(["left-pad"], offline)).rejects.toMatchObject({ code: "EOFFLINE" });
-    await expect(upm.resolve(["nanoid"], offline)).rejects.toMatchObject({ code: "EOFFLINE" });
     expect((await readJson(join(dir, "package.json"))).dependencies).toEqual({ nanoid: "^5" });
+    // The install above kept nanoid's document beside the store.
+    expect(await upm.resolve(["nanoid"], offline)).toMatchObject([{ version: "5.0.0" }]);
+    await expect(upm.resolve(["nanoid"], fresh)).rejects.toMatchObject({ code: "EOFFLINE" });
   });
 
   it("fails an offline install missing an optional, rather than skip it", async () => {

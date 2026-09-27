@@ -29,6 +29,8 @@ export interface Config {
   releaseAgeExclude: string[];
   /** `offline`: never ask the registry or download a tarball. */
   offline: boolean;
+  /** `prefer-offline`: pick from a kept registry document without asking whether it changed. */
+  preferOffline: boolean;
 }
 
 const NPMRC = ".npmrc";
@@ -143,6 +145,7 @@ export function toConfig(layers: Record<string, string>[], registry?: string): C
       ...new Set((merged["min-release-age-exclude"] ?? "").split(",").map((v) => v.trim())),
     ].filter(Boolean),
     offline: merged.offline === "true",
+    preferOffline: merged["prefer-offline"] === "true",
   };
 }
 
@@ -201,6 +204,7 @@ export function readConfig(
     before?: string;
     minReleaseAgeExclude?: string[];
     offline?: boolean;
+    preferOffline?: boolean;
   } = {},
   home = builtin.os.homedir(),
 ): Config {
@@ -224,6 +228,7 @@ export function readConfig(
     cli["min-release-age-exclude"] = flags.minReleaseAgeExclude.join(",");
   }
   if (flags.offline !== undefined) cli.offline = `${flags.offline}`;
+  if (flags.preferOffline !== undefined) cli["prefer-offline"] = `${flags.preferOffline}`;
   return toConfig([global, user, project, fromEnv, cli], flags.registry);
 }
 
