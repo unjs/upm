@@ -3,14 +3,15 @@
 //
 // One file per url and media type, at a path read off both: `registry.npmjs.org/@scope/name/
 // _corgi`, `_full` beside it, and `name/1.0.0/_full` for a version's route; a name or version
-// never starts with `_`. A line of JSON says what the file is, then the body: as the registry
+// never starts with `_`. A line of JSON says what the file is and when the registry's copy was
+// current (not the file's mtime, which copying a store resets), then the body: as the registry
 // sent it, but a full packument cut to what the resolver reads (`trimPackument`). Not
 // compressed: zstd would take a third of the disk but make a warm resolve 10% slower. Reads and
 // writes are synchronous, because a registry thread is terminated when the walk ends and the
 // bin exits once its output is out: a write still pending then would be lost. A write goes to a
 // temp file and is renamed in, so a reader never sees half of one.
 import { builtin } from "./builtin.ts";
-import { at, CLASS, COLON, objectEnd, OPEN, QUOTE, space, stringEnd } from "./pluck.ts";
+import { at as written, CLASS, COLON, objectEnd, OPEN, QUOTE, space, stringEnd } from "./pluck.ts";
 import type { CacheMode, DocumentCache, Kept } from "./registry.ts";
 import { concat } from "./runtime.ts";
 
@@ -21,14 +22,24 @@ export interface MetadataOptions {
 }
 
 interface Head {
+  /** When the registry's copy was current, in epoch ms: first, 13 digits, rewritten in place. */
+  at: number;
   key: string;
   etag?: string;
-  /** Seconds the registry said the document stays fresh; the file's mtime is when it was. */
+  /** Seconds the registry said the document stays fresh from `at`. */
   maxAge?: number;
 }
 
 const NEWLINE = 10;
-/** What a path segment may hold: what a registry url escapes to, and nothing a shell or Windows minds. */
+/** Where `at`'s digits start in a head: after `{"at":`. */
+const AT = 6;
+/** Longer heads are not rewritten in place; a url and an ETag take a few hundred bytes. */
+const HEAD_MAX = 4096;
+/**
+ * What a path segment may hold: a name, a version or a host, never `.` or `..`. A name Windows
+ * reserves (`con`) or two that differ only by case share a file or fail to write; each is then
+ * a miss, since a file's head must name its url.
+ */
 const SEGMENT = /^(?!\.{1,2}$)[\w.@+~-]+$/;
 
 /** Whether the bytes are an object, by their ends: a full check is the parse that is too slow. */
@@ -39,6 +50,27 @@ function document(bytes: Uint8Array): boolean {
   while (j > i && bytes[j]! <= 0x20) j--;
   return bytes[i] === 0x7b && bytes[j] === 0x7d;
 }
+
+/**
+ * A file's head, and where it ends, when it is the one for `key`. A torn or foreign file is a
+ * miss, not an error: the registry is asked instead.
+ */
+function parseHead(bytes: Uint8Array, key: string): (Head & { end: number }) | undefined {
+  const end = bytes.indexOf(NEWLINE);
+  if (end < 0) return undefined;
+  let head: Head;
+  try {
+    head = JSON.parse(new TextDecoder().decode(bytes.subarray(0, end)));
+  } catch {
+    return undefined;
+  }
+  if (head.key !== key || typeof head.at !== "number") return undefined;
+  return { ...head, end };
+}
+
+/** Whole milliseconds, which are 13 digits from 2001 to 2286. */
+const stamp = (at: number) => Math.round(at);
+const at13 = (at: number) => at >= 1e12 && at < 1e13;
 
 /** Inside the store, so each store keeps its own; `prune` reads only `files` and `index`. */
 export function metadataDir(store: string): string {
@@ -73,32 +105,18 @@ export function createDocumentCache(options: MetadataOptions): DocumentCache {
   function get(key: string): Kept | undefined {
     const file = fileOf(key);
     let bytes: Uint8Array;
-    let at: number;
     try {
-      const fd = fs.openSync(file, "r");
-      try {
-        at = fs.fstatSync(fd).mtimeMs;
-        bytes = fs.readFileSync(fd);
-      } finally {
-        fs.closeSync(fd);
-      }
+      bytes = fs.readFileSync(file);
     } catch {
       return undefined;
     }
-    // A torn or foreign file is a miss, not an error: the registry is asked instead.
-    const end = bytes.indexOf(NEWLINE);
-    if (end < 0) return undefined;
-    let head: Head;
-    try {
-      head = JSON.parse(new TextDecoder().decode(bytes.subarray(0, end)));
-    } catch {
-      return undefined;
-    }
-    if (head.key !== key) return undefined;
-    return { bytes: bytes.subarray(end + 1), etag: head.etag, at, maxAge: head.maxAge };
+    const head = parseHead(bytes, key);
+    if (!head) return undefined;
+    const { at, etag, maxAge, end } = head;
+    return { bytes: bytes.subarray(end + 1), etag, at, maxAge };
   }
 
-  function set(key: string, bytes: Uint8Array, etag?: string, maxAge?: number): void {
+  function set(key: string, bytes: Uint8Array, at: number, etag?: string, maxAge?: number): void {
     if (!document(bytes)) return; // a portal's page, say, is never kept
     const body = (key.startsWith("full ") && trimPackument(bytes)) || bytes;
     const file = fileOf(key);
@@ -107,7 +125,7 @@ export function createDocumentCache(options: MetadataOptions): DocumentCache {
     try {
       if (!made.has(parent)) fs.mkdirSync(parent, { recursive: true, mode: 0o700 });
       made.add(parent);
-      const head = new TextEncoder().encode(`${JSON.stringify({ key, etag, maxAge })}\n`);
+      const head = encoder.encode(`${JSON.stringify({ at: stamp(at), key, etag, maxAge })}\n`);
       const fd = fs.openSync(temp, "w", 0o600);
       try {
         fs.writeSync(fd, head);
@@ -122,12 +140,20 @@ export function createDocumentCache(options: MetadataOptions): DocumentCache {
     }
   }
 
-  function touch(key: string): void {
-    const now = new Date();
+  /** A new `at`, written over the old digits: one small write, not the document again. */
+  function touch(key: string, at: number): void {
+    let fd: number | undefined;
     try {
-      fs.utimesSync(fileOf(key), now, now);
+      fd = fs.openSync(fileOf(key), "r+");
+      const bytes = new Uint8Array(HEAD_MAX);
+      const read = fs.readSync(fd, bytes, 0, HEAD_MAX, 0);
+      const head = parseHead(bytes.subarray(0, read), key);
+      if (!head || !at13(head.at) || !at13(stamp(at))) return;
+      fs.writeSync(fd, encoder.encode(`${stamp(at)}`), 0, 13, AT);
     } catch {
       // As with `set`.
+    } finally {
+      if (fd !== undefined) fs.closeSync(fd);
     }
   }
 
@@ -183,6 +209,7 @@ function members(
 const ROOT = ["name", "dist-tags", "time", "versions", "modified"].map((key) =>
   encoder.encode(`"${key}"`),
 );
+const DIST = [encoder.encode('"dist"')];
 /** The abbreviated document's fields, `devDependencies` aside, and `libc`, which it drops. */
 const VERSION = [
   "name",
@@ -212,7 +239,7 @@ const VERSIONS_TEXT = encoder.encode('"versions":{');
 /** Which of `keys`, written as JSON, the key from `start` to `end` is: keys are compared as written. */
 function which(bytes: Uint8Array, start: number, end: number, keys: Uint8Array[]): number {
   for (let k = 0; k < keys.length; k++) {
-    if (keys[k]!.length === end - start && at(bytes, start, keys[k]!)) return k;
+    if (keys[k]!.length === end - start && written(bytes, start, keys[k]!)) return k;
   }
   return -1;
 }
@@ -225,12 +252,15 @@ function which(bytes: Uint8Array, start: number, end: number, keys: Uint8Array[]
  */
 export function trimPackument(bytes: Uint8Array): Uint8Array | undefined {
   const root: ([number, number, number] | undefined)[] = [];
+  let manifest = false;
   const whole = members(bytes, 0, (start, keyEnd, value, end) => {
     const k = which(bytes, start, keyEnd, ROOT);
     if (k >= 0) root[k] ??= [start, value, end];
+    else manifest ||= which(bytes, start, keyEnd, DIST) === 0;
   });
+  // A version's own route has a `dist`, and may have a field called `versions` too.
   const versions = root[3];
-  if (!whole || !versions || bytes[versions[1]] !== OPEN) return undefined;
+  if (!whole || manifest || !root[1] || !versions || bytes[versions[1]] !== OPEN) return undefined;
   const parts: Uint8Array[] = [OPEN_TEXT];
   let ok = true;
   for (const found of root) {

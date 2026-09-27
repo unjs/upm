@@ -89,7 +89,10 @@ export type CacheMode = "revalidate" | "prefer" | "only";
 export interface Kept {
   bytes: Uint8Array;
   etag?: string;
-  /** When the registry last sent it or said it had not changed, in epoch ms. */
+  /**
+   * When the registry's copy was current, in epoch ms: when it last sent the document or said
+   * it had not changed, less the `age` a cache in front of it gave.
+   */
   at: number;
   /** Seconds it stays fresh from `at`, as the registry said. */
   maxAge?: number;
@@ -102,9 +105,10 @@ export interface Kept {
 export interface DocumentCache {
   mode: CacheMode;
   get(key: string): Kept | undefined;
-  set(key: string, bytes: Uint8Array, etag?: string, maxAge?: number): void;
-  /** The registry said it has not changed: fresh again. */
-  touch(key: string): void;
+  /** `at` as `Kept` has it. */
+  set(key: string, bytes: Uint8Array, at: number, etag?: string, maxAge?: number): void;
+  /** The registry said it has not changed: current as of `at`. */
+  touch(key: string, at: number): void;
 }
 
 export interface Registry {
@@ -215,6 +219,8 @@ export function createRegistry(options: RegistryOptions = {}): Registry {
   /** Names answered from a kept document without asking; and those asked about since. */
   const unasked = new Set<string>();
   const rechecked = new Set<string>();
+  /** Requests a kept document answered unasked in this run, by key. */
+  const served = new Set<string>();
 
   /**
    * The kept document for a request, and whether it answers without one. When it does not, its
@@ -250,13 +256,17 @@ export function createRegistry(options: RegistryOptions = {}): Registry {
     if (!cache || /no-store/i.test(control)) return;
     const maxAge = /max-age=(\d+)/i.exec(control)?.[1];
     const etag = response.headers.get("etag") ?? undefined;
-    cache.set(keyOf(url, accept), bytes, etag, maxAge === undefined ? undefined : +maxAge);
+    const age = maxAge === undefined ? undefined : +maxAge;
+    cache.set(keyOf(url, accept), bytes, currentAt(response), etag, age);
   }
 
   /** The response body, retried and validated as `get` says. */
-  async function get(name: string, url: string, accept: string): Promise<Uint8Array> {
+  async function get(name: string, url: string, accept: string, ask = false): Promise<Uint8Array> {
     const { doc, use } = kept(name, url, accept);
-    if (use) return doc!.bytes;
+    if (use && !ask) {
+      served.add(keyOf(url, accept));
+      return doc!.bytes;
+    }
     if (cache?.mode === "only") throw offline(name);
     return await limit(async (signal) => {
       let last: unknown;
@@ -283,7 +293,7 @@ export function createRegistry(options: RegistryOptions = {}): Registry {
           continue;
         }
         if (response.status === 304 && doc) {
-          cache!.touch(keyOf(url, accept));
+          cache!.touch(keyOf(url, accept), currentAt(response));
           return doc.bytes;
         }
         if (response.ok) {
@@ -364,7 +374,7 @@ export function createRegistry(options: RegistryOptions = {}): Registry {
         clearTimeout(late);
       }
       if (response.status === 304 && doc) {
-        cache!.touch(keyOf(url, accept));
+        cache!.touch(keyOf(url, accept), currentAt(response));
         return hit();
       }
       if (!response.ok && isThrottle(response.status)) signal.throttled();
@@ -515,13 +525,32 @@ export function createRegistry(options: RegistryOptions = {}): Registry {
     const doc = await corgi(name);
     if (before === undefined || excluded(name)) return doc;
     if (Date.parse(doc.modified() ?? "") <= before) return doc;
-    const found = await memo(times, name, () => loadTimes(name));
-    return found ? parsedView(asOf(doc.whole(), found, before)) : doc;
+    const whole = doc.whole();
+    const versions = Object.keys(whole.versions ?? {});
+    const found = await memo(times, name, () => loadTimes(name, versions));
+    return found ? parsedView(asOf(whole, found, before)) : doc;
   }
 
-  async function loadTimes(name: string): Promise<Record<string, string> | undefined> {
-    const bytes = await get(name, path(name), FULL);
-    return pluckTimes(bytes) ?? parseJSON<Packument>(decode(bytes), path(name)).time;
+  /** Publish dates for `versions`, from the full document. */
+  async function loadTimes(
+    name: string,
+    versions: string[],
+  ): Promise<Record<string, string> | undefined> {
+    const url = path(name);
+    const read = (bytes: Uint8Array) =>
+      pluckTimes(bytes) ?? parseJSON<Packument>(decode(bytes), url).time;
+    const found = read(await get(name, url, FULL));
+    const dated = versions.every((v) => found?.[v]);
+    if (!found || dated || !served.has(keyOf(url, FULL))) return found;
+    // Kept from before the abbreviated document was, it lacks the newest dates: ask.
+    try {
+      return read(await get(name, url, FULL, true));
+    } catch (error) {
+      if ((error as { code?: string }).code !== "EOFFLINE") throw error;
+    }
+    // Offline, a version without a date is taken as too new: it was published since.
+    const now = new Date().toISOString();
+    return Object.fromEntries(versions.map((v) => [v, found[v] ?? now]));
   }
 
   const view = (name: string) =>
@@ -561,6 +590,12 @@ export function createRegistry(options: RegistryOptions = {}): Registry {
     pinned: (name, version) => loadPinned(name, version),
     pick,
   };
+}
+
+/** When a response's document was current: now, less the time a CDN has held its copy. */
+function currentAt(response: Response): number {
+  const age = Number(response.headers.get("age"));
+  return Date.now() - (Number.isFinite(age) && age > 0 ? age * 1000 : 0);
 }
 
 /** A kept document for a request, whether it answers unasked, and whether it is the full form. */

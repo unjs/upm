@@ -1,4 +1,5 @@
 // Registry documents kept on disk: revalidated, preferred, or the only source offline.
+import { Buffer } from "node:buffer";
 import { mkdtemp, readdir, readFile, rm, utimes, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import type { Server } from "node:http";
@@ -36,6 +37,8 @@ let dir: string;
 let server: Server;
 let doc: Packument;
 let control: string;
+/** The `age` header a CDN in front of the registry would add, if any. */
+let age: string | undefined;
 /** Each request, as `status url`. */
 let log: string[];
 
@@ -43,6 +46,7 @@ beforeEach(async () => {
   dir = await mkdtemp(join(tmpdir(), "upm-metadata-"));
   doc = packument("1.0.0");
   control = "public, max-age=0";
+  age = undefined;
   log = [];
   server = createServer((request, response) => {
     const url = request.url ?? "";
@@ -50,7 +54,11 @@ beforeEach(async () => {
     const etag = body && `"${body.length}-${doc["dist-tags"]!.latest}"`;
     const status = !body ? 404 : request.headers["if-none-match"] === etag ? 304 : 200;
     log.push(`${status} ${url}`);
-    const headers = { "content-type": "application/json", "cache-control": control };
+    const headers = {
+      "content-type": "application/json",
+      "cache-control": control,
+      ...(age && { age }),
+    };
     response.writeHead(status, etag ? { ...headers, etag } : headers);
     response.end(status === 200 ? body : undefined);
   });
@@ -76,6 +84,14 @@ const pick = async (mode: CacheMode, spec: string, options?: RegistryOptions) =>
 /** Where the abbreviated `foo` is kept. */
 const corgiFile = () => join(dir, "metadata", `127.0.0.1+${new URL(base()).port}`, "foo", "_corgi");
 const encode = (value: unknown) => new TextEncoder().encode(JSON.stringify(value));
+
+/** Say a kept document's copy was current at `at`, as a run then would have kept it. */
+async function backdate(file: string, at: number) {
+  const bytes = await readFile(file);
+  const end = bytes.indexOf(10);
+  const head = { ...JSON.parse(bytes.subarray(0, end).toString()), at };
+  await writeFile(file, Buffer.concat([Buffer.from(JSON.stringify(head)), bytes.subarray(end)]));
+}
 
 describe("kept registry documents", () => {
   it("revalidates a stale document with its ETag, and asks nothing while it is fresh", async () => {
@@ -128,8 +144,7 @@ describe("kept registry documents", () => {
     expect(log).toEqual(["200 /foo"]); // max-age=0, but nothing newer could be picked
     // Read before the cutoff, or for a name the cutoff skips, it is asked about.
     expect(await pick("revalidate", "foo@^1", { before, exclude: ["foo"] })).toBe("1.0.0");
-    const old = new Date(before - DAY);
-    await utimes(corgiFile(), old, old);
+    await backdate(corgiFile(), before - DAY);
     expect(await pick("revalidate", "foo@^1", { before })).toBe("1.0.0");
     expect(log).toEqual(["200 /foo", "304 /foo", "304 /foo"]);
     // A version too young to pick is not missed; a pin, which the cutoff never filters, asks once.
@@ -138,6 +153,46 @@ describe("kept registry documents", () => {
     const pinned = await run("revalidate", { before }).pick!(parseSpec("foo@1.1.0"), "1.1.0");
     expect(pinned.version).toBe("1.1.0");
     expect(log).toEqual(["200 /foo", "304 /foo", "304 /foo", "404 /foo/1.1.0", "200 /foo"]);
+  });
+
+  it("dates a document by when the registry's copy was current, not by its file", async () => {
+    control = "max-age=300";
+    age = "200";
+    await pick("revalidate", "foo@^1");
+    const cache = createDocumentCache({ dir: join(dir, "metadata"), mode: "only" });
+    const kept = () => cache.get(`corgi ${base()}/foo`)!;
+    expect(Date.now() - kept().at).toBeGreaterThanOrEqual(200_000);
+    // A copied store's files are all new; their heads still say how old each document is.
+    await backdate(corgiFile(), Date.now() - 400_000);
+    await utimes(corgiFile(), new Date(), new Date());
+    expect(await pick("revalidate", "foo@^1")).toBe("1.0.0");
+    expect(log).toEqual(["200 /foo", "304 /foo"]);
+    // A 304 rewrites the date where it is, and nothing else.
+    expect(Date.now() - kept().at).toBeLessThan(250_000);
+    expect(JSON.parse(new TextDecoder().decode(kept().bytes))).toEqual(doc);
+    expect(await pick("revalidate", "foo@^1")).toBe("1.0.0"); // fresh again: not asked
+    expect(log).toEqual(["200 /foo", "304 /foo"]);
+  });
+
+  it("asks for publish dates again when the kept ones miss a version", async () => {
+    const before = Date.now() - DAY;
+    const old = new Date(before - DAY).toISOString();
+    const young = new Date(Date.now() - DAY / 12).toISOString();
+    const dated = (...times: [string, string][]): Packument => ({
+      ...packument(...times.map(([version]) => version)),
+      modified: times.at(-1)![1],
+      time: Object.fromEntries(times),
+    });
+    // Kept by earlier runs: the abbreviated document before the cutoff, the full one since.
+    const cache = createDocumentCache({ dir: join(dir, "metadata"), mode: "only" });
+    cache.set(`corgi ${base()}/foo`, encode(dated(["1.0.0", old])), before - DAY);
+    cache.set(`full ${base()}/foo`, encode(dated(["1.0.0", old])), Date.now());
+    doc = dated(["1.0.0", old], ["1.1.0", young]);
+    expect(await pick("revalidate", "foo@^1", { before })).toBe("1.0.0"); // 1.1.0 is too young
+    expect(log).toEqual(["200 /foo", "200 /foo"]);
+    // Offline, a version the kept dates miss is too young too.
+    cache.set(`full ${base()}/foo`, encode(dated(["1.0.0", old])), Date.now());
+    expect(await pick("only", "foo@^1", { before })).toBe("1.0.0");
   });
 
   it("revalidates for a tag written out, unless told to prefer what is kept", async () => {
@@ -155,7 +210,7 @@ describe("kept registry documents", () => {
 
   it("answers for the abbreviated document from a kept full one", async () => {
     const full = createDocumentCache({ dir: join(dir, "metadata"), mode: "only" });
-    full.set(`full ${base()}/foo`, encode(doc), undefined, 300);
+    full.set(`full ${base()}/foo`, encode(doc), Date.now(), undefined, 300);
     expect(await pick("only", "foo@^1")).toBe("1.0.0");
     expect(await pick("revalidate", "foo@^1")).toBe("1.0.0"); // fresh
     expect(log).toEqual([]);
@@ -179,6 +234,7 @@ describe("kept registry documents", () => {
     const bytes = await readFile(corgiFile());
     const end = bytes.indexOf(10);
     expect(JSON.parse(bytes.subarray(0, end).toString())).toEqual({
+      at: expect.any(Number),
       key: `corgi ${base()}/foo`,
       etag: expect.any(String),
       maxAge: 0,
@@ -189,7 +245,7 @@ describe("kept registry documents", () => {
   it("keeps a url it cannot spell as a path under its hash", async () => {
     const cache = createDocumentCache({ dir: join(dir, "metadata"), mode: "only" });
     for (const url of ["http://x.test/%7Efoo", "http://x.test/a/../foo", "http://[::1]:8/foo"]) {
-      cache.set(`corgi ${url}`, encode(doc));
+      cache.set(`corgi ${url}`, encode(doc), Date.now());
       expect(new TextDecoder().decode(cache.get(`corgi ${url}`)!.bytes)).toBe(JSON.stringify(doc));
     }
     expect(await readdir(join(dir, "metadata"))).toEqual(["_", "x.test"]);
@@ -197,7 +253,7 @@ describe("kept registry documents", () => {
 
   it("keeps nothing the registry says not to store, nor what is not a document", async () => {
     const cache = createDocumentCache({ dir: join(dir, "metadata"), mode: "only" });
-    cache.set("corgi http://x.test/foo", new TextEncoder().encode("<html>portal</html>"));
+    cache.set("corgi http://x.test/foo", new TextEncoder().encode("<html>portal</html>"), 0);
     expect(cache.get("corgi http://x.test/foo")).toBeUndefined();
     control = "no-store";
     await pick("revalidate", "foo@^1");
@@ -294,9 +350,14 @@ describe("trimPackument", () => {
 
   it("keeps nothing it cannot read as a packument", () => {
     expect(trimPackument(bytes(entry("1.0.0")))).toBeUndefined(); // a version's route
+    // One whose package.json has fields called `versions` and `dist-tags`, all the same.
+    const odd = entry("1.0.0", { versions: {}, "dist-tags": {} });
+    expect(trimPackument(bytes(odd))).toBeUndefined();
     expect(trimPackument(bytes('{"versions":{"1.0.0":{"name":"foo"'))).toBeUndefined();
     expect(trimPackument(bytes('{"versions":[]}'))).toBeUndefined();
     expect(trimPackument(bytes("<html></html>"))).toBeUndefined();
-    expect(trim({ name: "foo", versions: {} })).toEqual({ name: "foo", versions: {} });
+    expect(trimPackument(bytes({ name: "foo", versions: {} }))).toBeUndefined(); // no tags
+    const empty = { name: "foo", "dist-tags": {}, versions: {} };
+    expect(trim(empty)).toEqual(empty);
   });
 });

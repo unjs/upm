@@ -294,6 +294,19 @@ describe("optional dependencies", () => {
     expect(out.warnings[0]).toContain("No matching version found");
   });
 
+  it("fails an optional dep it could not ask the registry for, offline", async () => {
+    const { registry } = fake({ a: { "1.0.0": {} } });
+    const packument = registry.packument;
+    registry.packument = async (name) => {
+      if (name !== "opt") return await packument(name);
+      throw Object.assign(new Error("offline: cannot ask the registry for opt"), {
+        code: "EOFFLINE",
+      });
+    };
+    const root = { dependencies: { a: "^1" }, optionalDependencies: { opt: "^1" } };
+    await expect(resolveTree(root, { registry })).rejects.toMatchObject({ code: "EOFFLINE" });
+  });
+
   it("rejects when a required dep 404s", async () => {
     await expect(resolve({}, { dependencies: { gone: "^1" } })).rejects.toMatchObject({
       code: "E404",

@@ -482,7 +482,9 @@ export async function resolveTree(
       await walked;
       edges.get(from)?.push({ name: spec.name, version: m.version, optional });
     } catch (error) {
-      if (!optional) throw context(error, name, range, from);
+      // Offline, a skipped optional would be locked out for good, where online it is fetched.
+      const offline = (error as { code?: string }).code === "EOFFLINE";
+      if (!optional || offline) throw context(error, name, range, from);
       warnings.add(`skipped optional ${name}@${range} of ${from || "root"}: ${reason(error)}`);
     }
   }
