@@ -226,7 +226,8 @@ for r in $RUNNERS; do
   runner_resolve "$r" >"$LOGDIR/$r-resolve.log" 2>&1 || die "runner $r did not resolve, see $LOGDIR/$r-resolve.log"
   PACKED[$r]="$(runner_packed_bytes "$r" 2>/dev/null)"
   # upm has no --version; its build above is its check.
-  [ "$r" = upm ] || { runner_cmd "$r" && "${CMD[@]}" --version >>"$LOGDIR/$r-resolve.log" 2>&1; } \
+  # From $WORK, since a manager may refuse the repo's own packageManager field.
+  [ "$r" = upm ] || { runner_cmd "$r" && ( cd "$WORK" && "${CMD[@]}" --version ) >>"$LOGDIR/$r-resolve.log" 2>&1; } \
     || die "runner $r is not usable here, see $LOGDIR/$r-resolve.log"
   echo "  $r $(runner_version "$r")  ${RUNNER_ENTRY[$r]}"
 done
