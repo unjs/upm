@@ -17,7 +17,7 @@ import type { ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { fromShasum } from "../src/integrity.ts";
 import { hashOf } from "./hash.ts";
 import { createStore } from "../src/store.ts";
@@ -163,6 +163,10 @@ describe("createStore", () => {
       return new Response(tarballs[url] as unknown as BodyInit);
     }) as typeof globalThis.fetch;
     const store = createStore({ dir, fetch: throttling, workers: 0 });
+    // The gate may grow again a second after the last 429. A slow runner can take that long
+    // over the first batch, so the clock stands still here.
+    const now = vi.spyOn(Date, "now").mockReturnValue(Date.now());
+    onTestFinished(() => now.mockRestore());
 
     const add = (url: string) => store.add(url, hashOf(tarballs[url] as Uint8Array));
     await Promise.all(Object.keys(tarballs).slice(0, 20).map(add));

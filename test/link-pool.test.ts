@@ -241,9 +241,11 @@ describe("link pool", () => {
   it("terminates a thread that never speaks and goes on with the ones that did", async () => {
     const { store, resolution } = await seed([{ name: "big", files: bigFiles() }, ...TREE]);
     const terminate = vi.spyOn(Worker.prototype, "terminate");
-    // The first thread to load is the silent one; the other must be up before the timer.
-    const pool = flaky(2, { mute: root, bootMs: 500 });
-    const until = Date.now() + 5000;
+    // The first thread to load is the silent one; the other must be up before the timer,
+    // which a slow Windows runner can take past half a second to do.
+    const bootMs = process.platform === "win32" ? 3000 : 500;
+    const pool = flaky(2, { mute: root, bootMs });
+    const until = Date.now() + bootMs + 4500;
     while (terminate.mock.calls.length === 0 && Date.now() < until) {
       await new Promise((resolve) => setTimeout(resolve, 10));
     }

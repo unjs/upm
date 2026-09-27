@@ -370,7 +370,8 @@ describe("createPool", () => {
 
 // A 6 MiB tarball of 900 files takes seconds to write on Windows. Its 6 MiB file is spooled
 // while it inflates, so the rest must still be worth two parts.
-describe("createPool with a big tarball", { timeout: 20_000 }, () => {
+const timeout = process.platform === "win32" ? 60_000 : 20_000;
+describe("createPool with a big tarball", { timeout }, () => {
   it("shards it across threads and writes exactly what this thread would", async () => {
     const tarball = hugeTarball("shard");
     const alone = await createWriter(join(dir, "alone")).unpack(hashOf(tarball), [tarball], false);
