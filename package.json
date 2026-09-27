@@ -44,5 +44,6 @@
     "oxlint": "latest",
     "typescript": "latest",
     "vitest": "latest"
-  }
+  },
+  "packageManager": "upm@^1.0.1"
 }
