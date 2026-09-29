@@ -1038,7 +1038,7 @@ describe("startup budget", () => {
     // Re-measure startup before raising this budget. Pools should load only when used.
     // 138,791 minified bytes over 27 modules when the count moved from source bytes (437,989);
     // 141,619 with the registry's version index and the lockfile kept in node_modules,
-    // `--help` unchanged cached and uncached (40/41 and 106/106 ms); 142,306 with the progress
+    // `--help` unchanged cached and uncached (40/41 and 106/106 ms); 142,074 with the progress
     // hooks and `--no-progress`, the bar itself lazy, `--help` unchanged (50/47 and 122/121 ms).
     const modules = await reachable();
     const bytes = [...modules.values()].reduce((total, size) => total + size, 0);
