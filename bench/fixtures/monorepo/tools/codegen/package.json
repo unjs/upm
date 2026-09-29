@@ -1,0 +1,10 @@
+{
+  "name": "@acme/codegen",
+  "version": "0.0.0",
+  "private": true,
+  "dependencies": {
+    "@acme/schemas": "*",
+    "handlebars": "4.7.9",
+    "ts-morph": "28.0.0"
+  }
+}

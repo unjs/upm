@@ -1,0 +1,16 @@
+{
+  "name": "@acme/worker",
+  "version": "0.0.0",
+  "private": true,
+  "dependencies": {
+    "@acme/cache": "*",
+    "@acme/db": "*",
+    "@acme/logger": "*",
+    "bullmq": "6.3.3",
+    "ioredis": "6.0.0"
+  },
+  "devDependencies": {
+    "@acme/tsconfig": "*",
+    "tsx": "4.23.13"
+  }
+}

@@ -139,7 +139,7 @@ reset_project() {
   local proj="$1" fixture="$2"
   rm -rf "$proj"
   mkdir -p "$proj"
-  cp "$HERE/fixtures/$fixture/package.json" "$proj/package.json"
+  cp -R "$HERE/fixtures/$fixture/." "$proj/" # a monorepo's workspaces too
 }
 
 # One timed install. Echoes "<ms> <ok> <tree rss bytes> <process rss bytes> <user us> <sys us>".
@@ -242,7 +242,7 @@ sample() { # runner fixture phase iter
   local ms ok rss one user sys bytes pkgs
   case "$phase" in
     cold) reset_project "$proj" "$fixture"; rm -rf "$cache"; mkdir -p "$cache" ;;
-    warm) rm -rf "$proj/node_modules" ;;
+    warm) find "$proj" -name node_modules -prune -exec rm -rf {} + ;; # a workspace's too
   esac
   read -r ms ok rss one user sys <<<"$(timed_install "$runner" "$proj" "$cache" "$log" "$pair/usage")"
   read -r bytes pkgs <<<"$(tree_stats "$proj")"

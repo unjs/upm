@@ -1,0 +1,17 @@
+{
+  "name": "@acme/storybook",
+  "version": "0.0.0",
+  "private": true,
+  "devDependencies": {
+    "@acme/ui-button": "*",
+    "@acme/ui-card": "*",
+    "@acme/ui-dialog": "*",
+    "@acme/ui-icons": "*",
+    "@acme/ui-theme": "*",
+    "@storybook/react-vite": "10.5.10",
+    "react": "19.2.8",
+    "react-dom": "19.2.8",
+    "storybook": "10.5.10",
+    "vite": "8.2.2"
+  }
+}

@@ -1,0 +1,18 @@
+{
+  "name": "@acme/ui-dialog",
+  "version": "0.0.0",
+  "private": true,
+  "dependencies": {
+    "@acme/ui-theme": "*",
+    "@radix-ui/react-dialog": "1.1.23",
+    "clsx": "2.1.1"
+  },
+  "devDependencies": {
+    "@acme/tsconfig": "*",
+    "@types/react": "19.2.18",
+    "react": "19.2.8"
+  },
+  "peerDependencies": {
+    "react": "^19.0.0"
+  }
+}

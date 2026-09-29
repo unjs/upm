@@ -1,0 +1,31 @@
+{
+  "name": "@acme/admin",
+  "version": "0.0.0",
+  "private": true,
+  "dependencies": {
+    "@acme/feature-admin-tools": "*",
+    "@acme/feature-audit": "*",
+    "@acme/feature-calendar": "*",
+    "@acme/feature-catalog": "*",
+    "@acme/feature-chat": "*",
+    "@acme/feature-files": "*",
+    "@acme/feature-flags": "*",
+    "@acme/feature-i18n": "*",
+    "@acme/feature-reports": "*",
+    "@acme/feature-reviews": "*",
+    "@acme/schemas": "*",
+    "@acme/ui-dialog": "*",
+    "@acme/ui-theme": "*",
+    "@tanstack/react-query": "5.102.8",
+    "react": "19.2.8",
+    "react-dom": "19.2.8",
+    "react-router-dom": "7.18.3"
+  },
+  "devDependencies": {
+    "@acme/tsconfig": "*",
+    "@types/react": "19.2.18",
+    "@types/react-dom": "19.2.5",
+    "@vitejs/plugin-react": "6.1.1",
+    "vite": "8.2.2"
+  }
+}

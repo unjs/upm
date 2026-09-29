@@ -1,0 +1,11 @@
+{
+  "name": "@acme/docs",
+  "version": "0.0.0",
+  "private": true,
+  "dependencies": {
+    "vue": "3.5.42"
+  },
+  "devDependencies": {
+    "vitepress": "1.6.4"
+  }
+}

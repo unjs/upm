@@ -1,0 +1,18 @@
+{
+  "name": "@acme/ui-button",
+  "version": "0.0.0",
+  "private": true,
+  "dependencies": {
+    "@acme/ui-theme": "*",
+    "class-variance-authority": "0.7.1",
+    "clsx": "2.1.1"
+  },
+  "devDependencies": {
+    "@acme/tsconfig": "*",
+    "@types/react": "19.2.18",
+    "react": "19.2.8"
+  },
+  "peerDependencies": {
+    "react": "^19.0.0"
+  }
+}
