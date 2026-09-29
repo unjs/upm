@@ -723,7 +723,7 @@ async function restoreLock(ctx: Context, project: Project, state?: InstallState)
   }
   await writeLockfile(dir, text);
   ctx.source = { path: source.path };
-  ctx.log(`✎ ${LOCKFILE} ← node_modules`, "info");
+  ctx.log(`wrote ${LOCKFILE} ← node_modules`, "info");
 }
 
 /**
@@ -1403,7 +1403,7 @@ async function resolveLock(
     if (dropped > 0) log(`dropped ${dropped} packages`, "info");
   }
   await writeLockfile(dir, lock);
-  log(`✎ ${LOCKFILE} · ${counts(lock)}`, "info");
+  log(`wrote ${LOCKFILE} · ${counts(lock)}`, "info");
   return lock;
 }
 
@@ -1450,7 +1450,7 @@ export async function lock(options: LockOptions = {}): Promise<Lockfile> {
     return lock;
   }
   await writeLockfile(dir, lock);
-  ctx.log(`✎ ${LOCKFILE} · ${counts(lock)}`, "info");
+  ctx.log(`wrote ${LOCKFILE} · ${counts(lock)}`, "info");
   return lock;
 }
 

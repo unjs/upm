@@ -312,7 +312,7 @@ describe("api", () => {
       server.on("request", (request) => void requests.push(request.url ?? ""));
     });
     /** The install resolved: the lockfile was written from a walk, not taken from the tree. */
-    const resolved = () => lines.some((line) => line.startsWith("✎ upm.lock · "));
+    const resolved = () => lines.some((line) => line.startsWith("wrote upm.lock · "));
 
     it("takes the tree's lockfile back, with no store and no registry, while package.json matches", async () => {
       await writeFile(join(dir, "package.json"), '{"name":"demo","dependencies":{"nanoid":"^5"}}');
@@ -327,7 +327,7 @@ describe("api", () => {
       expect(await upm.install(base)).toMatchObject({ packages: 1, upToDate: true });
       expect(requests).toEqual([]);
       expect(await readFile(lockFile(), "utf8")).toBe(text);
-      expect(lines).toContain("✎ upm.lock ← node_modules");
+      expect(lines).toContain("wrote upm.lock ← node_modules");
       // Written back, it is the lockfile again: the next install is the ordinary no-op.
       expect((await upm.install(base)).upToDate).toBe(true);
 
@@ -514,7 +514,7 @@ describe("api", () => {
     await writeFile(join(dir, "package.json"), JSON.stringify({ dependencies: { nanoid: "^5" } }));
     const seen: [string, upm.LogLevel][] = [];
     await upm.lock({ ...base, log: (message, level) => seen.push([message, level]) });
-    expect(seen.at(-1)).toEqual(["✎ upm.lock · 1 pkgs", "info"]);
+    expect(seen.at(-1)).toEqual(["wrote upm.lock · 1 pkgs", "info"]);
   });
 
   it("lists and runs scripts, in workspace order", async () => {
