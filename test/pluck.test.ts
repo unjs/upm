@@ -51,8 +51,8 @@ describe("indexVersions", () => {
     expect(indexVersions(bytes({ versions: { "1.0.0-ü": {} } }))).toBeUndefined();
     expect(indexVersions(bytes({ versions: { "1.0.0": {} } }))).toEqual(["1.0.0", 21, 23]);
     expect(indexVersions(bytes({ name: "foo", versions: {} }))).toEqual([]);
-    // One `versions` at the top is read; a second is skipped by structure, not taken.
-    expect(indexVersions(bytes('{"versions":{},"versions":{"1.0.0":{}}}'))).toEqual([]);
+    // Nor two `versions` at the top, of which `JSON.parse` would keep the second.
+    expect(indexVersions(bytes('{"versions":{},"versions":{"1.0.0":{}}}'))).toBeUndefined();
   });
 
   it("is not fooled by the version in strings, in a dependency map or in peer meta", () => {

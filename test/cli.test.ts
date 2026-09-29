@@ -1030,7 +1030,7 @@ describe("startup budget", () => {
     // Without a compile-cache hit, every reachable source module needs type stripping.
     // Re-measure startup before raising this budget. Pools should load only when used.
     // 138,791 minified bytes over 27 modules when the count moved from source bytes (437,989);
-    // 140,537 with the registry's version index, `--help` unchanged cached and uncached.
+    // 140,499 with the registry's version index, `--help` unchanged cached and uncached.
     const modules = await reachable();
     const bytes = [...modules.values()].reduce((total, size) => total + size, 0);
     expect(modules.size).toBeLessThanOrEqual(27); // `upm.ts` is the bin, `cli.ts` the program

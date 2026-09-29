@@ -160,10 +160,12 @@ export function createDocumentCache(options: MetadataOptions): DocumentCache {
   /**
    * A new `at`, written over the old digits: one small write, not the document again. The head
    * is the one `set` wrote when it starts `{"at":<13 digits>,"key":<key>`: the index after it
-   * may be far longer than what is read here.
+   * may be far longer than what is read here. A head short enough to read whole and with no
+   * index is from before heads had one: the file is written again, once, with its own index.
    */
   function touch(key: string, at: number): void {
     let fd: number | undefined;
+    let old = false;
     try {
       fd = fs.openSync(fileOf(key), "r+");
       const bytes = new Uint8Array(HEAD_MAX);
@@ -178,11 +180,16 @@ export function createDocumentCache(options: MetadataOptions): DocumentCache {
         (bytes[after] === COMMA || bytes[after] === CLOSE);
       if (!ours || !at13(stamp(at))) return;
       fs.writeSync(fd, encoder.encode(`${stamp(at)}`), 0, 13, AT);
+      const head = parseHead(bytes.subarray(0, read), key);
+      old = head !== undefined && head.index === undefined;
     } catch {
       // As with `set`.
     } finally {
       if (fd !== undefined) fs.closeSync(fd);
     }
+    const kept = old ? get(key) : undefined;
+    const index = kept && indexVersions(kept.bytes);
+    if (index) set(key, kept!.bytes, kept!.at, kept!.etag, kept!.maxAge, index);
   }
 
   return { mode, get, set, touch };

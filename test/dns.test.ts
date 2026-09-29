@@ -246,6 +246,20 @@ describe("cacheLookups", () => {
     expect(await dispatcherOf(fetching)).toBeUndefined();
   });
 
+  it("sends no probe off Node, where there is no undici to find", async () => {
+    global[DISPATCHER] = undefined;
+    const bare = Object.create(process, { getBuiltinModule: { value: undefined } });
+    vi.stubGlobal("process", bare);
+    const { fetching } = await fresh();
+    vi.unstubAllGlobals();
+    const spy = vi.fn(
+      async (_input: string | URL | Request, _init?: RequestInit) => new Response(""),
+    );
+    vi.stubGlobal("fetch", spy);
+    await fetching()("https://example.test/");
+    expect(spy.mock.calls.map(([input]) => String(input))).toEqual(["https://example.test/"]);
+  });
+
   it("does nothing without fetch", async () => {
     vi.stubGlobal("fetch", undefined);
     global[DISPATCHER] = undefined;

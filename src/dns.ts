@@ -8,6 +8,7 @@
 // touched. Node only; nothing here for a runtime without `fetch`'s dispatcher.
 import type { LookupAddress } from "node:dns";
 import { builtin } from "./builtin.ts";
+import { hasNode } from "./runtime.ts";
 
 interface LookupOptions {
   family?: number;
@@ -105,7 +106,8 @@ export function fetching(): typeof fetch {
  */
 async function install(): Promise<void> {
   const global = globalThis as unknown as Record<symbol, object | undefined>;
-  if (typeof fetch !== "function" || global[DISPATCHER]) return;
+  // Off Node there is no undici to find, and a page's `connect-src` would see the probe.
+  if (!hasNode || typeof fetch !== "function" || global[DISPATCHER]) return;
   // undici makes its default agent on the first fetch; a `data:` url is one that goes nowhere.
   await fetch("data:,");
   const made = global[DISPATCHER] as object | undefined;

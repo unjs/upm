@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { createRegistry, registryBase } from "../src/registry.ts";
 import { resolveTree } from "../src/resolve.ts";
+import { parseSpec } from "../src/spec.ts";
 import type { Manifest, Packument } from "../src/types.ts";
 
 const CORGI = "application/vnd.npm.install-v1+json; q=1.0, application/json; q=0.8, */*";
@@ -224,6 +225,36 @@ describe("createRegistry", () => {
 
     expect(calls).toBe(1);
     expect(new Set(results).size).toBe(1);
+  });
+});
+
+describe("pick over a document's text", () => {
+  const entry = (version: string) =>
+    JSON.stringify({ name: "foo", version, dist: { tarball: `${REGISTRY}/foo-${version}.tgz` } });
+
+  it("answers as the whole parse does when the registry wrote `versions` twice", async () => {
+    // `JSON.parse` keeps the second; an index of the first would call 1.1.0 missing.
+    const text = `{"name":"foo","dist-tags":{"latest":"1.0.0"},"versions":{"1.0.0":${entry("1.0.0")}},"versions":{"1.0.0":${entry("1.0.0")},"1.1.0":${entry("1.1.0")}}}`;
+    const s = stub((call) =>
+      call.url.endsWith("/foo") ? new Response(text) : new Response("", { status: 404 }),
+    );
+    const registry = createRegistry({ registry: REGISTRY, fetch: s.fetch });
+    expect((await registry.pick!(parseSpec("foo@1.1.0"))).version).toBe("1.1.0");
+    expect((await registry.pick!(parseSpec("foo@>1.0.0"))).version).toBe("1.1.0");
+  });
+
+  it("parses only the manifests a range reads, and fails on one it cannot", async () => {
+    const pick = (text: string, spec: string) =>
+      createRegistry({ registry: REGISTRY, fetch: stub(() => new Response(text)).fetch }).pick!(
+        parseSpec(spec),
+      );
+    // An older version no pick reads goes unparsed, so its damage goes unseen.
+    const old = `{"name":"foo","dist-tags":{},"versions":{"1.0.0":{oops},"1.1.0":${entry("1.1.0")}}}`;
+    expect((await pick(old, "foo@^1")).version).toBe("1.1.0");
+    // The one a pick wants is an error, never the next one down.
+    const wanted = `{"name":"foo","dist-tags":{},"versions":{"1.0.0":${entry("1.0.0")},"1.1.0":{oops}}}`;
+    expect(await codeOf(pick(wanted, "foo@^1"))).toBe("EJSONPARSE");
+    expect((await pick(wanted, "foo@~1.0")).version).toBe("1.0.0");
   });
 });
 

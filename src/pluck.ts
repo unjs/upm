@@ -119,16 +119,17 @@ const VERSIONS = encoder.encode('"versions"');
 
 /**
  * The versions of a packument, found by structure in one pass. Undefined when there is no
- * `versions` object of objects, or a key is escaped, not plain ASCII or there twice (`JSON.parse`
- * keeps the last of two): the caller then parses whole.
+ * `versions` object of objects, or it or a key in it is escaped, not plain ASCII or there twice
+ * (`JSON.parse` keeps the last of two): the caller then parses whole.
  */
 export function indexVersions(bytes: Uint8Array): VersionIndex | undefined {
   let index: VersionIndex | undefined;
   let ok = true;
   const root = members(bytes, 0, (start, keyEnd, value) => {
-    if (index || keyEnd - start !== VERSIONS.length || !at(bytes, start, VERSIONS)) {
+    if (keyEnd - start !== VERSIONS.length || !at(bytes, start, VERSIONS)) {
       return valueEnd(bytes, value);
     }
+    if (index) ok = false;
     const found: VersionIndex = (index = []);
     const seen = new Set<string>();
     return members(bytes, value, (from, to, manifest) => {

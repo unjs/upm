@@ -1,5 +1,5 @@
 // Read-only npm registry client: packuments and single manifests, memoized per request.
-import { fetching } from "./dns.ts";
+import { cacheLookups, fetching } from "./dns.ts";
 import { createAdaptiveLimiter, isThrottle, retryAfter } from "./limit.ts";
 import { pickManifest, viewAsOf } from "./pick.ts";
 import type { PackumentView, PickOptions } from "./pick.ts";
@@ -276,16 +276,12 @@ export function createRegistry(options: RegistryOptions = {}): Registry {
   }
 
   /**
-   * The registry says a kept document has not changed: current as of now. One kept before
-   * documents had an index is written again with one, once.
+   * The fetch machinery (~25 ms), loaded before a request is gated or timed, so neither the
+   * gate's latency nor a peek's `LATE_MS` counts it; a run that asks nothing never loads it.
    */
-  function unchanged(url: string, accept: string, response: Response, doc: Kept): Body {
-    const key = keyOf(url, accept);
-    const index = doc.index ?? (accept === CORGI ? indexVersions(doc.bytes) : undefined);
-    if (doc.index || !index) cache!.touch(key, currentAt(response));
-    else cache!.set(key, doc.bytes, currentAt(response), doc.etag, doc.maxAge, index);
-    return { bytes: doc.bytes, index };
-  }
+  const ready = async () => {
+    if (!options.fetch) await cacheLookups();
+  };
 
   /** The response body, retried and validated as `get` says. */
   async function get(name: string, url: string, accept: string, ask = false): Promise<Body> {
@@ -295,6 +291,7 @@ export function createRegistry(options: RegistryOptions = {}): Registry {
       return doc!;
     }
     if (cache?.mode === "only") throw offline(name);
+    await ready();
     return await limit(async (signal) => {
       let last: unknown;
       // What the last answer asked us to wait, which beats guessing when the server said.
@@ -319,7 +316,10 @@ export function createRegistry(options: RegistryOptions = {}): Registry {
           );
           continue;
         }
-        if (response.status === 304 && doc) return unchanged(url, accept, response, doc);
+        if (response.status === 304 && doc) {
+          cache!.touch(keyOf(url, accept), currentAt(response));
+          return doc;
+        }
         if (response.ok) return keep(url, accept, response, await body(response, url));
         if (response.status === 404) {
           throw fail(`Package "${name}" not found in registry`, "E404");
@@ -377,6 +377,7 @@ export function createRegistry(options: RegistryOptions = {}): Registry {
     };
     if (use) return hit();
     if (cache?.mode === "only") return undefined;
+    await ready();
     return await limit(async (signal) => {
       let response: Response;
       // Not from a gate the registry has pulled back: it asked for fewer.
@@ -393,8 +394,8 @@ export function createRegistry(options: RegistryOptions = {}): Registry {
         clearTimeout(late);
       }
       if (response.status === 304 && doc) {
-        if (accept === CORGI) corgiBytes.set(name, doc.bytes.byteLength);
-        return viewOf(url, unchanged(url, accept, response, doc));
+        cache!.touch(keyOf(url, accept), currentAt(response));
+        return hit();
       }
       if (!response.ok && isThrottle(response.status)) signal.throttled();
       if (!response.ok || !response.body) return undefined;
