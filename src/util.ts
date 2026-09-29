@@ -50,7 +50,8 @@ export async function sizeOf(path: string): Promise<number> {
  */
 export function sizeOfSync(path: string): number {
   try {
-    return builtin.fs.statSync(path).size;
+    // A missing file is the common answer, and an error for it costs more than the stat.
+    return builtin.fs.statSync(path, { throwIfNoEntry: false })?.size ?? -1;
   } catch {
     return -1;
   }
