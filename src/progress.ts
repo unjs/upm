@@ -53,21 +53,26 @@ export function startBar(
 }
 
 /**
- * Fetch and link each fill half the bar: they overlap, and the link finishes last. Past
- * `columns` the line would wrap and `\r` would redraw only its tail, so the bar goes first.
+ * How full the bar is, 0 to 1, or undefined while resolving. Fetch and link each fill half:
+ * they overlap, and the link finishes last.
  */
-export function barLine(
-  { resolve, fetch, link }: Seen,
-  columns: number,
-  gray = (text: string) => text,
-): string {
-  if (!fetch && !link) return resolve ? `resolving ${resolve.done} packages`.slice(0, columns) : "";
+export function fraction({ fetch, link }: Seen): number | undefined {
+  const linked = link?.done ?? 0;
+  if (fetch) return (fetch.done + linked) / (2 * fetch.total!);
+  return link && linked / link.total!;
+}
+
+/** Past `columns` the line would wrap and `\r` would redraw only its tail, so the bar goes first. */
+export function barLine(seen: Seen, columns: number, gray = (text: string) => text): string {
+  const { resolve, fetch, link } = seen;
+  const done = fraction(seen);
+  if (done === undefined)
+    return resolve ? `resolving ${resolve.done} packages`.slice(0, columns) : "";
   const linked = link?.done ?? 0;
   const counts = fetch
     ? `${fetch.done}/${fetch.total} fetched, ${linked} linked`
     : `${linked}/${link!.total} linked`;
   if (counts.length + WIDTH + 1 > columns) return counts.slice(0, columns);
-  const done = fetch ? (fetch.done + linked) / (2 * fetch.total!) : linked / link!.total!;
   const full = Math.min(WIDTH, Math.round(done * WIDTH));
   const rest = full < WIDTH ? gray("─".repeat(WIDTH - full)) : "";
   return `${"━".repeat(full)}${rest} ${counts}`;

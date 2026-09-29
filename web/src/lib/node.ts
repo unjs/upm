@@ -45,13 +45,6 @@ let inodes = 0;
 let clock = 0;
 const root = dir(0o755);
 
-/** Bytes written or hardlinked under each directory named here, as they land. */
-export const written: Record<string, number> = {};
-
-function count(p: string, bytes: number): void {
-  for (const at in written) if (p.startsWith(at)) written[at]! += bytes;
-}
-
 /** Every entry under `at`, depth first, links not followed. */
 export function* walk(at = "/"): Generator<[path: string, entry: Entry]> {
   const { node } = find(at, true, "scandir");
@@ -423,7 +416,6 @@ const sync = {
     } else {
       add(found.parent, found.name, { kind: "file", data: bytes, ...meta(mode & ~UMASK) });
     }
-    count(p, bytes.length);
   },
   renameSync(from: string, to: string): void {
     const a = existing(from, false, "rename");
@@ -478,7 +470,6 @@ const sync = {
     if (found.node) throw fail("EEXIST", "link", to);
     node.ctime = now();
     add(found.parent, found.name, node);
-    if (node.kind === "file") count(to, node.data.length);
   },
   utimesSync(p: string, _atime: Date | number, mtime: Date | number): void {
     const { node } = existing(p, true, "utime");

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { barLine, startBar } from "../src/progress.ts";
+import { barLine, fraction, startBar } from "../src/progress.ts";
 
 describe("progress bar", () => {
   afterEach(() => void vi.useRealTimers());
@@ -16,6 +16,16 @@ describe("progress bar", () => {
     // Too narrow for the bar: the counts alone, cut to fit, so the line never wraps.
     expect(barLine({ fetch, link }, 30)).toBe("10/10 fetched, 5 linked");
     expect(barLine({ fetch, link }, 10)).toBe("10/10 fetc");
+  });
+
+  it("fills half for fetch and half for link, and is unknown while resolving", () => {
+    expect(fraction({})).toBeUndefined();
+    expect(fraction({ resolve: { phase: "resolve", done: 3 } })).toBeUndefined();
+    expect(fraction({ fetch: { phase: "fetch", done: 2, total: 4 } })).toBe(0.25);
+    const link = { phase: "link", done: 4, total: 4 } as const;
+    expect(fraction({ fetch: { phase: "fetch", done: 4, total: 4 }, link })).toBe(1);
+    // A tree whose store was already full links only.
+    expect(fraction({ link: { phase: "link", done: 1, total: 4 } })).toBe(0.25);
   });
 
   it("draws nothing in the first half second and clears its line when stopped", () => {
