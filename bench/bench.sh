@@ -4,6 +4,7 @@
 #   ./bench.sh                          # everything, default iteration counts
 #   ./bench.sh -r upm,bun -f nitro  # a subset
 #   ./bench.sh --cold 3 --warm 5        # more samples
+#   ./bench.sh --registry vlt           # every manager against vlt's registry
 #
 # Results go to results/<stamp>.jsonl, one JSON object per timed run, and the charts beside
 # them, one per phase: <stamp>.<phase>.svg, .<phase>.memory.svg and .<phase>.cpu.svg,
@@ -31,6 +32,7 @@ MIN_FREE_MB=3072
 # to the same rule.
 WORK="${BENCH_WORK:-${XDG_CACHE_HOME:-$HOME/.cache}/upm-bench}"
 OUT=""
+REGISTRY=npm
 
 die() { echo "bench: $*" >&2; exit 1; }
 
@@ -49,6 +51,7 @@ Options
       --keep             do not delete each pair's project + cache when done
       --min-free <mb>    abort if free disk drops below this (default $MIN_FREE_MB)
   -o, --out <file>       results file (default results/<stamp>.jsonl)
+      --registry <name>  npm (default: each manager's own), vlt, or a registry url
       --no-chart         skip rendering the SVG at the end
       --dry-run          print the plan and exit
   -h, --help             this
@@ -66,6 +69,7 @@ while [ $# -gt 0 ]; do
     --no-chart)    CHART=0; shift ;;
     --min-free)    MIN_FREE_MB="$2"; shift 2 ;;
     -o|--out)      OUT="$2"; shift 2 ;;
+    --registry)    REGISTRY="$2"; shift 2 ;;
     --dry-run)     DRY=1; shift ;;
     -h|--help)     usage; exit 0 ;;
     *)             die "unknown option: $1 (try --help)" ;;
@@ -78,6 +82,24 @@ done
 for f in $FIXTURES; do
   [ -f "$HERE/fixtures/$f/package.json" ] || die "unknown fixture: $f"
 done
+
+# The registry every manager fetches from, set for each in runner_install. `npm` leaves each
+# on its default. REGISTRY names it in the results, so a report over two runs keeps them apart.
+REGISTRY_TOKEN="${BENCH_REGISTRY_TOKEN:-}"
+case "$REGISTRY" in
+  npm) REGISTRY_URL="" ;;
+  vlt)
+    # vlt serves npm packages only per account, and only with that account's token.
+    [ -n "${BENCH_VLT_ACCOUNT:-}" ] || die "--registry vlt needs BENCH_VLT_ACCOUNT, a vlt.io account or organization"
+    [ -n "$REGISTRY_TOKEN" ] || die "--registry vlt needs BENCH_REGISTRY_TOKEN, a token for that account"
+    REGISTRY_URL="https://registry.vlt.io/$BENCH_VLT_ACCOUNT/npm/"
+    ;;
+  http://*|https://*)
+    REGISTRY_URL="${REGISTRY%/}/"
+    REGISTRY="${REGISTRY_URL#*://}"; REGISTRY="${REGISTRY%/}"
+    ;;
+  *) die "unknown registry: $REGISTRY (npm, vlt or a url)" ;;
+esac
 
 STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
 [ -n "$OUT" ] || OUT="$HERE/results/$STAMP.jsonl"
@@ -115,9 +137,9 @@ cache_bytes() {
   du -sb "$1" 2>/dev/null | awk '{print $1+0}'
 }
 
-emit() { # runner version fixture phase iter ms ok bytes pkgs cache_bytes runner_bytes runner_packed_bytes rss_bytes rss_process_bytes user_us sys_us
+emit() { # runner version fixture phase iter ms ok bytes pkgs cache_bytes runner_bytes runner_packed_bytes rss_bytes rss_process_bytes user_us sys_us registry
   node -e '
-const fields = ["runner","version","fixture","phase","iter","ms","ok","bytes","packages","cache_bytes","runner_bytes","runner_packed_bytes","rss_bytes","rss_process_bytes","user_ms","sys_ms"];
+const fields = ["runner","version","fixture","phase","iter","ms","ok","bytes","packages","cache_bytes","runner_bytes","runner_packed_bytes","rss_bytes","rss_process_bytes","user_ms","sys_ms","registry"];
 const row = Object.fromEntries(fields.map((key, i) => [key, process.argv[i + 1]]));
 for (const key of ["iter","ms","bytes","packages","cache_bytes","runner_bytes","runner_packed_bytes"]) row[key] = Number(row[key]);
 for (const key of ["runner_bytes","runner_packed_bytes"]) if (!row[key]) delete row[key];
@@ -188,6 +210,7 @@ echo "bench: runners  : $RUNNERS"
 echo "bench: fixtures : $FIXTURES"
 echo "bench: samples  : cold=$COLD_RUNS warm=$WARM_RUNS repeat=$REPEAT_RUNS"
 echo "bench: workdir  : $WORK"
+echo "bench: registry : $REGISTRY${REGISTRY_URL:+ ($REGISTRY_URL)}"
 echo "bench: results  : $OUT"
 [ "$DRY" = 1 ] && exit 0
 
@@ -247,7 +270,7 @@ sample() { # runner fixture phase iter
   read -r ms ok rss one user sys <<<"$(timed_install "$runner" "$proj" "$cache" "$log" "$pair/usage")"
   read -r bytes pkgs <<<"$(tree_stats "$proj")"
   emit "$runner" "${VERSION[$runner]}" "$fixture" "$phase" "$i" "$ms" "$ok" "$bytes" "$pkgs" \
-    "$(cache_bytes "$cache")" "${SIZE[$runner]}" "${PACKED[$runner]}" "$rss" "$one" "$user" "$sys"
+    "$(cache_bytes "$cache")" "${SIZE[$runner]}" "${PACKED[$runner]}" "$rss" "$one" "$user" "$sys" "$REGISTRY"
   progress "$runner" "$phase" "$i" "$ms" "$ok" "$pkgs" "$rss" "$user" "$sys"
 }
 
@@ -287,9 +310,9 @@ echo "bench: done -> $OUT"
 echo "bench: report with: node $HERE/report.ts $OUT"
 
 if [ "$CHART" = 1 ]; then
-  # Only a full suite replaces the committed charts/ the README links to.
+  # Only a full suite on the default registry replaces the committed charts/ the README links to.
   full=0
-  [ "$RUNNERS" = "$ALL_RUNNERS" ] && [ "$FIXTURES" = "$ALL_FIXTURES" ] && full=1
+  [ "$RUNNERS" = "$ALL_RUNNERS" ] && [ "$FIXTURES" = "$ALL_FIXTURES" ] && [ "$REGISTRY" = npm ] && full=1
   for measure in time memory cpu; do
     node "$HERE/chart.ts" "$OUT" --measure "$measure" \
       || echo "bench: $measure chart failed, results are still in $OUT" >&2

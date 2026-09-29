@@ -15,7 +15,7 @@
 
 # Node has no installer (`node install` is not a command and this build ships no
 # bundled npm), so it is deliberately absent from this list.
-ALL_RUNNERS="upm npm pnpm11 pnpm12 yarn1 yarn4 bun deno aube nub"
+ALL_RUNNERS="upm npm pnpm11 pnpm12 yarn1 yarn4 bun deno aube nub vlt"
 
 UPM_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # dist/, because that is what the published `bin` runs. src/ pays ~60 ms per invocation in
@@ -57,6 +57,18 @@ runner_resolve() {
     git -C "$UPM_ROOT" diff --quiet HEAD -- src 2>/dev/null || version+="-dirty"
     RUNNER_VERSION[upm]="$version"
     RUNNER_ENTRY[upm]="$UPM_CLI"
+    return
+  fi
+  if [ "$name" = vlt ]; then
+    # jup has no vlt yet, so it is a dev dependency and runs from node_modules.
+    out="$(node -e '
+const { readFileSync, realpathSync } = require("node:fs");
+const { join } = require("node:path");
+const dir = realpathSync(process.argv[1]);
+const pkg = JSON.parse(readFileSync(join(dir, "package.json"), "utf8"));
+console.log([pkg.version, dir, join(dir, pkg.bin.vlt)].join("\t"));
+' "$UPM_ROOT/node_modules/vlt")" || return 1
+    IFS=$'\t' read -r RUNNER_VERSION[vlt] RUNNER_DIR[vlt] RUNNER_ENTRY[vlt] <<<"$out"
     return
   fi
   spec="$(runner_spec "$name")"
@@ -104,12 +116,13 @@ runner_lockfiles() {
     deno)    echo "deno.lock" ;;
     aube)    echo "aube-lock.yaml" ;;
     nub)     echo "nub.lock" ;;
+    vlt)     echo "vlt-lock.json" ;;
   esac
 }
 
 # What a user has on disk to run the manager: its directory in the jup store, where each
-# version has its own, or the upm entry being measured. Empty when the directory is missing,
-# so the row has no size rather than a wrong one.
+# version has its own, its package in node_modules (vlt), or the upm entry being measured.
+# Empty when the directory is missing, so the row has no size rather than a wrong one.
 runner_bytes() {
   local dir="${RUNNER_DIR[$1]}"
   [ -n "$dir" ] && [ -d "$dir" ] && du -sb "$dir" | awk '{print $1+0}'
@@ -138,11 +151,23 @@ pnpm_age() {
 # The gate goes in the environment: npm's `min-release-age` in days (upm, npm, deno) and
 # yarn 4's in minutes. An inherited `npm_config_min-release-age` is dropped, since which
 # spelling wins would be each manager's choice. pnpm, aube and nub read pnpm's key instead
-# (`pnpm_age`), and bun takes a flag; both are set in runner_install.
+# (`pnpm_age`), bun takes a flag and vlt a date; all are set in runner_install.
 measure() {
   env -u npm_config_min-release-age \
     npm_config_min_release_age="$MIN_AGE_DAYS" YARN_NPM_MINIMAL_AGE_GATE="$((MIN_AGE_DAYS * 1440))" \
     perl "$UPM_ROOT/bench/measure.pl" "$MEASURE_OUT" "$@"
+}
+
+# With a registry other than npm's (bench.sh --registry), a project .npmrc points every
+# manager that reads one at it, with the token when there is one: upm, npm, pnpm, yarn 1, bun,
+# deno, aube and nub. yarn 4 and vlt take theirs in runner_install, and yarn 1 one more key. Written before each
+# install, outside the timed command.
+registry_npmrc() {
+  [ -n "$REGISTRY_URL" ] || return 0
+  {
+    echo "registry=$REGISTRY_URL"
+    [ -z "$REGISTRY_TOKEN" ] || echo "//${REGISTRY_URL#*://}:_authToken=$REGISTRY_TOKEN"
+  } > .npmrc
 }
 
 # Lifecycle scripts are forced off everywhere. upm cannot run them at all,
@@ -154,6 +179,7 @@ measure() {
 runner_install() {
   local name="$1" cache="$2" CMD
   runner_cmd "$name" || return
+  registry_npmrc
   case "$name" in
     upm)
       measure "${CMD[@]}" install --store "$cache/store"
@@ -174,6 +200,7 @@ runner_install() {
         pnpm_age measure "${CMD[@]}" install --store-dir "$cache/store" --ignore-scripts --no-frozen-lockfile
       ;;
     yarn1)
+      [ -z "$REGISTRY_TOKEN" ] || export npm_config_always_auth=true
       measure "${CMD[@]}" install --cache-folder "$cache/yarn" --ignore-scripts --non-interactive --no-progress
       ;;
     # The global folder holds yarn 4's shared cache. node-modules, not the default PnP, so
@@ -182,6 +209,9 @@ runner_install() {
     # and refuses to run. It is the only lockfile a cold run starts with, and it is empty.
     yarn4)
       [ -e yarn.lock ] || : > yarn.lock
+      [ -z "$REGISTRY_URL" ] || export YARN_NPM_REGISTRY_SERVER="$REGISTRY_URL"
+      # Without always-auth, yarn sends the token only for scoped packages.
+      [ -z "$REGISTRY_TOKEN" ] || export YARN_NPM_AUTH_TOKEN="$REGISTRY_TOKEN" YARN_NPM_ALWAYS_AUTH=true
       YARN_GLOBAL_FOLDER="$cache/berry" YARN_NODE_LINKER=node-modules \
         YARN_ENABLE_SCRIPTS=false YARN_ENABLE_TELEMETRY=0 YARN_ENABLE_IMMUTABLE_INSTALLS=false \
         measure "${CMD[@]}" install
@@ -200,6 +230,15 @@ runner_install() {
     # nub keeps its store, metadata and global virtual store under the XDG directories.
     nub)
       XDG_CACHE_HOME="$cache/xdg" XDG_DATA_HOME="$cache/xdg-data" pnpm_age measure "${CMD[@]}" install --ignore-scripts
+      ;;
+    # --cache holds vlt's metadata, tarballs and global store. It runs no scripts by default
+    # and has no default registry. Its only release-age gate is `--before <date>`.
+    vlt)
+      [ -z "$REGISTRY_TOKEN" ] || export VLT_REGISTRY="$REGISTRY_URL" VLT_TOKEN="$REGISTRY_TOKEN"
+      XDG_CACHE_HOME="$cache/xdg" XDG_DATA_HOME="$cache/xdg-data" XDG_STATE_HOME="$cache/xdg-state" \
+        measure "${CMD[@]}" install --cache "$cache/vlt" \
+        --registries "npm=${REGISTRY_URL:-https://registry.npmjs.org/}" \
+        --before "$(date -u -d "-$MIN_AGE_DAYS days" +%Y-%m-%dT%H:%M:%SZ)"
       ;;
   esac
 }

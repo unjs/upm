@@ -11,7 +11,19 @@ export const PHASE_BLURB: Record<Phase, string> = {
   warm: "cache + lockfile kept",
   repeat: "nothing removed",
 };
-const RUNNERS = ["upm", "npm", "pnpm11", "pnpm12", "yarn1", "yarn4", "bun", "deno", "aube", "nub"];
+const RUNNERS = [
+  "upm",
+  "npm",
+  "pnpm11",
+  "pnpm12",
+  "yarn1",
+  "yarn4",
+  "bun",
+  "deno",
+  "aube",
+  "nub",
+  "vlt",
+];
 const FIXTURES = ["nitro", "nuxt", "next"];
 
 export interface Run {
@@ -36,6 +48,8 @@ export interface Run {
   user_ms?: number;
   sys_ms?: number;
   ts?: string;
+  // The registry it fetched from, when not each manager's default (`bench.sh --registry`).
+  registry?: string;
 }
 
 export interface Runner {
@@ -85,6 +99,9 @@ export function parseRows(text: string, source = "results"): Run[] {
         throw new Error("invalid ms: expected a finite, non-negative duration");
       }
       if (!Number.isSafeInteger(row.iter) || row.iter < 1) throw new Error("invalid iter");
+      if (row.registry !== undefined && (typeof row.registry !== "string" || !row.registry)) {
+        throw new Error("invalid registry");
+      }
       for (const key of [
         "packages",
         "bytes",
@@ -180,6 +197,12 @@ export function aggregate(
   const value = MEASURE[measure].value;
   rows = rows.filter((row) => value(row) !== undefined);
   if (!rows.length) throw new Error(`no ${MEASURE[measure].label} in these results`);
+  // A run on another registry is its own row, named beside the version.
+  rows = rows.map((row) =>
+    row.registry && row.registry !== "npm"
+      ? { ...row, version: `${row.version} · ${row.registry}` }
+      : row,
+  );
   const names = ordered(
     rows.map((row) => row.runner),
     RUNNERS,

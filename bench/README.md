@@ -7,12 +7,13 @@ manager, and records time, peak memory and CPU for each run.
 ./bench.sh                         # every runner and fixture, then the charts
 ./bench.sh -r upm,pnpm12 -f nuxt   # a subset
 ./bench.sh --cold 5 --warm 5       # more samples
+./bench.sh --registry vlt          # every manager against vlt's registry
 node report.ts results/<stamp>.jsonl  # markdown tables (bench.sh does not print them)
 node chart.ts                      # re-render the charts for the newest run
 ```
 
 **Needs:** Linux, Node 24 (the `.ts` tools run with type stripping, no build), Perl for
-`measure.pl`, and `jup` in `node_modules` (`node ../upm install --frozen-lockfile`).
+`measure.pl`, and `jup` and `vlt` in `node_modules` (`node ../upm install --frozen-lockfile`).
 `zstd` is optional: without it the size chart has no CI restore estimate.
 
 | option                       | default                 | meaning                                       |
@@ -23,6 +24,7 @@ node chart.ts                      # re-render the charts for the newest run
 | `--keep`                     | off                     | keep each project and cache after its fixture |
 | `--min-free <mb>`            | 3072                    | stop before the disk gets this full           |
 | `-o, --out <file>`           | `results/<stamp>.jsonl` | results file                                  |
+| `--registry <name>`          | `npm`                   | registry for all managers, see below          |
 | `--no-chart`                 | off                     | skip the SVG charts                           |
 | `--dry-run`                  | off                     | print the plan and exit                       |
 
@@ -32,8 +34,8 @@ node chart.ts                      # re-render the charts for the newest run
 ## What a run does
 
 1. Rebuilds `../dist` so upm is always this working tree.
-2. Downloads every manager with jup and runs its `--version` once, so no download lands in a
-   timed run.
+2. Downloads every manager with jup (vlt comes from `node_modules`) and runs its `--version`
+   once, so no download lands in a timed run.
 3. For each fixture, runs the three phases below in order, in rounds: each round runs every
    runner once, starting one runner later than the round before. A slow minute of network then
    lands on every manager, not on whichever ran its samples back to back. Then it deletes the
@@ -45,6 +47,37 @@ node chart.ts                      # re-render the charts for the newest run
 
 Core dumps are off (`ulimit -c 0`): a crash counts as a failed run, not a heap-sized file in
 the repo. Any `core.<pid>` newer than the run is deleted on exit.
+
+## Registry
+
+`--registry` separates the two things a benchmark mixes: the manager and the registry behind
+it. Run the same managers on two registries and each manager's rows show what the registry
+changed.
+
+| value   | registry                                                              |
+| ------- | --------------------------------------------------------------------- |
+| `npm`   | each manager's default: `registry.npmjs.org`, or its proxy for yarn 1 |
+| `vlt`   | `https://registry.vlt.io/$BENCH_VLT_ACCOUNT/npm/`                     |
+| `<url>` | any npm-compatible registry                                           |
+
+vlt serves npm packages only under an account, and only with its token, so `vlt` needs
+`BENCH_VLT_ACCOUNT` (a vlt.io account or organization) and `BENCH_REGISTRY_TOKEN`. A token
+for a url is optional.
+
+```sh
+BENCH_VLT_ACCOUNT=<account> BENCH_REGISTRY_TOKEN=<token> ./bench.sh --registry vlt
+node report.ts results/<npm run>.jsonl results/<vlt run>.jsonl
+```
+
+Before each install, outside the timed command, `runners.sh` writes the registry and token to
+the project's `.npmrc`, which upm, npm, pnpm, yarn 1, bun, deno, aube and nub read. yarn 4
+gets `YARN_NPM_REGISTRY_SERVER` and `YARN_NPM_AUTH_TOKEN`, vlt gets `--registries npm=<url>`
+with `VLT_REGISTRY` and `VLT_TOKEN`. Both yarns send a token only for scoped packages unless
+told to always send it, so they are.
+
+Each row records `registry`. The reports and charts show a row from another registry as its
+own manager row, with the registry after the version. A full suite on another registry does
+not replace the committed `charts/`.
 
 ## Fixtures
 
@@ -85,7 +118,8 @@ measure the source entry instead (`src-<sha>`, slower to start, not what users r
 Other managers come from jup (a dev dependency, so versions do not depend on the machine).
 They are **not** run through jup: `runners.sh` finds each manager's own entry in the jup
 store and starts it directly, a native binary as is and a JavaScript entry on the same
-`node` as upm. A jup shim would add a Node process of about 40 ms and 56 MB.
+`node` as upm. A jup shim would add a Node process of about 40 ms and 56 MB. jup has no vlt
+yet, so vlt is a dev dependency itself and runs from `node_modules` the same way.
 
 | runner   | command (lifecycle scripts off in all)          |
 | -------- | ----------------------------------------------- |
@@ -99,6 +133,7 @@ store and starts it directly, a native binary as is and a JavaScript entry on th
 | `deno`   | `<deno> install --node-modules-dir=auto`        |
 | `aube`   | `<aube> install`                                |
 | `nub`    | `<nub> install`                                 |
+| `vlt`    | `node <vlt> install --cache <cache>`            |
 
 `node` is not a runner: Node 24 has no `install` command and this build ships no npm.
 
@@ -114,16 +149,16 @@ store and starts it directly, a native binary as is and a JavaScript entry on th
   "cold" is a directory delete and no real cache is touched. pnpm needs both `--store-dir`
   and `XDG_CACHE_HOME`: with the store alone, a "cold" pnpm read the real metadata cache and
   finished `nuxt` in 696 ms instead of 2.98 s. The others use `npm_config_cache`,
-  `YARN_GLOBAL_FOLDER`, `BUN_INSTALL_CACHE_DIR`, `DENO_DIR`, `AUBE_STORE_DIR` and the XDG
-  directories. Each cold row records the cache size; a successful cold run with a cache
+  `YARN_GLOBAL_FOLDER`, `BUN_INSTALL_CACHE_DIR`, `DENO_DIR`, `AUBE_STORE_DIR`, vlt's `--cache`
+  and the XDG directories. Each cold row records the cache size; a successful cold run with a cache
   under 1 MB gets a warning, as the manager may have used a shared cache, and so does any
   successful run that leaves no packages in the project.
 - **Lifecycle scripts are off everywhere**, because upm cannot run them.
 - **A 1-day release-age gate for all**, set by the harness and not left to the machine's npmrc,
   yarnrc or environment, so every machine resolves the same versions (`BENCH_MIN_AGE_DAYS`
   changes it). Each manager gets its own key: npm's `min-release-age` (upm, npm, deno), pnpm's
-  `minimum-release-age` (pnpm, aube, nub), yarn 4's `npmMinimalAgeGate` and bun's
-  `--minimum-release-age`. `runners.sh` has the details.
+  `minimum-release-age` (pnpm, aube, nub), yarn 4's `npmMinimalAgeGate`, bun's
+  `--minimum-release-age` and vlt's `--before <date>`. `runners.sh` has the details.
 - **`CI` is unset**, since pnpm turns on `--frozen-lockfile` under CI and a cold run fails.
   Colors, update notices, audit, fund and telemetry are off for all.
 - **Packages are counted by inode**, following symlinks. Isolated layouts hold both a real
@@ -132,12 +167,14 @@ store and starts it directly, a native binary as is and a JavaScript entry on th
 
 Real differences, left in on purpose:
 
-- yarn 1 has no release-age gate, so it can install a version the others hold back. bun
+- yarn 1 has no release-age gate, so it can install a version the others hold back. Neither
+  has vlt: its install ignores `--before` (1.2.0 and 1.3.0), so the flag has no effect yet. bun
   applies the gate with a stability rule of its own and can pick an older version than the rest.
 - yarn 4 uses `nodeLinker: node-modules`, since Plug'n'Play writes no `node_modules` to
   delete or count. A cold yarn 4 run starts with an empty `yarn.lock`, or it treats the repo
   root as its project.
-- yarn 1 uses its default `registry.yarnpkg.com`, a proxy of the npm registry.
+- yarn 1 uses its default `registry.yarnpkg.com`, a proxy of the npm registry. vlt has no
+  default registry, so it gets `--registries npm=https://registry.npmjs.org/`.
 - Optional-dependency rules differ, so counts can differ by one or two packages. A manager
   that is fast because it installed less shows up in the counts.
 - Layouts and hardlinks versus copies change the apparent size on disk.
@@ -190,7 +227,8 @@ process's last 10 ms.
   "rss_process_bytes": 264245248,
   "user_ms": 1102,
   "sys_ms": 315,
-  "ts": "2026-09-09T23:08:28Z"
+  "ts": "2026-09-09T23:08:28Z",
+  "registry": "npm"
 }
 ```
 

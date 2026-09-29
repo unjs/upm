@@ -2,7 +2,7 @@
   "lockfileVersion": 1,
   "root": {
     "name": "upm",
-    "version": "1.0.1",
+    "version": "1.2.0",
     "specs": {
       "devDependencies": {
         "@types/node": "latest",
@@ -14,7 +14,8 @@
         "oxfmt": "latest",
         "oxlint": "latest",
         "typescript": "latest",
-        "vitest": "latest"
+        "vitest": "latest",
+        "vlt": "latest"
       }
     },
     "dependencies": {
@@ -22,12 +23,13 @@
       "@vitest/coverage-v8": "5.0.2",
       "automd": "0.4.3",
       "changelogen": "0.6.2",
-      "jup": "0.6.0",
+      "jup": "0.6.1",
       "obuild": "0.4.40",
       "oxfmt": "0.70.0",
       "oxlint": "1.85.0",
       "typescript": "7.0.2",
-      "vitest": "5.0.2"
+      "vitest": "5.0.2",
+      "vlt": "1.2.0"
     },
     "workspaces": [
       "web"
@@ -62,7 +64,7 @@
         "@vitejs/plugin-react": "6.1.1",
         "dompurify": "3.4.16",
         "md4x": "0.0.30",
-        "nitro": "3.0.1-20260924-200544-22b17bb3",
+        "nitro": "3.0.1-20260927-191757-65af805a",
         "pathe": "2.0.3",
         "rangi": "2.2.0",
         "react": "19.3.0",
@@ -2084,8 +2086,8 @@
     "js-tokens@10.0.0": {
       "integrity": "sha512-lM/UBzQmfJRo9ABXbPWemivdCW8V2G8FHaHdypQaIy523snUjog0W71ayWXTjiR+ixeMyVHN2XcpnTd/liPg/Q=="
     },
-    "jup@0.6.0": {
-      "integrity": "sha512-AHkEEcVy24Rg4H3GmhVY8QxffCBoI3ieaAVeSfvGu7sWBOuzp1ns8Vgneml6Lb+s6xjAXSCBv1pEF/IOM5jDZQ==",
+    "jup@0.6.1": {
+      "integrity": "sha512-VBKW8PuEORPgGi11wmGEmzlF4Na5Umfo1KS6h2vLFPPxVRiyOZlYxh4cBhcFOwZzGHgtlwZ89Kvma19D4zFMjQ==",
       "bin": {
         "corepack": "bin/corepack.mjs",
         "jup": "bin/jup.mjs"
@@ -2413,9 +2415,9 @@
     "nf3@0.3.24": {
       "integrity": "sha512-HxLK4bo+5jNsEETZp4w3tJblHOA9MCBY14IN9nZJJV8JDxt9yNIYxuBuLMjTAR5GFa3HL61+8VQDUrXv3/C8fw=="
     },
-    "nitro@3.0.1-20260924-200544-22b17bb3": {
-      "resolved": "https://registry.npmjs.org/nitro-nightly/-/nitro-nightly-3.0.1-20260924-200544-22b17bb3.tgz",
-      "integrity": "sha512-JmH8fXOVAGzM++BRAS6LFz4nrSUpwUdUJVRpQfogbmIOB0fI1zvmuUKmF+P4bQ7zlyttmI8WaEGrEsCywJ6JNw==",
+    "nitro@3.0.1-20260927-191757-65af805a": {
+      "resolved": "https://registry.npmjs.org/nitro-nightly/-/nitro-nightly-3.0.1-20260927-191757-65af805a.tgz",
+      "integrity": "sha512-2JXaNY2ERIVxt47ZRRpJy+2NsWF92yVC3vJpjMGfRZ4It1OKg/rByeC/6pvgBd2LE9W+wq8Z7xaxiE1Yd7fXcw==",
       "dependencies": {
         "consola": "3.4.2",
         "crossws": "0.4.12",
@@ -2914,6 +2916,16 @@
         "happy-dom": "optional",
         "jsdom": "optional",
         "vite": "required"
+      }
+    },
+    "vlt@1.2.0": {
+      "integrity": "sha512-t7ONkM8YgRlY0g+6l+OU4oS2WS/dp7DK/vmFwNqxA0D+ehPWprNOTTH3uUYURAnCg5lr9vzJSmX9nNCcG5xGXA==",
+      "bin": {
+        "vlr": "vlr.js",
+        "vlrx": "vlrx.js",
+        "vlt": "vlt.js",
+        "vlx": "vlx.js",
+        "vlxl": "vlxl.js"
       }
     },
     "why-is-node-running@3.2.2": {

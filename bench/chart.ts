@@ -93,6 +93,7 @@ const RUNTIME: Record<string, Runtime> = {
   yarn4: "node",
   aube: "rust",
   nub: "rust",
+  vlt: "node",
   bun: "bun",
   deno: "deno",
 };

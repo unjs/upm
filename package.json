@@ -43,7 +43,8 @@
     "oxfmt": "latest",
     "oxlint": "latest",
     "typescript": "latest",
-    "vitest": "latest"
+    "vitest": "latest",
+    "vlt": "latest"
   },
   "devEngines": {
     "packageManager": {
