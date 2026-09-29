@@ -61,7 +61,7 @@ upm i
 ## Quick reference
 
 ```sh
-upm install                          # install the project's dependencies
+upm install                          # install the project's dependencies (also upm alone)
 upm add vue@^3 nanoid                 # save to package.json, then install
 upm add --dev vitest                  # save as a dev dependency
 upm add --optional fsevents           # save as an optional dependency
@@ -107,7 +107,7 @@ upm add sw@npm:string-width@^4        # install string-width under the name sw
 upm remove nanoid
 ```
 
-`upm i` is short for `upm install`, and `upm install <spec>...` is another way to write
+`upm` alone and `upm i` are short for `upm install`, and `upm install <spec>...` is another way to write
 `upm add <spec>...`.
 
 - By default, `add` saves to `dependencies`. Use `--dev` or `--optional` for the

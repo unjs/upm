@@ -31,6 +31,7 @@ import { formatLockfile, LOCKFILE } from "./lock.ts";
 import type { Bar } from "./progress.ts";
 import type { Manifest } from "./types.ts";
 import { describe, trace, tracing } from "./util.ts";
+import pkg from "../package.json" with { type: "json" };
 
 /** npm's commands on the registry, the account or package.json, never upm's tree: npm runs them. */
 const NPM_COMMANDS = `  access, config, create, deprecate, dist-tag, info, init, login, logout, org, owner,
@@ -38,10 +39,10 @@ const NPM_COMMANDS = `  access, config, create, deprecate, dist-tag, info, init,
   unpublish, version, view, whoami`;
 const NPM = new Set(NPM_COMMANDS.trim().split(/,\s+/));
 
-const USAGE = `upm — a minimal npm-compatible package manager
+const USAGE = `upm ${pkg.version} — a minimal npm-compatible package manager
 
 Usage
-  upm install [--production] [--frozen-lockfile] [--verify]    (also i; ci is frozen)
+  upm [install] [--production] [--frozen-lockfile] [--verify]    (also i; ci is frozen)
   upm add <spec>... [--dev | --optional] [--exact] [-w <workspace>]
   upm remove <name>... [-w <workspace>]    (also uninstall, rm, r, un)
   upm dedupe
@@ -89,6 +90,7 @@ Options
                        add, remove, run: select workspaces (repeatable; parent paths work)
   --workspaces         run: select all workspaces
   -h, --help           show help
+  -v, --version        print the upm version
   --experimental-link-pool[=<size>[,<packages>[,<files>]]]
                       install: worker count and package/file thresholds (8,200,6000).
                       Size 0 disables; max 64. Thresholds 0,0 always enable.
@@ -165,6 +167,8 @@ export interface Cli {
   /** With `add`, save a tag as the version it resolved to instead of a caret range. */
   exact?: boolean;
   help: boolean;
+  /** `-v`, `--version`: print upm's version. */
+  version?: boolean;
   error?: string;
   /** `upm <script>`: `run` was implied, so a missing script is an unknown command. */
   implied?: boolean;
@@ -269,6 +273,8 @@ const SWITCHES = {
   "--if-present": "ifPresent",
   "-h": "help",
   "--help": "help",
+  "-v": "version",
+  "--version": "version",
   "--json": "json",
   "--verbose": "verbose",
   "--production": "production",
@@ -452,10 +458,16 @@ export async function main(argv: string[]): Promise<number> {
   if (cli.error) return usage(cli.error);
   quiet = cli.quiet === true;
   verbose = cli.verbose === true;
-  if (cli.help || cli.command === undefined) {
+  if (cli.version) {
+    write("stdout", `${pkg.version}\n`);
+    return 0;
+  }
+  if (cli.help) {
     write("stdout", `${help("stdout")}\n`);
     return 0;
   }
+  // As in pnpm, `upm` alone installs.
+  cli.command ??= "install";
   if (NPM.has(cli.command)) {
     const { command, specs, json, help: _help, dir: _dir, ...own } = cli;
     if (json || Object.keys(own).length > 0) return usage(`only --dir goes before ${command}`);

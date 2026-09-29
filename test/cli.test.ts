@@ -181,6 +181,13 @@ describe("parseArgv", () => {
     expect(parseArgv(["-h"]).help).toBe(true);
   });
 
+  it("treats -v and --version as version, and leaves a script's -v to it", () => {
+    expect(parseArgv(["--version"]).version).toBe(true);
+    expect(parseArgv(["-v"]).version).toBe(true);
+    expect(parseArgv(["run", "build", "-v"])).toMatchObject({ specs: ["build", "-v"] });
+    expect(parseArgv(["view", "vue", "-v"]).version).toBeUndefined();
+  });
+
   it("collects every -w, and reads the other workspace flags", () => {
     expect(
       parseArgv(["run", "-w", "a", "-w=packages/b", "--workspace", "c", "--if-present", "build"]),
@@ -315,9 +322,27 @@ describe("npm's spellings", () => {
 });
 
 describe("cli process", () => {
-  it("prints usage and exits 0 with no args", async () => {
-    const { stdout } = await run(process.execPath, [CLI]);
+  it("prints usage and exits 0 with --help", async () => {
+    const { stdout } = await run(process.execPath, [CLI, "--help"]);
     expect(stdout).toContain("upm resolve <spec>...");
+  });
+
+  it("prints the version with -v and --version", async () => {
+    const { version } = createRequire(import.meta.url)("../package.json");
+    for (const flag of ["-v", "--version"]) {
+      expect((await run(process.execPath, [CLI, flag])).stdout).toBe(`${version}\n`);
+    }
+  });
+
+  it("installs with no args", async () => {
+    const dir = await realpath(await mkdtemp(join(tmpdir(), "upm-cli-")));
+    try {
+      await writeFile(join(dir, "package.json"), '{ "name": "bare" }');
+      await run(process.execPath, [CLI, "--offline"], { cwd: dir });
+      expect(await readFile(join(dir, "upm.lock"), "utf8")).toContain('"lockfileVersion"');
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
   });
 
   it("exits 2 on a word that is neither a command nor a script", async () => {
@@ -550,7 +575,7 @@ describe("colors", () => {
       vi.unstubAllGlobals();
     }
     expect(lines).toHaveLength(1);
-    expect(lines[0]).toMatch(/^upm — a minimal[\s\S]*\nUsage\n/);
+    expect(lines[0]).toMatch(/^upm \d+\.\d+\.\d+\S* — a minimal[\s\S]*\nUsage\n/);
     expect(lines[0]).toContain("\nOptions\n");
     expect(lines[0]).toContain("\nExamples\n");
   });
@@ -1174,11 +1199,12 @@ describe("startup budget", () => {
     // 115/112 ms); 145,049 with each workspace's links in the state (43/42 and 107/107 ms);
     // 147,156 with tarballs fetched through the agent's callbacks (41/42 and 108/108 ms);
     // 147,684 with the progress hooks and `--no-progress`, the bar itself lazy; 147,803 with --verbose;
-    // 149,006 with `.upm/node_modules` (42/43 and 111/112 ms).
+    // 147,999 with --version and the version in the usage; 148,003 with `upm` alone installing.
+    // 149,206 with `.upm/node_modules` (42/43 and 111/112 ms).
     const modules = await reachable();
     const bytes = [...modules.values()].reduce((total, size) => total + size, 0);
     expect(modules.size).toBeLessThanOrEqual(27); // `upm.ts` is the bin, `cli.ts` the program
-    expect(bytes).toBeLessThanOrEqual(149_050);
+    expect(bytes).toBeLessThanOrEqual(149_250);
     // Found through `import()` by the commands that read a project, like the pools: each holds
     // its worker's whole code in the build.
     const lazy = [
