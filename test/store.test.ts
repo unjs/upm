@@ -72,11 +72,12 @@ describe("createStore", () => {
     expect(createStore({ dir }).indexSize(integrity)).toBe(0);
   });
 
-  it("holds tarballs against the ceiling, not against the size of the tree", async () => {
-    // A tarball counts against the ceiling from the moment its bytes start arriving until it
-    // has been written out as content. Downloading past that point would queue whole tarballs
-    // in memory behind a busy disk, so what is in hand at once has to track the ceiling and
-    // nothing else — least of all how many packages were asked for.
+  it("holds tarballs against the ceiling and `held`, not against the size of the tree", async () => {
+    // A download counts against the ceiling until its last byte, and its bytes against `held`
+    // until they are written out as content. Downloading past both would queue whole tarballs
+    // in memory behind a busy disk, so what is in hand at once has to track them and nothing
+    // else — least of all how many packages were asked for. A `held` of one byte lets no new
+    // download start while anything landed waits.
     async function peak(packages: number, ceiling: number): Promise<number> {
       const tarballs: Record<string, Uint8Array> = {};
       for (let i = 0; i < packages; i++) {
@@ -89,7 +90,7 @@ describe("createStore", () => {
         most = Math.max(most, ++held);
         return new Response(tarballs[String(input)] as unknown as BodyInit);
       }) as typeof globalThis.fetch;
-      const store = createStore({ dir, fetch: instant, concurrency: ceiling, workers: 0 });
+      const store = createStore({ dir, fetch: instant, concurrency: ceiling, workers: 0, held: 1 });
       await Promise.all(
         Object.entries(tarballs).map(async ([url, bytes]) => {
           await store.add(url, hashOf(bytes));
@@ -102,6 +103,27 @@ describe("createStore", () => {
     const [small, large, narrow] = [await peak(30, 8), await peak(150, 8), await peak(150, 4)];
     expect(large).toBeLessThanOrEqual(small); // five times the tree, no more in hand
     expect(narrow).toBeLessThan(large); // and the ceiling is what decides how much
+  });
+
+  it("gives a download's slot back at its last byte, while its tarball waits for a thread", async () => {
+    // Held through the unpack, a slot waited on busy threads with nothing on the wire: every
+    // tarball here lands while the only thread is still booting, not just the first two.
+    const tarballs: Record<string, Uint8Array> = {};
+    for (let i = 0; i < 20; i++) {
+      tarballs[`https://reg/s${i}.tgz`] = makeTarball([{ path: "a.js", data: `pkg ${i}` }]);
+    }
+    const fetch = stubFetch(tarballs);
+    const SLOW = new URL("./slow-worker.ts", import.meta.url);
+    const store = createStore({ dir, fetch, concurrency: 2, workers: 1, workerEntry: SLOW });
+    let asked = -1;
+    await Promise.all(
+      Object.entries(tarballs).map(async ([url, bytes]) => {
+        await store.add(url, hashOf(bytes));
+        if (asked < 0) asked = fetch.calls.length; // when the first one was stored
+      }),
+    );
+    store.close();
+    expect(asked).toBe(20);
   });
 
   it("is a cache hit on the second add, with zero fetch calls", async () => {
