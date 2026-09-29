@@ -827,6 +827,8 @@ describe("linkTree concurrency", () => {
         resolve();
       });
     const raced = new Set([join(nm, "a"), join(nm, ".bin", "a")]);
+    // There already, so neither run takes it for a new one that needs no `rm`.
+    await mkdir(nm, { recursive: true });
     const realRm = builtin.fsp.rm;
     vi.spyOn(builtin.fsp, "rm").mockImplementation(async (path, options) => {
       if (raced.has(String(path))) await meet(String(path));
@@ -842,6 +844,25 @@ describe("linkTree concurrency", () => {
     expect(await read(join(nm, "a", "cli.js"))).toBe("#!/usr/bin/env node\n");
     expect(await binOf(join(nm, ".bin", "a"))).toBe("../a/cli.js");
     expect(waiting.size).toBe(0);
+  });
+
+  it("replaces a name another install took first in a node_modules it just made", async () => {
+    const { store, resolution } = await seed([
+      { name: "a", files: { "cli.js": "#!/usr/bin/env node\n" }, bin: { a: "cli.js" } },
+    ]);
+    const nm = join(project, "node_modules");
+    const realSymlink = builtin.fsp.symlink;
+    // On Windows a bin is a shim, written as a file rather than linked.
+    const bins = process.platform === "win32" ? [] : [join(nm, ".bin", "a")];
+    const taken = new Set([join(nm, "a"), ...bins]);
+    vi.spyOn(builtin.fsp, "symlink").mockImplementation(async (target, path, type) => {
+      if (taken.delete(String(path))) await realSymlink("elsewhere", path, type);
+      return await realSymlink(target, path, type);
+    });
+    await linkTree(resolution, { dir: project, store });
+    expect(taken.size).toBe(0);
+    expect(await read(join(nm, "a", "cli.js"))).toBe("#!/usr/bin/env node\n");
+    expect(await binOf(join(nm, ".bin", "a"))).toBe("../a/cli.js");
   });
 
   it("gives up on a link someone keeps pointing elsewhere", async () => {

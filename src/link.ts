@@ -9,7 +9,7 @@ import { allDeps } from "./resolve.ts";
 import { pid } from "./runtime.ts";
 import type { ResolvedPackage, Resolution } from "./resolve.ts";
 import { clearState, readState, stateHash, writeState } from "./state.ts";
-import type { InstallState } from "./state.ts";
+import type { InstallState, TopLinks } from "./state.ts";
 import type { PackageIndex, Store } from "./store.ts";
 
 export interface LinkOptions {
@@ -42,8 +42,7 @@ export interface LinkOptions {
   awaiting?: (integrity: string) => Promise<unknown> | undefined;
   /**
    * `inputsHash` of this install, with what it will report, for the state file: the next
-   * install with the same inputs then skips the graph. Only when the tree is a function of
-   * those inputs alone — not with workspaces, whose manifests are inputs too.
+   * install with the same inputs then skips the graph.
    */
   inputs?: {
     hash: string;
@@ -56,6 +55,8 @@ export interface LinkOptions {
   tarballs?: InstallState["tarballs"];
   /** Told as each entry is built or found in place. */
   onProgress?: (progress: Progress) => void;
+  /** The proof of the workspace set, for the state file: see `InstallState.workspaces`. */
+  workspaces?: InstallState["workspaces"];
 }
 
 /**
@@ -143,6 +144,8 @@ const SMALL_INDEX = 130 + SHARD_FILES * 160;
 
 /** The root, or a workspace: a `node_modules` of its own, holding only what it declared. */
 interface Top {
+  /** The workspace's path, or "" for the root. */
+  path: string;
   nm: string;
   dependencies: Record<string, string>;
 }
@@ -199,20 +202,19 @@ export async function linkTree(resolution: Resolution, options: LinkOptions): Pr
   const tops = topsOf(options.dir, resolution);
   const state = await readState(options.dir);
   trace("link:state");
-  // The root's links and bins as they are made, for the state file's own up-to-date check.
-  const rootLinks: Record<string, string> = {};
-  let rootBins: string[] = [];
+  // Each top's links and bins as they are made, for the state file's own up-to-date check.
+  const made: Linked = Object.create(null); // a workspace may sit at `__proto__`
   const { inputs } = options;
-  const stateOf = (entries: string[], complete: boolean, root: RootLinks): InstallState => ({
-    version: 1,
-    hash,
-    entries,
-    complete,
-    store: builtin.path.resolve(store.dir),
-    ...(production && { production: true as const }),
-    ...(options.tarballs && { tarballs: options.tarballs }),
-    ...(inputs &&
-      tops.length === 1 && {
+  const stateOf = (entries: string[], complete: boolean, { "": root, ...rest }: Linked) =>
+    ({
+      version: 1,
+      hash,
+      entries,
+      complete,
+      store: builtin.path.resolve(store.dir),
+      ...(production && { production: true as const }),
+      ...(options.tarballs && { tarballs: options.tarballs }),
+      ...(inputs && {
         inputs: inputs.hash,
         summary: {
           packages: inputs.packages,
@@ -220,19 +222,23 @@ export async function linkTree(resolution: Resolution, options: LinkOptions): Pr
           warnings: inputs.warnings,
         },
         root,
+        ...(tops.length > 1 && { tops: rest }),
         ...(inputs.stamps && { stamps: inputs.stamps }),
       }),
-  });
+      workspaces: options.workspaces,
+    }) satisfies InstallState;
   if (!options.verify && state?.hash === hash && state.complete) {
-    const root = await standing(options.dir, storeDir, tops, resolution, state, production);
-    if (root) {
+    const read = await standing(options.dir, storeDir, tops, resolution, state, production);
+    if (read) {
       // The same tree from other inputs — a lockfile rewritten in the same words — or with a
-      // local tarball touched but holding the same bytes: the state learns them, so the next
-      // install gets the short check, and hashes no tarball again.
-      const learned = inputs && tops.length === 1 && state.inputs !== inputs.hash;
+      // local tarball touched but holding the same bytes, or the workspace set proven anew:
+      // the state learns them, so the next install gets the short check, and hashes no
+      // tarball and globs no workspace again.
+      const learned = inputs && state.inputs !== inputs.hash;
       const touched = JSON.stringify(state.tarballs) !== JSON.stringify(options.tarballs);
-      if (learned || touched) {
-        await writeState(options.dir, stateOf(state.entries, true, root));
+      const proven = JSON.stringify(state.workspaces) !== JSON.stringify(options.workspaces);
+      if (learned || touched || proven) {
+        await writeState(options.dir, stateOf(state.entries, true, read));
       }
       trace("link:standing");
       return { ...result, reused: state.entries.length, upToDate: true };
@@ -272,6 +278,8 @@ export async function linkTree(resolution: Resolution, options: LinkOptions): Pr
   trace("link:entries");
   const blobDir = join(store.dir, "files");
 
+  // Made here when there was none, the root's `node_modules` is new: see `linkTop`.
+  const rootNew = (await mkdir(tops[0]!.nm, { recursive: true })) !== undefined;
   await mkdir(storeDir, { recursive: true });
   // One listing in place of a stat per entry. A warm install has just made `.upm`, and each
   // of nuxt's 561 probes for a name that was not there cost a rejection and a wait on the
@@ -365,11 +373,14 @@ export async function linkTree(resolution: Resolution, options: LinkOptions): Pr
   pool?.close();
   // Only here, after the fast path: a no-op install never pays a realpath per top.
   const realRoot = await realpath(options.dir);
-  for (const top of tops) {
-    await inside(dirname(top.nm));
-    await inside(top.nm);
-    await linkTop(top);
-  }
+  // Each top is its own `node_modules`, so they are linked side by side.
+  await settle(
+    tops.map(async (top, i) => {
+      await inside(dirname(top.nm));
+      await inside(top.nm);
+      await linkTop(top, i === 0 && rootNew);
+    }),
+  );
   trace("link:tops");
   await sweepTemp();
   trace("link:swept");
@@ -379,7 +390,7 @@ export async function linkTree(resolution: Resolution, options: LinkOptions): Pr
     stateOf(
       [...new Set([...wanted.values()].map((entry) => entry.key))].sort(),
       result.dropped.length === 0,
-      { links: rootLinks, bins: rootBins },
+      made,
     ),
   );
   trace("link:statewritten");
@@ -801,8 +812,9 @@ export async function linkTree(resolution: Resolution, options: LinkOptions): Pr
   }
 
   /**
-   * `fresh`: `atDir` is under a temp dir, so nothing is there to read or replace — except on a
-   * case-insensitive disk, where two bins spelled `Foo` and `foo` are one name; then replace.
+   * `fresh`: `atDir` is under a temp dir or a `node_modules` made just now, so nothing is there to
+   * read or replace — except on a case-insensitive disk, where two bins spelled `Foo` and `foo`
+   * are one name, or a concurrent install's link; then replace.
    */
   async function placeBins(
     atDir: string,
@@ -818,10 +830,7 @@ export async function linkTree(resolution: Resolution, options: LinkOptions): Pr
       return;
     }
     for (const [name, bin] of bins) {
-      const at = join(atDir, name);
-      const to = relative(finalDir, bin.to);
-      if (fresh) await symlinkAt(to, at).catch(() => replaceLink(at, to, atDir));
-      else await replaceLink(at, to, atDir);
+      await linkAt(relative(finalDir, bin.to), join(atDir, name), atDir, fresh);
       result.bins++;
     }
   }
@@ -857,10 +866,14 @@ export async function linkTree(resolution: Resolution, options: LinkOptions): Pr
    * registry dep links into `.upm`; a workspace dep links to the workspace's own directory,
    * `packages/a/node_modules/b -> ../../b`. Its bins go through that link like any other's.
    */
-  async function linkTop({ nm, dependencies }: Top): Promise<void> {
+  async function linkTop({ path, nm, dependencies }: Top, rootNew: boolean): Promise<void> {
     const direct: [string, { pkg: ResolvedPackage }][] = [];
+    const links: [string, string][] = [];
+    const targets: Record<string, string> = {}; // by name, for the state file
     const scopes = new Set<string>();
-    await mkdir(nm, { recursive: true });
+    // A `node_modules` made just now holds nothing to read, replace or sweep. Were a concurrent
+    // install to link there too, a name it took first is replaced as usual.
+    const fresh = rootNew || (await mkdir(nm, { recursive: true })) !== undefined;
     for (const [name, version] of Object.entries(dependencies)) {
       const id = `${name}@${version}`;
       const pkg = resolution.packages[id];
@@ -870,18 +883,20 @@ export async function linkTree(resolution: Resolution, options: LinkOptions): Pr
       if (!real) continue; // dropped, or dev under --production
       direct.push([name, { pkg }]);
       const at = join(nm, name);
-      if (name.includes("/") && !scopes.has(dirname(at))) {
-        scopes.add(dirname(at));
-        await inside(dirname(at));
-        await mkdir(dirname(at), { recursive: true });
-      }
+      if (name.includes("/")) scopes.add(dirname(at));
       const target = relative(dirname(at), real);
-      await replaceLink(at, target, nm);
-      if (nm === tops[0]!.nm) rootLinks[name] = target;
+      links.push([at, target]);
+      targets[name] = target;
     }
+    for (const scope of scopes) {
+      await inside(scope);
+      await mkdir(scope, { recursive: true });
+    }
+    await settle(links.map(([at, target]) => linkAt(target, at, nm, fresh)));
     const bins = binsOf(direct, nm);
-    if (nm === tops[0]!.nm) rootBins = [...bins.keys()];
-    await placeBins(join(nm, ".bin"), join(nm, ".bin"), bins);
+    made[path] = { links: targets, bins: [...bins.keys()] };
+    await placeBins(join(nm, ".bin"), join(nm, ".bin"), bins, fresh);
+    if (fresh) return;
     await sweep(nm, new Set(direct.map(([name]) => name)));
     await sweep(join(nm, ".bin"), new Set(bins.keys()));
   }
@@ -918,11 +933,12 @@ export async function linkTree(resolution: Resolution, options: LinkOptions): Pr
 function topsOf(dir: string, resolution: Resolution): Top[] {
   const { join } = builtin.path;
   const tops: Top[] = [
-    { nm: join(dir, "node_modules"), dependencies: resolution.root.dependencies },
+    { path: "", nm: join(dir, "node_modules"), dependencies: resolution.root.dependencies },
   ];
   for (const pkg of Object.values(resolution.packages)) {
     if (pkg.local === undefined) continue;
-    tops.push({ nm: join(dir, pkg.local, "node_modules"), dependencies: allDeps(pkg) });
+    const nm = join(dir, pkg.local, "node_modules");
+    tops.push({ path: pkg.local, nm, dependencies: allDeps(pkg) });
   }
   return tops;
 }
@@ -940,12 +956,12 @@ async function standing(
   resolution: Resolution,
   state: InstallState,
   production: boolean,
-): Promise<RootLinks | undefined> {
-  let root: RootLinks | undefined;
+): Promise<Linked | undefined> {
+  const read: Linked = Object.create(null);
   for (const top of tops) {
     const found = await standingTop(dir, top, resolution, production);
     if (!found) return undefined;
-    root ??= found;
+    read[top.path] = found;
   }
   // withFileTypes, so a plain file named like a key cannot stand in for the entry.
   const entries = new Set(
@@ -953,30 +969,32 @@ async function standing(
       .filter((found) => found.isDirectory())
       .map((found) => found.name),
   );
-  return state.entries.every((key) => entries.has(key)) ? root : undefined;
+  return state.entries.every((key) => entries.has(key)) ? read : undefined;
 }
 
-/** A top's direct links as read off the disk, and the bin names it places. */
-type RootLinks = NonNullable<InstallState["root"]>;
+/** Each top's direct links and bin names, by its path: "" for the root. */
+type Linked = Record<string, TopLinks>;
 
 /**
  * Is the tree a state file with `root` describes still on disk? The same shape `standing`
- * checks, read off the state alone: every recorded root link pointing where it was made to,
- * every recorded bin placed, every recorded entry a directory under `.upm`. For the install
- * whose inputs have not changed, which has no graph to check against.
+ * checks, read off the state alone: every recorded link of the root and of each workspace
+ * pointing where it was made to, every recorded bin placed, every recorded entry a directory
+ * under `.upm`. For the install whose inputs have not changed, which has no graph to check
+ * against.
  */
 export function treeStanding(dir: string, state: InstallState): boolean {
   // Sync, like the other reads of the no-op path: a few directory reads, and no
   // `fs/promises` to load for them. See readState.
   const { join } = builtin.path;
   const { readdirSync } = builtin.fs;
-  const nm = join(dir, "node_modules");
   const { root } = state;
   if (!root || !state.complete) return false;
-  for (const [name, target] of Object.entries(root.links)) {
-    if (readLinkSync(join(nm, name)) !== target) return false;
-  }
-  if (root.bins.length > 0) {
+  for (const [path, { links, bins }] of Object.entries({ ...state.tops, "": root })) {
+    const nm = join(dir, path, "node_modules");
+    for (const [name, target] of Object.entries(links)) {
+      if (readLinkSync(join(nm, name)) !== target) return false;
+    }
+    if (bins.length === 0) continue;
     let placed: string[];
     try {
       placed = readdirSync(join(nm, ".bin"));
@@ -984,11 +1002,11 @@ export function treeStanding(dir: string, state: InstallState): boolean {
       return false;
     }
     const set = new Set(placed);
-    if (!root.bins.every((bin) => set.has(WIN ? `${bin}.cmd` : bin))) return false;
+    if (!bins.every((bin) => set.has(WIN ? `${bin}.cmd` : bin))) return false;
   }
   let found: import("node:fs").Dirent[];
   try {
-    found = readdirSync(join(nm, ".upm"), { withFileTypes: true });
+    found = readdirSync(join(dir, "node_modules", ".upm"), { withFileTypes: true });
   } catch {
     return false;
   }
@@ -1002,11 +1020,11 @@ async function standingTop(
   { nm, dependencies }: Top,
   resolution: Resolution,
   production: boolean,
-): Promise<RootLinks | undefined> {
+): Promise<TopLinks | undefined> {
   const { join, relative, dirname, sep } = builtin.path;
   const found = await builtin.fsp.readdir(nm, { withFileTypes: true }).catch(() => undefined);
   if (!found) return undefined;
-  const read: RootLinks = { links: {}, bins: [] };
+  const read: TopLinks = { links: {}, bins: [] };
 
   const links = new Set<string>();
   for (const item of found) {
@@ -1077,6 +1095,13 @@ async function replaceLink(at: string, target: string, within: string): Promise<
   }
 }
 
+/** `fresh`: nothing should be at `at` yet, so it is linked at once, and replaced only if it was. */
+function linkAt(target: string, at: string, within: string, fresh: boolean): Promise<void> {
+  return fresh
+    ? symlinkAt(target, at).catch(() => replaceLink(at, target, within))
+    : replaceLink(at, target, within);
+}
+
 async function symlinkAt(target: string, at: string): Promise<void> {
   try {
     const [to, type] = linkArgs(target, at);
@@ -1085,6 +1110,13 @@ async function symlinkAt(target: string, at: string): Promise<void> {
     throw Object.assign(fail(`cannot symlink ${at} -> ${target}: ${reason(error)}`, "ELINK"), {
       cause: error,
     });
+  }
+}
+
+/** Every one settled, then the first failure: nothing is still writing when the caller hears. */
+async function settle(work: Promise<unknown>[]): Promise<void> {
+  for (const outcome of await Promise.allSettled(work)) {
+    if (outcome.status === "rejected") throw outcome.reason;
   }
 }
 

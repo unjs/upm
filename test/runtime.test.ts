@@ -310,7 +310,7 @@ describe("cpus under a cgroup quota", () => {
 
   const v2 = "/sys/fs/cgroup/cpu.max";
   const v1 = "/sys/fs/cgroup/cpu/cpu.cfs_";
-  const unlimited = { cores: hardware, link: 4, unpack: 8, fs: 16 };
+  const unlimited = { cores: hardware, link: 8, unpack: 8, fs: 16 };
 
   it("v2 'max' is unlimited and leaves the benchmark defaults alone", async () => {
     expect(await on({ [v2]: "max 100000\n" })).toEqual(unlimited);

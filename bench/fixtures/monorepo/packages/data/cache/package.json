@@ -1,0 +1,12 @@
+{
+  "name": "@acme/cache",
+  "version": "0.0.0",
+  "private": true,
+  "dependencies": {
+    "ioredis": "6.0.0",
+    "lru-cache": "11.5.2"
+  },
+  "devDependencies": {
+    "@acme/tsconfig": "*"
+  }
+}

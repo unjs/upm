@@ -5,6 +5,7 @@ import {
   mkdtemp,
   readFile,
   realpath,
+  rename,
   rm,
   stat,
   symlink,
@@ -16,7 +17,7 @@ import type { Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as upm from "../src/index.ts";
 import { parseLockfile } from "../src/resolver.ts";
 import { stampOf } from "../src/state.ts";
@@ -95,6 +96,27 @@ describe("api", () => {
     const [first] = await upm.fetchPackages(["nanoid"], base);
     expect(first).toMatchObject({ name: "nanoid", version: "5.0.0", cached: false, files: 1 });
     expect((await upm.fetchPackages(["nanoid"], base))[0]!.cached).toBe(true);
+  });
+
+  it("resolves a workspace root on threads opened before the workspaces are read", async () => {
+    const ws = (name: string) =>
+      JSON.stringify({ name, version: "1.0.0", dependencies: { nanoid: "^5" } });
+    await mkdir(join(dir, "packages", "a"), { recursive: true });
+    await writeFile(join(dir, "package.json"), JSON.stringify({ workspaces: ["packages/*"] }));
+    await writeFile(join(dir, "packages", "a", "package.json"), ws("a"));
+    const threads = { ...base, experimental: { resolvePool: 1 } };
+    const locked = await upm.lock(threads);
+    expect(await upm.lock({ ...base, write: false })).toEqual(locked);
+    await rm(join(dir, "upm.lock"));
+    expect(await upm.install(threads)).toMatchObject({ packages: 1, workspaces: 1 });
+    // A command that fails before its resolve closes them again, and says why it failed.
+    await rm(join(dir, "upm.lock"));
+    await rm(join(dir, "node_modules"), { recursive: true });
+    await mkdir(join(dir, "packages", "b"), { recursive: true });
+    await writeFile(join(dir, "packages", "b", "package.json"), ws("a"));
+    for (const run of [upm.lock, upm.install]) {
+      await expect(run(threads)).rejects.toMatchObject({ code: "EWORKSPACE" });
+    }
   });
 
   it("installs through a store backend, which holds the package once the install returns", async () => {
@@ -223,6 +245,89 @@ describe("api", () => {
       '{"name":"demo","description":"x","dependencies":{"nanoid":"^5"}}',
     );
     expect((await upm.install(base)).upToDate).toBe(true);
+  });
+
+  it("finds a workspace tree up to date without a glob, and never once a workspace moves", async () => {
+    const root = { name: "root", workspaces: ["packages/*"], dependencies: { a: "*" } };
+    await writeFile(join(dir, "package.json"), JSON.stringify(root));
+    const ws = async (name: string, manifest: object) => {
+      await mkdir(join(dir, "packages", name), { recursive: true });
+      await writeFile(join(dir, "packages", name, "package.json"), JSON.stringify(manifest));
+    };
+    await ws("a", { name: "a", version: "1.0.0", dependencies: { nanoid: "^5" } });
+    await ws("b", { name: "b", version: "1.0.0", dependencies: { a: "workspace:*" } });
+    // Every stamp here is fresh, which the real clock would not trust: it is moved on, and
+    // each change waits out the timestamp's tick instead (30 ms: not enough where a tick is 1 s).
+    const real = Date.now;
+    vi.spyOn(Date, "now").mockImplementation(() => real.call(Date) + 60_000);
+    const tick = () => new Promise((done) => setTimeout(done, 30));
+    const glob = vi.spyOn(process.getBuiltinModule("node:fs/promises"), "glob").mock;
+    const stateFile = join(dir, "node_modules", ".upm.json");
+    const locked = async () =>
+      Object.keys(parseLockfile(await readFile(lockFile(), "utf8")).workspaces!);
+    const lockFile = () => join(dir, "upm.lock");
+
+    expect(await upm.install(base)).toMatchObject({ workspaces: 2, upToDate: false });
+    expect(await readJson(stateFile)).toMatchObject({
+      inputs: expect.any(String),
+      tops: {
+        "packages/a": { links: { nanoid: expect.stringContaining(".upm") }, bins: [] },
+        // As `relative` spells it, with `\` on Windows.
+        "packages/b": { links: { a: join("..", "..", "a") }, bins: [] },
+      },
+      workspaces: { paths: ["packages/a", "packages/b"] },
+    });
+    expect(glob.calls).toHaveLength(1);
+    await tick();
+    expect(await upm.install(base)).toMatchObject({ packages: 1, workspaces: 2, upToDate: true });
+    expect(glob.calls).toHaveLength(1);
+    // Settled now: a no-op reads the state and writes nothing back.
+    const written = await stat(stateFile);
+    expect((await upm.install(base)).upToDate).toBe(true);
+    expect(await stat(stateFile)).toMatchObject({ ino: written.ino, mtimeMs: written.mtimeMs });
+
+    // A workspace's link gone: the inputs still match, the tree does not.
+    await rm(join(dir, "packages", "a", "node_modules", "nanoid"));
+    expect((await upm.install(base)).upToDate).toBe(false);
+    expect(await readFile(join(dir, "packages/a/node_modules/nanoid/index.js"), "utf8")).toContain(
+      "nanoid",
+    );
+    expect(glob.calls).toHaveLength(1);
+
+    // A workspace's package.json edited, its ranges unchanged: read and hashed, not globbed,
+    // and found up to date. A range moved: a new lockfile.
+    await tick();
+    await ws("a", {
+      name: "a",
+      version: "1.0.0",
+      description: "x",
+      dependencies: { nanoid: "^5" },
+    });
+    expect((await upm.install(base)).upToDate).toBe(true);
+    await tick();
+    await ws("a", { name: "a", version: "1.0.0", dependencies: { nanoid: "5.0.0" } });
+    await expect(upm.install({ ...base, frozen: true })).rejects.toMatchObject({ code: "ELOCK" });
+    expect((await upm.install(base)).upToDate).toBe(true);
+    expect(await readFile(lockFile(), "utf8")).toContain('"nanoid": "5.0.0"');
+    expect(glob.calls).toHaveLength(1);
+
+    // Added, renamed, removed: each is a new lockfile, never a no-op, and stale when frozen.
+    const moves: [() => Promise<unknown>, string[]][] = [
+      [() => ws("c", { name: "c", version: "1.0.0" }), ["packages/a", "packages/b", "packages/c"]],
+      [
+        () => rename(join(dir, "packages", "b"), join(dir, "packages", "d")),
+        ["packages/a", "packages/c", "packages/d"],
+      ],
+      [() => rm(join(dir, "packages", "c"), { recursive: true }), ["packages/a", "packages/d"]],
+    ];
+    for (const [move, paths] of moves) {
+      await tick();
+      await move();
+      await expect(upm.install({ ...base, frozen: true })).rejects.toMatchObject({ code: "ELOCK" });
+      expect(await upm.install(base)).toMatchObject({ workspaces: paths.length, upToDate: false });
+      expect(await locked()).toEqual(paths);
+      expect((await readJson(stateFile)).workspaces.paths).toEqual(paths);
+    }
   });
 
   it("names the store it used in the inputs, defaults included, whatever the cwd", async () => {
@@ -878,5 +983,36 @@ describe("tarball dependencies", () => {
     await expect(upm.exec("a", { ...base, packages: [`a@${url()}`] })).rejects.toMatchObject({
       code: "EINVALIDSPEC",
     });
+  });
+});
+
+describe("the order a store is filled in", () => {
+  const pkg = (name: string, dependencies: Record<string, string> = {}, local?: string) => ({
+    name,
+    version: local ? `link:${local}` : "1.0.0",
+    resolved: "",
+    integrity: "",
+    dependencies,
+    optional: false,
+    dev: false,
+    bin: {},
+    ...(local && { local }),
+  });
+
+  it("asks for what the tops depend on first, then breadth first, and drops nothing", async () => {
+    const { nearestFirst } = await import("../src/api.ts");
+    const packages = {
+      "a-leaf@1.0.0": pkg("a-leaf"),
+      "b-mid@1.0.0": pkg("b-mid", { "a-leaf": "1.0.0" }),
+      "z-top@1.0.0": pkg("z-top", { "b-mid": "1.0.0" }),
+      "y-ws-dep@1.0.0": pkg("y-ws-dep"),
+      "stray@1.0.0": pkg("stray"),
+      "ws@link:packages/ws": pkg("ws", { "y-ws-dep": "1.0.0" }, "packages/ws"),
+    };
+    const resolution = { root: { dependencies: { "z-top": "1.0.0" } }, packages, warnings: [] };
+    const wanted = Object.values(packages).filter((each) => !("local" in each));
+    const order = nearestFirst(resolution, wanted).map((each) => each.name);
+    // Key order would have been a-leaf, b-mid, stray, y-ws-dep, z-top.
+    expect(order).toEqual(["z-top", "y-ws-dep", "b-mid", "a-leaf", "stray"]);
   });
 });

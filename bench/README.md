@@ -51,30 +51,38 @@ the repo. Any `core.<pid>` newer than the run is deleted on exit.
 
 ## Fixtures
 
-Each fixture is a `package.json` with one pinned entry package, so every manager starts from
-the same graph.
+Each fixture is a `package.json` with pinned versions, so every manager starts from the same
+graph. A fixture folder is copied whole, so one can hold workspaces.
 
-| fixture | entry package                                                        |
-| ------- | -------------------------------------------------------------------- |
-| `nitro` | `nitro@3.0.260903-beta`                                              |
-| `nuxt`  | `nuxt@4.5.2`                                                         |
-| `next`  | `next@16.3.4`, plus `react` and `react-dom@19.2.0`, which it needs   |
-| `tiny`  | `ms@2.1.3`, no dependencies. Not in the default suite; use `-f tiny` |
+| fixture    | entry package                                                              |
+| ---------- | -------------------------------------------------------------------------- |
+| `nitro`    | `nitro@3.0.260903-beta`                                                    |
+| `nuxt`     | `nuxt@4.5.2`                                                               |
+| `next`     | `next@16.3.4`, plus `react` and `react-dom@19.2.0`, which it needs         |
+| `tiny`     | `ms@2.1.3`, no dependencies. Not in the default suite; use `-f tiny`       |
+| `monorepo` | 46 workspaces, about 790 packages. Not in the default suite; `-f monorepo` |
 
 `tiny` is for A/B tests of startup or thread changes, where a ~150 ms install shows costs
 the big fixtures hide. `nuxt` reaches `@isaacs/cliui`, which uses alias specs
 (`string-width-cjs@npm:string-width@^4.2.0`), so its tree has both an ESM and a CJS copy of
 `string-width`, `strip-ansi` and `wrap-ansi`.
 
+`monorepo` is for what grows with workspaces: the no-op install, and linking and resolving
+many tops. Its workspaces sit under `apps/*`, `packages/**` and `tools/*`, apps on Next.js,
+Vite, VitePress, Storybook and Fastify over shared libraries, and depend on each other by
+`*`, which npm and yarn 1 read too (not `workspace:*`). `pnpm-workspace.yaml` names the same
+patterns for pnpm, aube and nub. It holds package.json files only: a real monorepo's glob
+also walks its source folders, which this one has none of.
+
 ## Phases
 
 Run in this order, so one download fills the cache for the rest.
 
-| phase    | state before the install                        | what it costs                  |
-| -------- | ----------------------------------------------- | ------------------------------ |
-| `cold`   | no cache, no lockfile, no `node_modules`        | resolve + download + link      |
-| `warm`   | cache and lockfile kept, `node_modules` deleted | read lockfile + link           |
-| `repeat` | nothing deleted                                 | finding there is nothing to do |
+| phase    | state before the install                              | what it costs                  |
+| -------- | ----------------------------------------------------- | ------------------------------ |
+| `cold`   | no cache, no lockfile, no `node_modules`              | resolve + download + link      |
+| `warm`   | cache and lockfile kept, every `node_modules` deleted | read lockfile + link           |
+| `repeat` | nothing deleted                                       | finding there is nothing to do |
 
 `warm` matters most for CI with a restored cache. `repeat` is what an editor or a `predev`
 hook pays when install had nothing to do.
@@ -274,13 +282,23 @@ each pair. Every run goes through `measure.pl` into a rows file under `.work/ab/
 `summ.mjs` prints medians and paired differences against the first build, with how many
 pairs the new build won.
 
-- Modes: `cold`, `warm` and `repeat` as above, with a private store per build, and `lock`,
-  which times `upm lock` alone in a fresh project and store and fails if the builds'
-  `upm.lock` differ. `package.json` is copied once per project, so `repeat` keeps upm's
-  up-to-date stamps.
+- Modes: `cold`, `warm` and `repeat` as above, with a private store per build, and:
+  - `cache`: a warm store with no lockfile or `node_modules`, as on a fresh clone. Primed once
+    per build; each run removes `upm.lock` and every `node_modules`, then installs.
+  - `lock`: `upm lock` alone in a fresh project and store.
+  - `relock`: `upm lock` over a warm store: primed once per build, `upm.lock` removed per
+    run. The warm resolve without the link, e.g. `AB_ARGS=--prefer-offline`.
+
+  `cache`, `lock` and `relock` fail if the builds' `upm.lock` differ.
+
+- A fixture is a name in `fixtures/`, or a path to a project directory (with a `/`), such as
+  a workspace monorepo. Either is copied whole, without `node_modules` and `upm.lock`, once
+  per project, so `repeat` keeps upm's up-to-date stamps. `warm` and `cache` delete every
+  `node_modules`, a workspace's too.
 - Projects live under `BENCH_WORK`, outside the repo like `bench.sh`'s.
-- Env: `AB_ENV` / `AB_ENV_<label>` add environment for all builds or one, `AB_OUT` names
-  the rows file, `AB_KEEP=1` keeps the work directories. The release-age gate is 1 day
-  (`BENCH_MIN_AGE_DAYS`), as in `bench.sh`.
+- Env: `AB_ENV` / `AB_ENV_<label>` add environment for all builds or one, `AB_ARGS` adds
+  arguments to every command, `AB_OUT` names the rows file, `AB_KEEP=1` keeps the work
+  directories. The release-age gate is 1 day (`BENCH_MIN_AGE_DAYS`), as in `bench.sh`, so a
+  primed store answers most picks unasked for a day even without `--prefer-offline`.
 - It holds `.work/ab/.lock` (via `flock`), so two runs on one machine wait for each other.
 - Use ten or more pairs before claiming a result: [../.agents/perf.md](../.agents/perf.md).

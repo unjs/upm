@@ -1039,13 +1039,16 @@ describe("startup budget", () => {
     // 138,791 minified bytes over 27 modules when the count moved from source bytes (437,989);
     // 141,619 with the registry's version index and the lockfile kept in node_modules,
     // `--help` unchanged cached and uncached (40/41 and 106/106 ms); 142,114 with consumers
-    // sharing a missing peer, `--help` within noise (46/42 and 121/114 ms); 142,613 with the
-    // progress hooks and `--no-progress`, the bar itself lazy, `--help` within noise (45/43 and
-    // 125/125 ms).
+    // sharing a missing peer, `--help` within noise (46/42 and 121/114 ms); 143,973 with kept
+    // documents read in parts and the resolve's threads started early (42/43 and 110/111 ms);
+    // 144,476 with a warm link that skips the fill and links tops side by side (43/44 and
+    // 115/112 ms); 145,049 with each workspace's links in the state (43/42 and 107/107 ms);
+    // 147,156 with tarballs fetched through the agent's callbacks (41/42 and 108/108 ms);
+    // 147,684 with the progress hooks and `--no-progress`, the bar itself lazy.
     const modules = await reachable();
     const bytes = [...modules.values()].reduce((total, size) => total + size, 0);
     expect(modules.size).toBeLessThanOrEqual(27); // `upm.ts` is the bin, `cli.ts` the program
-    expect(bytes).toBeLessThanOrEqual(142_700);
+    expect(bytes).toBeLessThanOrEqual(147_800);
     // Found through `import()` by the commands that read a project, like the pools: each holds
     // its worker's whole code in the build.
     const lazy = [

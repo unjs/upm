@@ -10,10 +10,12 @@
 // compressed: zstd would take a third of the disk but make a warm resolve 10% slower. Reads and
 // writes are synchronous, because a registry thread is terminated when the walk ends and the
 // bin exits once its output is out: a write still pending then would be lost. A write goes to a
-// temp file and is renamed in, so a reader never sees half of one.
+// temp file and is renamed in, so a reader never sees half of one. A big file is read in parts:
+// its head and tail, then only what a pick reads of the body (`Kept.read`).
 import { builtin } from "./builtin.ts";
 import { at as written, indexVersions, members, OPEN, valueEnd } from "./pluck.ts";
 import type { VersionIndex } from "./pluck.ts";
+import type { Stats } from "node:fs";
 import type { CacheMode, DocumentCache, Kept } from "./registry.ts";
 import { concat } from "./runtime.ts";
 
@@ -35,6 +37,15 @@ interface Head {
 }
 
 const NEWLINE = 10;
+/**
+ * A file past this is read in parts. A warm resolve of an 86-workspace monorepo read 480 MB of
+ * documents whole, for the few MB of manifests, tags and dates its picks parsed.
+ */
+const WHOLE = 128 * 1024;
+/** The first read of a file read in parts: the head, and the body's first members after it. */
+const CHUNK = 64 * 1024;
+/** The body's last bytes, read with the head: where `pluckModified` looks. */
+const TAIL = 96;
 /** Where `at`'s digits start in a head: after `{"at":`. */
 const AT = 6;
 /**
@@ -111,17 +122,101 @@ export function createDocumentCache(options: MetadataOptions): DocumentCache {
 
   function get(key: string): Kept | undefined {
     const file = fileOf(key);
-    let bytes: Uint8Array;
+    let first: Uint8Array;
+    let tail: Uint8Array | undefined;
+    let stat: Stats;
     try {
-      bytes = fs.readFileSync(file);
+      const fd = fs.openSync(file, "r");
+      try {
+        stat = fs.fstatSync(fd);
+        const total = stat.size;
+        const wanted = total <= WHOLE ? total : CHUNK;
+        first = readAt(fd, 0, wanted);
+        // A head can outgrow the first read: its index has three entries per version.
+        while (first.indexOf(NEWLINE) < 0 && first.length < total) {
+          const more = readAt(fd, first.length, Math.min(first.length, total - first.length));
+          if (more.length === 0) break;
+          first = concat([first, more]);
+        }
+        if (first.length < total) {
+          const last = Math.max(first.length, total - TAIL);
+          tail = readAt(fd, last, total - last);
+          // Shorter than it said: torn, and a miss.
+          if (first.length < wanted || tail.length < total - last) return undefined;
+        }
+      } finally {
+        fs.closeSync(fd);
+      }
     } catch {
       return undefined;
     }
-    const head = parseHead(bytes, key);
+    const head = parseHead(first, key);
     if (!head) return undefined;
     const { at, etag, maxAge, end } = head;
     const index = Array.isArray(head.index) ? head.index : undefined;
-    return { bytes: bytes.subarray(end + 1), etag, at, maxAge, index };
+    const from = end + 1;
+    if (!tail) return { bytes: first.subarray(from), etag, at, maxAge, index };
+    // Not spread: that would read `bytes` whole.
+    return Object.assign(inParts(file, stat!, from, first, tail), { etag, at, maxAge, index });
+  }
+
+  /**
+   * A body read when asked, in parts: what was read with the head (`first` from `from` on, and
+   * `tail`) from memory, the rest from the file again, and only while it is still the file the
+   * head came from — the same device, inode and size. Once it is not, replaced or removed, a read
+   * is undefined and `bytes` throws `ECHANGED`: the head's offsets say nothing about another
+   * file, so the registry reads the name afresh (`again` in `src/registry.ts`).
+   */
+  function inParts(
+    file: string,
+    stat: Stats,
+    from: number,
+    first: Uint8Array,
+    tail: Uint8Array,
+  ): Pick<Kept, "bytes" | "size" | "read"> {
+    const size = stat.size - from;
+    const tailAt = size - tail.length;
+    let whole: Uint8Array | undefined;
+    const read = (start: number, end: number): Uint8Array | undefined => {
+      end = Math.min(end, size);
+      if (start >= end) return new Uint8Array(0);
+      if (whole) return whole.subarray(start, end);
+      if (from + end <= first.length) return first.subarray(from + start, from + end);
+      if (start >= tailAt) return tail.subarray(start - tailAt, end - tailAt);
+      try {
+        const fd = fs.openSync(file, "r");
+        try {
+          const now = fs.fstatSync(fd);
+          if (now.dev !== stat.dev || now.ino !== stat.ino || now.size !== stat.size) return;
+          const got = readAt(fd, from + start, end - start);
+          return got.length === end - start ? got : undefined;
+        } finally {
+          fs.closeSync(fd);
+        }
+      } catch {
+        return undefined;
+      }
+    };
+    return {
+      get bytes() {
+        whole ??= read(0, size) ?? raise(`${file} changed while it was read`, "ECHANGED");
+        return whole;
+      },
+      size,
+      read,
+    };
+  }
+
+  /** Up to `length` bytes from `position`: fewer only at the end of the file. */
+  function readAt(fd: number, position: number, length: number): Uint8Array {
+    const out = new Uint8Array(length);
+    let got = 0;
+    while (got < length) {
+      const n = fs.readSync(fd, out, got, length - got, position + got);
+      if (n === 0) break;
+      got += n;
+    }
+    return got === length ? out : out.subarray(0, got);
   }
 
   function set(
@@ -187,12 +282,20 @@ export function createDocumentCache(options: MetadataOptions): DocumentCache {
     } finally {
       if (fd !== undefined) fs.closeSync(fd);
     }
-    const kept = old ? get(key) : undefined;
-    const index = kept && indexVersions(kept.bytes);
-    if (index) set(key, kept!.bytes, kept!.at, kept!.etag, kept!.maxAge, index);
+    try {
+      const kept = old ? get(key) : undefined;
+      const index = kept && indexVersions(kept.bytes);
+      if (index) set(key, kept!.bytes, kept!.at, kept!.etag, kept!.maxAge, index);
+    } catch {
+      // Replaced meanwhile: whoever wrote it wrote it with its index.
+    }
   }
 
   return { mode, get, set, touch };
+}
+
+function raise(message: string, code: string): never {
+  throw Object.assign(new Error(message), { code });
 }
 
 const encoder = new TextEncoder();

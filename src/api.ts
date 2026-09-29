@@ -14,6 +14,7 @@ import {
   fromCheckedLockfile,
   fromLockfile,
   LOCKFILE,
+  lockCounts,
   parseLockfile,
   readLockfile,
   sameTree,
@@ -27,7 +28,9 @@ import { pickManifest } from "./pick.ts";
 import { createRegistry, hosts } from "./registry.ts";
 import type { BaseFor, Registry } from "./registry.ts";
 import {
+  allDeps,
   currentPlatform,
+  declaredWorkspaces,
   filterPlatform,
   GROUPS,
   integrityOf,
@@ -36,7 +39,7 @@ import {
   runsOn,
   unmetPeers,
 } from "./resolve.ts";
-import type { ResolveOptions, Resolution, RootManifest } from "./resolve.ts";
+import type { ResolvedPackage, ResolveOptions, Resolution, RootManifest } from "./resolve.ts";
 import {
   binDirs,
   quote,
@@ -73,6 +76,7 @@ import { describe, replaceFile, take, trace, tracing } from "./util.ts";
 /** Only a type: the module itself is loaded by the commands that read a project. */
 type Workspace = import("./workspaces.ts").Workspace;
 type Root = import("./workspaces.ts").Root;
+type Listed = import("./workspaces.ts").Listed;
 
 export type { Added, Group };
 
@@ -182,7 +186,10 @@ export interface Experimental {
 }
 
 export interface LinkPoolConfig {
-  /** Workers, 0 to 64; 0 never starts them. Default: up to 4, leaving the main thread a core. */
+  /**
+   * Workers, 0 to 64; 0 never starts them. Default: four, or one per 4,000 files when the pool
+   * knows them, up to 8 and leaving the main thread a core.
+   */
   size: number;
   /** Start them from this many packages in the lockfile. Default 200. */
   packages: number;
@@ -373,12 +380,17 @@ export interface RunResult {
 }
 
 /**
- * Workers by default: up to four, leaving the main thread a core, and none unless that is at
+ * Workers by default: up to eight, leaving the main thread a core, and none unless that is at
  * least two. One worker measured 15–19% slower than linking here (`nuxt`, `next` on two
  * cores) and two a wash; three won. `--experimental-link-pool=1` can still ask for one.
+ *
+ * Without a size asked for, a pool starts four, or one per 4,000 files when it knows more, up
+ * to this. On a warm link over sixteen cores, eight beat four by 12% on 40,000 files and 15% on
+ * 117,000, twelve did no better, and on `nuxt`'s 13,575 files eight were a wash for 40% more
+ * CPU and 58 MB.
  */
 export function defaultPoolSize(cores: number): number {
-  const spare = Math.min(4, cores - 1);
+  const spare = Math.min(8, cores - 1);
   return spare >= 2 ? spare : 0;
 }
 
@@ -386,9 +398,8 @@ let poolDefaults: LinkPoolConfig | undefined;
 
 /**
  * Where the pool was measured to pay for its own startup: `angular/cli` (238 packages, 7,000
- * files) gains 15%, `webpack` (64, 3,358) loses 10%. Four threads did as well as eight on
- * every shape and boot faster; the main thread keeps a core. Read on first use, so importing
- * the package does not count cores.
+ * files) gains 15%, `webpack` (64, 3,358) loses 10%. Read on first use, so importing the
+ * package does not count cores.
  */
 export function linkPoolDefaults(): LinkPoolConfig {
   return (poolDefaults ??= { size: defaultPoolSize(cpus()), packages: 200, files: 6000 });
@@ -401,6 +412,8 @@ interface Context {
   dedupe: boolean;
   resolvePool?: number;
   linkPool: LinkPoolConfig;
+  /** The pool's size was asked for: it starts that many, whatever the files. */
+  sized: boolean;
   /** The project root `projectDir` found: `dir`, else the walk up from cwd. */
   root?: string;
   /** What `findRoot` read of the root, so `loadProject` does not glob and parse it again. */
@@ -422,6 +435,8 @@ interface Context {
   stamped?: Map<string, Stamp>;
   /** Told by any pool that no thread of its would start; said once per command. */
   noThreads: () => void;
+  /** The resolve's registry, opened before the workspaces are read (`openEarly`). */
+  early?: Promise<OpenRegistry>;
 }
 
 /** The options checked, before anything is read. */
@@ -453,7 +468,7 @@ function context(options: Context["options"], dedupe = false): Context {
     if (!alone) log("worker threads unavailable; running on one thread", "warn");
     alone = true;
   };
-  return { options, log, dedupe, resolvePool, linkPool: pool, noThreads };
+  return { options, log, dedupe, resolvePool, linkPool: pool, sized: !!linkPool?.size, noThreads };
 }
 
 function count(value: unknown, max = Number.MAX_SAFE_INTEGER): boolean {
@@ -496,22 +511,29 @@ export async function dedupe(options: DedupeOptions = {}): Promise<InstallResult
 }
 
 async function installTree(ctx: Context, edit?: Edit, loaded?: Project): Promise<InstallResult> {
+  return await installed(ctx, edit, loaded).finally(() => closeEarly(ctx));
+}
+
+async function installed(ctx: Context, edit?: Edit, loaded?: Project): Promise<InstallResult> {
   const { options, log } = ctx;
-  const project = edit?.project ?? loaded ?? (await loadProject(ctx));
+  // Without a lockfile, one in node_modules may stand in: `restoreLock`. Deduping resolves anyway.
+  const project = edit?.project ?? loaded ?? (await loadProject(ctx, ctx.dedupe ? "lock" : "tree"));
   trace("project");
   const { dir } = project;
   // Before the lockfile: the pool wants to know now whether there is a tree to compare.
-  const state = options.verify ? undefined : await readState(dir);
+  const state = options.verify ? undefined : (project.state ?? (await readState(dir)));
   trace("state");
   if (!options.frozen) await restoreLock(ctx, project, state);
   // The state names the inputs it was made from: the same bytes and settings again, with the
   // tree still standing, is a no-op install that never reads the graph. The two files'
-  // stamps say "same bytes" without a read or a hash; failing that, the hash decides. A local
-  // tarball has only its stamp: any other, and the install below checks its bytes.
-  if (state?.inputs !== undefined && !edit && !ctx.dedupe && project.workspaces.length === 0) {
+  // stamps, and the workspace set proven off the state, say "same bytes" without a read or a
+  // hash; failing that, the hash decides. A local tarball has only its stamp: any other, and
+  // the install below checks its bytes.
+  if (state?.inputs !== undefined && !edit && !ctx.dedupe) {
     const stamps = stampsOf(ctx, dir);
     const stamped =
       stamps !== undefined &&
+      project.proven &&
       sameStamp(stamps.lock, state.stamps?.lock) &&
       sameStamp(stamps.manifest, state.stamps?.manifest) &&
       stamps.settings === state.stamps?.settings;
@@ -524,14 +546,16 @@ async function installTree(ctx: Context, edit?: Edit, loaded?: Project): Promise
     trace("inputs");
     const files = state.tarballs;
     if (matched && files && sameFiles(dir, files) && treeStanding(dir, state)) {
-      // Read and hashed this time: the stamps are recorded so the next install need not.
-      if (!stamped && stamps) await writeState(dir, { ...state, stamps });
+      // Read and hashed, or folders read again, this time: recorded so the next install need not.
+      if (!stamped || project.learned) {
+        await writeState(dir, { ...state, stamps, workspaces: project.proof });
+      }
       trace("linked");
       const { packages, otherPlatforms, warnings } = state.summary!;
       for (const warning of warnings) log(warning, "warn");
       return {
         packages,
-        workspaces: 0,
+        workspaces: project.workspaces.length,
         otherPlatforms,
         upToDate: true,
         missingOptional: [],
@@ -601,7 +625,7 @@ async function installTree(ctx: Context, edit?: Edit, loaded?: Project): Promise
     let total = wanted.length;
     const tell = () => progress?.({ phase: "fetch", done: fetched, total });
     await Promise.all(
-      wanted.map(async (pkg) => {
+      nearestFirst(resolution, wanted).map(async (pkg) => {
         try {
           await into.ensure(tarballOf(dir, pkg.resolved, pkg.source), pkg.integrity);
           fetched++;
@@ -630,15 +654,20 @@ async function installTree(ctx: Context, edit?: Edit, loaded?: Project): Promise
   // The link runs under the fill: each entry is built as its tarball lands, so the last
   // tarballs' tail hides the link instead of preceding it. A failed download is what the
   // caller hears, not the missing entry the link sees: the catch waits for the fill first.
-  const filling = settled
-    ? undefined
-    : fill(store).finally(() => {
-        trace("fill");
-        if (tracing) trace("filled", take()); // the main thread's memory at that point
-      });
+  // A store that holds every index already has nothing to fill: the linker then reads no index
+  // for a count as each "lands", and builds from the start. 64 ms of `large`'s link.
+  const filling =
+    settled || (!options.verify && wanted.every((pkg) => store.indexSize(pkg.integrity) > 0))
+      ? undefined
+      : fill(store).finally(() => {
+          trace("fill");
+          if (tracing) trace("filled", take()); // the main thread's memory at that point
+        });
   filling?.catch(() => {});
+  // Closed by the fill otherwise: the walk's prefetch may have started unpack threads.
+  if (!filling) store.close();
   // The inputs, for the state file, read back off disk: `plan` may just have written them.
-  const inputs = project.workspaces.length === 0 ? await lockText(ctx, dir) : undefined;
+  const inputs = await lockText(ctx, dir);
   // The linker is handed the hash rather than computing it again: 3.7 ms on `nuxt`.
   const link = {
     dir,
@@ -660,6 +689,7 @@ async function installTree(ctx: Context, edit?: Edit, loaded?: Project): Promise
             stamps: stampsOf(ctx, dir),
           },
     tarballs: filesOf(ctx, lock),
+    workspaces: project.proof,
   };
   const linked = await linkTree(resolution, link).catch(async (error: unknown) => {
     await filling;
@@ -814,11 +844,12 @@ async function movedIn(
 
 /** What the tree is a function of, besides the store's content. */
 function inputsOf(ctx: Context, project: Project, lock: string): Inputs {
-  return { lock, manifest: project.manifest, ...settingsIn(ctx) };
+  const workspaces = project.workspaces.map((ws): [string, unknown] => [ws.path, ws.manifest]);
+  return { lock, manifest: project.manifest, workspaces, ...settingsIn(ctx) };
 }
 
-/** The inputs that are neither file. */
-function settingsIn(ctx: Context): Omit<Inputs, "lock" | "manifest"> {
+/** The inputs that are not files. */
+function settingsIn(ctx: Context): Omit<Inputs, "lock" | "manifest" | "workspaces"> {
   const { registry, scopes } = settings(ctx);
   return {
     production: ctx.options.production === true,
@@ -828,6 +859,31 @@ function settingsIn(ctx: Context): Omit<Inputs, "lock" | "manifest"> {
     hosts: [registry, scopes],
     platform: currentPlatform(),
   };
+}
+
+/**
+ * `wanted` in the order the tops reach it, their own dependencies first. The fill asks for
+ * every tarball at once and the download gate serves them in that order; in key order `next`
+ * and `typescript` waited behind hundreds of small tarballs and were the install's last. A
+ * top's own dependencies are where the big ones tend to be, as the walk has it with no lockfile.
+ */
+export function nearestFirst(resolution: Resolution, wanted: ResolvedPackage[]): ResolvedPackage[] {
+  const { packages } = resolution;
+  const order = new Set<ResolvedPackage>();
+  const reach = (deps: Record<string, string>) => {
+    for (const [name, version] of Object.entries(deps)) {
+      const pkg = packages[`${name}@${version}`];
+      if (pkg) order.add(pkg);
+    }
+  };
+  reach(resolution.root.dependencies);
+  for (const pkg of Object.values(packages)) if (pkg.local !== undefined) reach(allDeps(pkg));
+  // Breadth first: a Set's iteration visits what is added to it while it runs.
+  for (const pkg of order) reach(allDeps(pkg));
+  const kept = new Set(wanted);
+  const first = [...order].filter((pkg) => kept.has(pkg));
+  // Nothing should be out of reach of a top; if something is, it still comes, last.
+  return first.length === wanted.length ? first : [...new Set([...first, ...wanted])];
 }
 
 /**
@@ -925,18 +981,29 @@ function linkPool(ctx: Context, fresh: boolean): PoolPlan | undefined {
   const config = ctx.linkPool;
   if (config.size === 0) return undefined;
   let loading: Promise<typeof import("./link-pool.ts")> | undefined;
+  let loaded: typeof import("./link-pool.ts") | undefined;
   let pool: Promise<LinkPool | undefined> | undefined;
   let picks = 0;
-  const load = () => (loading ??= import("./link-pool.ts"));
+  // The files known when it starts, which its size follows: see `defaultPoolSize`.
+  let files = 0;
+  const load = () => (loading ??= import("./link-pool.ts").then((m) => (loaded = m)));
+  const begin = (m: typeof import("./link-pool.ts")) =>
+    m.startLinkPool(
+      ctx.sized ? config.size : Math.min(config.size, Math.max(4, Math.ceil(files / 4000))),
+      undefined,
+      undefined,
+      ctx.noThreads,
+    );
+  // Started now when the module is in, not at this thread's next await, which comes only once
+  // the lockfile is converted and hashed: 14 ms on `next`, 33 on `large`.
   // A runtime that cannot load the pool builds every entry here, as without one.
   const start = () =>
-    (pool ??= load().then(
-      (m) => m.startLinkPool(config.size, undefined, undefined, ctx.noThreads),
-      () => {
-        ctx.noThreads();
-        return undefined;
-      },
-    ));
+    (pool ??= loaded
+      ? Promise.resolve(begin(loaded))
+      : load().then(begin, () => {
+          ctx.noThreads();
+          return undefined;
+        }));
   const early = fresh && !ctx.options.production;
   if (early) load().catch(() => {});
   return {
@@ -945,10 +1012,11 @@ function linkPool(ctx: Context, fresh: boolean): PoolPlan | undefined {
     },
     planned(lock, store) {
       if (!early || pool) return;
-      const { packages, files } = neutral(lock, store);
-      if (packages >= config.packages || files >= config.files) void start();
+      const found = neutral(lock, store);
+      if ((files = found.files) >= config.files || found.packages >= config.packages) void start();
     },
-    ask: (files) => (pool || files() >= config.files ? start() : Promise.resolve(undefined)),
+    ask: (count) =>
+      pool || (files = count()) >= config.files ? start() : Promise.resolve(undefined),
   };
 }
 
@@ -1122,7 +1190,8 @@ async function installFirst(ctx: Context): Promise<void> {
   let found: Root | undefined;
   if (ctx.root === undefined) {
     const { findRoot } = await import("./workspaces.ts");
-    found = await findRoot(builtin.path.resolve(options.dir ?? globalThis.process.cwd()));
+    const cwd = options.dir ?? globalThis.process.cwd();
+    found = await findRoot(builtin.path.resolve(cwd), !options.verify);
   }
   const root = found?.dir ?? ctx.root!;
   const state = await readState(root);
@@ -1420,7 +1489,11 @@ async function resolveLock(
  */
 export async function lock(options: LockOptions = {}): Promise<Lockfile> {
   const ctx = await open(options);
-  const project = await loadProject(ctx);
+  return await lockProject(ctx, options).finally(() => closeEarly(ctx));
+}
+
+async function lockProject(ctx: Context, options: LockOptions): Promise<Lockfile> {
+  const project = await loadProject(ctx, "lock");
   const { dir, manifest, workspaces } = project;
   const { foreign } = lockSource(ctx, dir);
   if (foreign) {
@@ -1450,12 +1523,13 @@ export async function lock(options: LockOptions = {}): Promise<Lockfile> {
     return store.flush();
   });
   const lock = toLockfile(resolution, registry.baseFor);
+  const text = formatLockfile(lock); // checked here, whether it is written or not
   for (const warning of resolution.warnings) ctx.log(warning, "warn");
   if (options.write === false) {
     ctx.log(counts(lock), "info");
     return lock;
   }
-  await writeLockfile(dir, lock);
+  await writeLockfile(dir, text);
   ctx.log(`wrote ${LOCKFILE} · ${counts(lock)}`, "info");
   return lock;
 }
@@ -1530,24 +1604,27 @@ async function projectDir(ctx: Context): Promise<string> {
   const { dir } = ctx.options;
   if (dir !== undefined) return (ctx.root = builtin.path.resolve(dir));
   const { findRoot } = await import("./workspaces.ts");
-  const found = (ctx.found = await findRoot(globalThis.process.cwd()));
+  const found = (ctx.found = await findRoot(globalThis.process.cwd(), !ctx.options.verify));
   ctx.inside = found.workspace;
   return (ctx.root = found.dir);
 }
 
 /** The root's package.json and the workspaces it declares: what one install is of. */
-interface Project {
+interface Project extends Omit<Listed, "workspaces"> {
   dir: string;
   manifest: RootManifest;
   workspaces: Workspace[];
 }
 
-async function loadProject(ctx: Context): Promise<Project> {
+/** `resolving` opens the registry early for a resolve with no lockfile (`openEarly`). */
+async function loadProject(ctx: Context, resolving?: "lock" | "tree"): Promise<Project> {
   const dir = await projectDir(ctx);
-  const manifest = ctx.found?.manifest ?? (await loadManifest(dir)).manifest;
-  const { findWorkspaces } = await import("./workspaces.ts");
-  const workspaces = ctx.found?.workspaces ?? (await findWorkspaces(dir, manifest));
-  return { dir, manifest, workspaces };
+  const { found } = ctx;
+  const manifest = found?.manifest ?? (await loadManifest(dir)).manifest;
+  if (resolving) openEarly(ctx, dir, manifest, resolving === "tree");
+  if (found?.listed) return { dir, manifest, ...found.listed };
+  const { workspacesOf } = await import("./workspaces.ts");
+  return { dir, manifest, ...(await workspacesOf(dir, manifest, !ctx.options.verify)) };
 }
 
 /** What the resolver is told about the workspaces: where each is and what it declares. */
@@ -1715,14 +1792,13 @@ async function foreignLock(ctx: Context, project: Project, file: ForeignFile): P
   return lock;
 }
 
+/** Of a checked lockfile: one read, written (`formatLockfile`) or another manager's, mapped. */
 function counts(lock: Lockfile): string {
-  // Through `fromLockfile`, so `dev` is the derived flag an install would see, not a stored one.
-  const all = Object.values(fromLockfile(lock).packages).filter((pkg) => pkg.local === undefined);
-  const optional = all.filter((pkg) => pkg.optional).length;
-  const dev = all.filter((pkg) => pkg.dev).length;
+  // Derived flags, as an install would see them, not stored ones.
+  const { packages, optional, dev } = lockCounts(lock);
   const workspaces = Object.keys(lock.workspaces ?? {}).length;
   // Every platform's packages, so this is larger than what any one install materializes.
-  const parts = [`${all.length} pkgs`];
+  const parts = [`${packages} pkgs`];
   if (optional > 0) parts.push(`${optional} opt`);
   if (dev > 0) parts.push(`${dev} dev`);
   if (workspaces > 0) parts.push(`${workspaces} ws`);
@@ -1741,7 +1817,16 @@ interface OpenRegistry extends Registry {
  * for by count, and a `debug` log line otherwise. A pool that cannot load is the plain
  * registry, as with 0.
  */
-async function openRegistry(ctx: Context, size = ctx.resolvePool): Promise<OpenRegistry> {
+async function openRegistry(
+  ctx: Context,
+  size = ctx.resolvePool,
+  expected?: number,
+): Promise<OpenRegistry> {
+  if (ctx.early && size === ctx.resolvePool) {
+    const early = ctx.early;
+    ctx.early = undefined;
+    return await early;
+  }
   const { registry, scopes, auth, before, releaseAgeExclude: exclude } = settings(ctx);
   const { offline, preferOffline } = settings(ctx);
   const mode = offline ? "only" : preferOffline ? "prefer" : "revalidate";
@@ -1761,6 +1846,7 @@ async function openRegistry(ctx: Context, size = ctx.resolvePool): Promise<OpenR
         warn: (message) => ctx.log(message, "debug"),
         noThreads: ctx.noThreads,
         metadata,
+        expected,
       })
     : {
         ...createRegistry({
@@ -1774,6 +1860,31 @@ async function openRegistry(ctx: Context, size = ctx.resolvePool): Promise<OpenR
         close() {},
       };
   return pool;
+}
+
+/**
+ * The registry for a resolve that is sure to come — no lockfile to install from, nor, under
+ * `tree`, one in node_modules to restore — opened before the workspaces are read, so that its
+ * threads boot during the glob rather than after the walk's first questions: 25–40 ms of a
+ * warm resolve. The root's own names tell the pool whether its threads would start at all.
+ */
+function openEarly(ctx: Context, dir: string, manifest: RootManifest, tree: boolean): void {
+  if (ctx.options.frozen || ctx.resolvePool === 0 || !lockSource(ctx, dir).missing) return;
+  if (tree && builtin.fs.existsSync(treeLockPath(dir))) return;
+  const names = new Set(GROUPS.flatMap((group) => Object.keys(manifest[group] ?? {})));
+  // A workspace root has a tree behind it, however few names it declares itself.
+  const expected = declaredWorkspaces(manifest)?.length ? Infinity : names.size;
+  ctx.early = openRegistry(ctx, ctx.resolvePool, expected);
+  ctx.early.catch(() => {}); // the resolve that takes it reports a failure
+}
+
+/** An early registry nothing took, when the command failed before its resolve. */
+function closeEarly(ctx: Context): void {
+  void ctx.early?.then(
+    (registry) => registry.close(),
+    () => {},
+  );
+  ctx.early = undefined;
 }
 
 async function pickAll(ctx: Context, specs: string[]): Promise<Manifest[]> {

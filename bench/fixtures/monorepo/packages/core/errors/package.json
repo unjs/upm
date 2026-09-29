@@ -1,0 +1,11 @@
+{
+  "name": "@acme/errors",
+  "version": "0.0.0",
+  "private": true,
+  "dependencies": {
+    "@acme/types": "*"
+  },
+  "devDependencies": {
+    "@acme/tsconfig": "*"
+  }
+}

@@ -80,12 +80,25 @@ do not claim byte verification from a size check.
 
 The install state carries two levels of evidence. Its `hash` describes the resolution and is
 compared with one computed from the lockfile; its `inputs` describe what that resolution was
-computed from (lockfile bytes, root manifest, store, registry hosts, platform, flags), and an
-install whose inputs match checks only what the state recorded — the root's links and bins,
-the `.upm` entry names — without reading the graph. Both trust the state's `entries` and
-`root` for _which_ names to look for; neither reads a file's bytes. Anything that changes
-what a resolution is a function of (a new `.npmrc` key that changes hosts, say) must be added
-to the inputs (`inputsOf` in `src/api.ts`), or the short check lies.
+computed from (lockfile bytes, root manifest, each workspace's path and manifest, store,
+registry hosts, platform, flags), and an install whose inputs match checks only what the state
+recorded — the links and bins of the root and of each workspace, the `.upm` entry names —
+without reading the graph. Both trust the state's `entries`, `root` and `tops` for _which_
+names to look for; neither reads a file's bytes. Anything that changes what a resolution is a
+function of (a new `.npmrc` key that changes hosts, say) must be added to the inputs
+(`inputsOf` in `src/api.ts`), or the short check lies.
+
+Which workspaces there are is an input too, and globbing for them was most of a no-op install
+in a big monorepo. The state keeps a proof of the set (`listWorkspaces` in
+`src/workspaces.ts`): the names in each folder the glob could list, and which folders hold a
+package.json. A folder whose stamp moved is read again, and only other names, or a package.json
+come or gone, send the install back to the glob; the folder's own `node_modules`, where the
+install writes, is not among them. A link is walked into whatever it leads to, nothing or a file
+included, since either may become a folder; under `**`, with no depth to stop at, a link means
+no proof. A stamp stands in for a read only once it is older than a timestamp's tick can hide,
+so a change in the same tick as the recording is still seen, and it is taken before the read
+it stands for. A proof is kept only when the glob found what the folders read just before it
+imply; `--verify` never uses one.
 
 The tree also keeps a copy of the lockfile it was last linked from (`node_modules/.upm.lock`).
 With no lockfile, an install writes it back only when it still describes package.json, as
@@ -121,20 +134,29 @@ Metadata parsing shortcuts must select the real registry member, never a lookali
 nested in publisher-controlled data. Use full parsing when the shortcut is unsure.
 Test hostile documents as well as normal registry output. A kept document's index is
 believed about a version it lacks, not only where one sits, so it is only ever written by the
-structural scan of the same bytes, in the same file.
+structural scan of the same bytes, in the same file. A big one is read in parts, its body
+only where a pick reads, and only while the file is still the one its head came from (device,
+inode and size): once it is not, the name is read afresh (`ECHANGED`), never at the old
+offsets. Those three cannot see a file rewritten in place at its size, which upm never does
+but for the date in its head, so a manifest read so must also be the version asked for.
 
 Threads are an optional execution strategy, not a different resolver or installer.
 Keep local and pooled results equivalent, including failure and shutdown behavior.
 Bound memory as well as job counts: moving download completion ahead of unpack can
-turn a concurrency change into an unbounded queue of archive bytes. Each pool is closed
+turn a concurrency change into an unbounded queue of archive bytes. A download slot ends at
+the last byte, so the bytes past it have a bound of their own (`held` in `src/store.ts`),
+asked with the slot in hand and kept out of the slot's latency sample. Each pool is closed
 by the phase that used it; only the bin exits the process, and only after its output is
 out and a failed write has set the exit code. Through the library nothing exits: an
 idle thread is unref'd. A one-package install must not boot a thread it will not use.
 So the registry threads start after a few distinct names (`START_AT` in `src/registry-pool.ts`),
 not at pool creation, and a name whose thread is still booting waits for it instead of being
 asked on the main thread: on a big tree the two starts are equivalent, and creation start costs
-a one-package install most of its time. Measure `tiny` as well as the big fixtures when
-changing when a thread starts.
+a one-package install most of its time. They start at creation only when the caller already
+knows that many names will be asked (`expected`): a resolve that has no lockfile to skip it, of
+a root that declares that many or has workspaces. A pool opened that early is closed by the
+command that opened it when its resolve never comes. Measure `tiny` as well as the big fixtures
+when changing when a thread starts.
 
 A worker is bundled whole into the chunk of the pool that starts it and started from a `data:`
 URL (`src/workers.ts`, `build.config.ts`). An app that bundles upm copies no file of ours and
@@ -142,10 +164,12 @@ may not keep `import.meta.url`, so a worker imports nothing at runtime but built
 built pools never read `import.meta.url`. A pool that starts no thread at all says so once,
 through the caller's `log`: a quiet fallback made a bundled install 2.3× slower unnoticed.
 
-Address lookups are cached in an undici agent of upm's own that travels with each registry and
-store request (`fetching()` in `src/dns.ts`). The process's global dispatcher is never written:
-a host that calls into upm keeps its own `fetch` as it was, and one that set a dispatcher of its
-own is used as is.
+Address lookups are cached in an undici agent of upm's own that travels with each registry
+request (`fetching()` in `src/dns.ts`) and each tarball download (`getter()`, the agent's own
+callbacks without `fetch`'s objects). That download follows a redirect as `fetch` does and keeps
+its rule: a credential goes no further than the origin it was sent to. The process's global
+dispatcher is never written: a host that calls into upm keeps its own `fetch` as it was, and one
+that set a dispatcher of its own is used as is, through `fetch`.
 
 Instrumentation stays out of the product's path: the tracer is a chunk loaded only under
 its environment variable, and a call site that is off costs one test of a constant.
