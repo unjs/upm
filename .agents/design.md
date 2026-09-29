@@ -121,7 +121,11 @@ Metadata parsing shortcuts must select the real registry member, never a lookali
 nested in publisher-controlled data. Use full parsing when the shortcut is unsure.
 Test hostile documents as well as normal registry output. A kept document's index is
 believed about a version it lacks, not only where one sits, so it is only ever written by the
-structural scan of the same bytes, in the same file.
+structural scan of the same bytes, in the same file. A big one is read in parts, its body
+only where a pick reads, and only while the file is still the one its head came from (device,
+inode and size): once it is not, the name is read afresh (`ECHANGED`), never at the old
+offsets. Those three cannot see a file rewritten in place at its size, which upm never does
+but for the date in its head, so a manifest read so must also be the version asked for.
 
 Threads are an optional execution strategy, not a different resolver or installer.
 Keep local and pooled results equivalent, including failure and shutdown behavior.
@@ -133,8 +137,11 @@ idle thread is unref'd. A one-package install must not boot a thread it will not
 So the registry threads start after a few distinct names (`START_AT` in `src/registry-pool.ts`),
 not at pool creation, and a name whose thread is still booting waits for it instead of being
 asked on the main thread: on a big tree the two starts are equivalent, and creation start costs
-a one-package install most of its time. Measure `tiny` as well as the big fixtures when
-changing when a thread starts.
+a one-package install most of its time. They start at creation only when the caller already
+knows that many names will be asked (`expected`): a resolve that has no lockfile to skip it, of
+a root that declares that many or has workspaces. A pool opened that early is closed by the
+command that opened it when its resolve never comes. Measure `tiny` as well as the big fixtures
+when changing when a thread starts.
 
 A worker is bundled whole into the chunk of the pool that starts it and started from a `data:`
 URL (`src/workers.ts`, `build.config.ts`). An app that bundles upm copies no file of ours and
