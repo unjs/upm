@@ -269,7 +269,8 @@ export async function linkTree(resolution: Resolution, options: LinkOptions): Pr
   trace("link:entries");
   const blobDir = join(store.dir, "files");
 
-  await mkdir(storeDir, { recursive: true });
+  // The first directory made is `node_modules` when there was none: the root's is new.
+  const rootNew = ((await mkdir(storeDir, { recursive: true })) ?? storeDir) !== storeDir;
   // One listing in place of a stat per entry. A warm install has just made `.upm`, and each
   // of nuxt's 561 probes for a name that was not there cost a rejection and a wait on the
   // directory lock the pool's renames hold. A key that appears later is caught by the rename.
@@ -354,11 +355,15 @@ export async function linkTree(resolution: Resolution, options: LinkOptions): Pr
   pool?.close();
   // Only here, after the fast path: a no-op install never pays a realpath per top.
   const realRoot = await realpath(options.dir);
-  for (const top of tops) {
-    await inside(dirname(top.nm));
-    await inside(top.nm);
-    await linkTop(top);
-  }
+  // Each top is its own `node_modules`, so they are linked side by side: one after another,
+  // a workspace's hops were 350 ms for 87 tops.
+  await Promise.all(
+    tops.map(async (top, i) => {
+      await inside(dirname(top.nm));
+      await inside(top.nm);
+      await linkTop(top, i === 0 && rootNew);
+    }),
+  );
   trace("link:tops");
   await sweepTemp();
   trace("link:swept");
@@ -790,8 +795,9 @@ export async function linkTree(resolution: Resolution, options: LinkOptions): Pr
   }
 
   /**
-   * `fresh`: `atDir` is under a temp dir, so nothing is there to read or replace — except on a
-   * case-insensitive disk, where two bins spelled `Foo` and `foo` are one name; then replace.
+   * `fresh`: `atDir` is under a temp dir or a `node_modules` made just now, so nothing is there to
+   * read or replace — except on a case-insensitive disk, where two bins spelled `Foo` and `foo`
+   * are one name, or a concurrent install's link; then replace.
    */
   async function placeBins(
     atDir: string,
@@ -807,10 +813,7 @@ export async function linkTree(resolution: Resolution, options: LinkOptions): Pr
       return;
     }
     for (const [name, bin] of bins) {
-      const at = join(atDir, name);
-      const to = relative(finalDir, bin.to);
-      if (fresh) await symlinkAt(to, at).catch(() => replaceLink(at, to, atDir));
-      else await replaceLink(at, to, atDir);
+      await linkAt(relative(finalDir, bin.to), join(atDir, name), atDir, fresh);
       result.bins++;
     }
   }
@@ -846,10 +849,13 @@ export async function linkTree(resolution: Resolution, options: LinkOptions): Pr
    * registry dep links into `.upm`; a workspace dep links to the workspace's own directory,
    * `packages/a/node_modules/b -> ../../b`. Its bins go through that link like any other's.
    */
-  async function linkTop({ nm, dependencies }: Top): Promise<void> {
+  async function linkTop({ nm, dependencies }: Top, rootNew: boolean): Promise<void> {
     const direct: [string, { pkg: ResolvedPackage }][] = [];
+    const links: [string, string][] = [];
     const scopes = new Set<string>();
-    await mkdir(nm, { recursive: true });
+    // A `node_modules` made just now holds nothing to read, replace or sweep. Were a concurrent
+    // install to link there too, a name it took first is replaced as usual.
+    const fresh = rootNew || (await mkdir(nm, { recursive: true })) !== undefined;
     for (const [name, version] of Object.entries(dependencies)) {
       const id = `${name}@${version}`;
       const pkg = resolution.packages[id];
@@ -859,18 +865,21 @@ export async function linkTree(resolution: Resolution, options: LinkOptions): Pr
       if (!real) continue; // dropped, or dev under --production
       direct.push([name, { pkg }]);
       const at = join(nm, name);
-      if (name.includes("/") && !scopes.has(dirname(at))) {
-        scopes.add(dirname(at));
-        await inside(dirname(at));
-        await mkdir(dirname(at), { recursive: true });
-      }
+      if (name.includes("/")) scopes.add(dirname(at));
       const target = relative(dirname(at), real);
-      await replaceLink(at, target, nm);
+      links.push([at, target]);
       if (nm === tops[0]!.nm) rootLinks[name] = target;
     }
+    for (const scope of scopes) {
+      await inside(scope);
+      await mkdir(scope, { recursive: true });
+    }
+    // Side by side: a link still being made after one fails is one this install wants too.
+    await Promise.all(links.map(([at, target]) => linkAt(target, at, nm, fresh)));
     const bins = binsOf(direct, nm);
     if (nm === tops[0]!.nm) rootBins = [...bins.keys()];
-    await placeBins(join(nm, ".bin"), join(nm, ".bin"), bins);
+    await placeBins(join(nm, ".bin"), join(nm, ".bin"), bins, fresh);
+    if (fresh) return;
     await sweep(nm, new Set(direct.map(([name]) => name)));
     await sweep(join(nm, ".bin"), new Set(bins.keys()));
   }
@@ -1064,6 +1073,13 @@ async function replaceLink(at: string, target: string, within: string): Promise<
       if (attempt === 3) throw error;
     }
   }
+}
+
+/** `fresh`: nothing should be at `at` yet, so it is linked at once, and replaced only if it was. */
+function linkAt(target: string, at: string, within: string, fresh: boolean): Promise<void> {
+  return fresh
+    ? symlinkAt(target, at).catch(() => replaceLink(at, target, within))
+    : replaceLink(at, target, within);
 }
 
 async function symlinkAt(target: string, at: string): Promise<void> {

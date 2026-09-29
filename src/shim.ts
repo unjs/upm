@@ -111,8 +111,9 @@ export async function shimsStand(
 
 /**
  * Write each bin's shims in `dir`, each file unless it already says the same. `fresh`: under a
- * temp dir, so nothing is there. Otherwise never written in place: a link there — an older
- * upm's bin — would carry the write into the store it leads to, so a temp file is renamed in.
+ * temp dir or a `node_modules` made just now, so nothing is there. Otherwise never written in
+ * place: a link there — an older upm's bin — would carry the write into the store it leads to,
+ * so a temp file is renamed in.
  */
 export async function placeShims(
   dir: string,
