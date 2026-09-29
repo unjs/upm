@@ -269,8 +269,9 @@ export async function linkTree(resolution: Resolution, options: LinkOptions): Pr
   trace("link:entries");
   const blobDir = join(store.dir, "files");
 
-  // The first directory made is `node_modules` when there was none: the root's is new.
-  const rootNew = ((await mkdir(storeDir, { recursive: true })) ?? storeDir) !== storeDir;
+  // Made here when there was none, the root's `node_modules` is new: see `linkTop`.
+  const rootNew = (await mkdir(tops[0]!.nm, { recursive: true })) !== undefined;
+  await mkdir(storeDir, { recursive: true });
   // One listing in place of a stat per entry. A warm install has just made `.upm`, and each
   // of nuxt's 561 probes for a name that was not there cost a rejection and a wait on the
   // directory lock the pool's renames hold. A key that appears later is caught by the rename.
@@ -355,9 +356,8 @@ export async function linkTree(resolution: Resolution, options: LinkOptions): Pr
   pool?.close();
   // Only here, after the fast path: a no-op install never pays a realpath per top.
   const realRoot = await realpath(options.dir);
-  // Each top is its own `node_modules`, so they are linked side by side: one after another,
-  // a workspace's hops were 350 ms for 87 tops.
-  await Promise.all(
+  // Each top is its own `node_modules`, so they are linked side by side.
+  await settle(
     tops.map(async (top, i) => {
       await inside(dirname(top.nm));
       await inside(top.nm);
@@ -874,8 +874,7 @@ export async function linkTree(resolution: Resolution, options: LinkOptions): Pr
       await inside(scope);
       await mkdir(scope, { recursive: true });
     }
-    // Side by side: a link still being made after one fails is one this install wants too.
-    await Promise.all(links.map(([at, target]) => linkAt(target, at, nm, fresh)));
+    await settle(links.map(([at, target]) => linkAt(target, at, nm, fresh)));
     const bins = binsOf(direct, nm);
     if (nm === tops[0]!.nm) rootBins = [...bins.keys()];
     await placeBins(join(nm, ".bin"), join(nm, ".bin"), bins, fresh);
@@ -1090,6 +1089,13 @@ async function symlinkAt(target: string, at: string): Promise<void> {
     throw Object.assign(fail(`cannot symlink ${at} -> ${target}: ${reason(error)}`, "ELINK"), {
       cause: error,
     });
+  }
+}
+
+/** Every one settled, then the first failure: nothing is still writing when the caller hears. */
+async function settle(work: Promise<unknown>[]): Promise<void> {
+  for (const outcome of await Promise.allSettled(work)) {
+    if (outcome.status === "rejected") throw outcome.reason;
   }
 }
 
