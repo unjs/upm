@@ -12,11 +12,11 @@ export interface Bar {
 }
 
 /** A command under this long never draws, so a fast one prints its summary alone. */
-const DELAY = 1000;
+const DELAY = 500;
 const WIDTH = 20;
 
 /**
- * What it hears is kept, and drawn a second in, then every 100 ms it changes. Never in CI or
+ * What it hears is kept, and drawn half a second in, then every 100 ms it changes. Never in CI or
  * on a terminal that cannot move the cursor.
  */
 export function startBar(
@@ -69,6 +69,6 @@ export function barLine(
   if (counts.length + WIDTH + 1 > columns) return counts.slice(0, columns);
   const done = fetch ? (fetch.done + linked) / (2 * fetch.total!) : linked / link!.total!;
   const full = Math.min(WIDTH, Math.round(done * WIDTH));
-  const rest = full < WIDTH ? gray("░".repeat(WIDTH - full)) : "";
-  return `${"█".repeat(full)}${rest} ${counts}`;
+  const rest = full < WIDTH ? gray("─".repeat(WIDTH - full)) : "";
+  return `${"━".repeat(full)}${rest} ${counts}`;
 }
