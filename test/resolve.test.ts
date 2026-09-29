@@ -1031,6 +1031,113 @@ describe("peer dependencies", () => {
     expect(out.packages["new@1.0.0"]?.dependencies).toEqual({ react: "18.2.0" });
   });
 
+  describe("two consumers missing the same peer", () => {
+    // typescript-eslint caps typescript where ts-api-utils takes any: a copy each gave
+    // ts-api-utils a typescript with no JS API (unjs/upm#8).
+    const fixture: Fixture = {
+      capped: { "1.0.0": { peerDependencies: { ts: ">=4.8.4 <6.1.0" } } },
+      open: { "1.0.0": { peerDependencies: { ts: ">=4.8.4" } } },
+      ts: { "5.9.0": {}, "6.0.3": {}, "7.0.2": {} },
+    };
+
+    it("share one version that meets both ranges", async () => {
+      const { result, count } = run(fixture, { dependencies: { open: "^1", capped: "^1" } });
+      const out = await result;
+      expect(Object.keys(out.packages)).toEqual(["capped@1.0.0", "open@1.0.0", "ts@6.0.3"]);
+      expect(out.packages["open@1.0.0"]?.dependencies).toEqual({ ts: "6.0.3" });
+      expect(out.packages["capped@1.0.0"]?.dependencies).toEqual({ ts: "6.0.3" });
+      // One pick per range, as a copy each took: the fake keeps no packument between them.
+      expect(count("ts")).toBe(2);
+      expect(unmetPeers(out)).toEqual([]);
+    });
+
+    it("get a version each when no published version meets both", async () => {
+      // The ranges overlap on paper (>=5.9.5 <6), but nothing is published there.
+      const gap: Fixture = {
+        a: { "1.0.0": { peerDependencies: { ts: ">=5.0.0 <6.0.0" } } },
+        b: { "1.0.0": { peerDependencies: { ts: ">=5.9.5" } } },
+        ts: { "5.9.0": {}, "6.0.3": {} },
+      };
+      const root = { dependencies: { a: "^1", b: "^1" } };
+      const { result, count } = run(gap, root);
+      const out = await result;
+      expect(out.packages["a@1.0.0"]?.dependencies).toEqual({ ts: "5.9.0" });
+      expect(out.packages["b@1.0.0"]?.dependencies).toEqual({ ts: "6.0.3" });
+      expect(count("ts")).toBe(2);
+
+      // Locked that way, a later resolve asks the registry nothing about it.
+      const again = run(gap, root, { locked: out });
+      expect(Object.keys((await again.result).packages)).toEqual(Object.keys(out.packages));
+      expect(again.calls).toEqual([]);
+    });
+
+    it("share past one whose pick failed", async () => {
+      // `aaa` sorts first and asks for a version nobody published; the others still share.
+      const out = await resolve(
+        { ...fixture, aaa: { "1.0.0": { peerDependencies: { ts: "^9" } } } },
+        { dependencies: { open: "^1", capped: "^1" }, optionalDependencies: { aaa: "^1" } },
+      );
+      expect(out.packages["open@1.0.0"]?.dependencies).toEqual({ ts: "6.0.3" });
+      expect(out.packages["capped@1.0.0"]?.dependencies).toEqual({ ts: "6.0.3" });
+      expect(out.packages["aaa@1.0.0"]).toBeUndefined();
+    });
+
+    it("take the locked copy when a fresh pick lands on the same version", async () => {
+      const then: Fixture = { ...fixture, ts: { "6.0.3": {} } };
+      const first = await resolve(then, { dependencies: { capped: "^1" } });
+      const locked = structuredClone(first);
+      locked.packages["ts@6.0.3"]!.integrity = "sha512-locked";
+      // `any` sorts first and picks 6.0.3 fresh; `capped` holds it locked.
+      const out = await resolve(
+        { ...then, any: { "1.0.0": { peerDependencies: { ts: ">=4.8.4" } } } },
+        { dependencies: { any: "^1", capped: "^1" } },
+        { locked },
+      );
+      expect(out.packages["any@1.0.0"]?.dependencies).toEqual({ ts: "6.0.3" });
+      expect(out.packages["ts@6.0.3"]?.integrity).toBe("sha512-locked");
+    });
+
+    it("never let a dev-only consumer narrow what a shipped one gets", async () => {
+      const out = await resolve(fixture, {
+        dependencies: { open: "^1" },
+        devDependencies: { capped: "^1" },
+      });
+      expect(out.packages["open@1.0.0"]?.dependencies).toEqual({ ts: "7.0.2" });
+      expect(out.packages["capped@1.0.0"]?.dependencies).toEqual({ ts: "6.0.3" });
+      expect(production(out)).toEqual(["open@1.0.0", "ts@7.0.2"]);
+    });
+
+    it("share even when a third asks through an alias", async () => {
+      const out = await resolve(
+        {
+          ...fixture,
+          aliased: { "1.0.0": { peerDependencies: { ts: "npm:ts@>=4.8.4" } } },
+        },
+        { dependencies: { open: "^1", capped: "^1", aliased: "^1" } },
+      );
+      expect(out.packages["open@1.0.0"]?.dependencies).toEqual({ ts: "6.0.3" });
+      expect(out.packages["capped@1.0.0"]?.dependencies).toEqual({ ts: "6.0.3" });
+      expect(out.packages["aliased@1.0.0"]?.dependencies).toEqual({ ts: "7.0.2" });
+    });
+
+    it("heal a lock that gave them a copy each", async () => {
+      const capped = await resolve(fixture, { dependencies: { capped: "^1" } });
+      const open = await resolve(fixture, { dependencies: { open: "^1" } });
+      const split = { ...capped, packages: { ...capped.packages, ...open.packages } };
+      expect(Object.keys(split.packages)).toContain("ts@7.0.2");
+
+      const { result, calls } = run(
+        fixture,
+        { dependencies: { capped: "^1", open: "^1" } },
+        { locked: split },
+      );
+      const out = await result;
+      // The locked version that meets both wins, straight from the lock.
+      expect(calls).toEqual([]);
+      expect(Object.keys(out.packages)).toEqual(["capped@1.0.0", "open@1.0.0", "ts@6.0.3"]);
+    });
+  });
+
   it("marks a peer dev when only a dev package pulls it in", async () => {
     const out = await resolve(
       { tool: { "1.0.0": { peerDependencies: { host: "^1" } } }, host: { "1.0.0": {} } },

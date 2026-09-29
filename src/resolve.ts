@@ -2,7 +2,7 @@
 // No hoisting and no placement: the stage 5 `.upm` layout makes both unnecessary.
 import { normalizeBin } from "./normalize-bin.ts";
 import { builtin } from "./builtin.ts";
-import { maxSatisfying, parse, satisfies, validRange } from "./semver.ts";
+import { compare, maxSatisfying, parse, satisfies, validRange } from "./semver.ts";
 import { fromShasum } from "./integrity.ts";
 import { pickManifest } from "./pick.ts";
 import { createRegistry, tarballUrl } from "./registry.ts";
@@ -511,7 +511,8 @@ export async function resolveTree(
       const alive = (key: string) => !dead.has(key);
       const have = byName(records.values(), alive);
       const shippedHave = byName(records.values(), (key) => alive(key) && shipped.has(key));
-      const fetches: Promise<void>[] = [];
+      // By name and by pool: a dev-only consumer never narrows what a shipped one gets.
+      const unmet = new Map<string, [name: string, group: [from: string, range: string][]]>();
       for (const [from, name, range] of todo) {
         const list = edges.get(from);
         if (!list || dead.has(from) || list.some((e) => e.name === name)) continue;
@@ -521,25 +522,65 @@ export async function resolveTree(
           list.push({ name, version: best, optional: false });
           continue;
         }
-        // Nothing in the tree: the version this consumer was locked with, if it still fits and
-        // is not in the tree already — in the tree but not in the pool means dev-only, which a
-        // shipped consumer may not take. Asked for as an exact edge, so a kept walk takes it
-        // from the lock and a deduping one from the registry, like any other edge.
-        const own = lockedPeer(from, name);
-        const again =
-          own !== undefined &&
-          satisfies(own, range) &&
-          !have.get(name)?.some((p) => p.version === own);
-        // prune() decides what an unmet peer costs: an optional ancestor drops, a required one dies.
-        fetches.push(
-          edge(from, name, again ? own : range, false, !again).catch(
-            (e: unknown) => void dead.set(from, e),
-          ),
-        );
+        const id = `${pool === shippedHave} ${name}`;
+        const found = unmet.get(id);
+        if (found) found[1].push([from, range]);
+        else unmet.set(id, [name, [[from, range]]]);
       }
-      await Promise.all(fetches);
+      await Promise.all([...unmet.values()].map(([name, group]) => fetchPeer(name, group, have)));
       while (pending.length > 0) await Promise.allSettled(pending.splice(0));
     }
+  }
+
+  /**
+   * A peer nothing in the tree meets. Each consumer asks for what it would alone: the version
+   * it was locked with, if that still fits and is not in the tree already — in the tree but not
+   * in the pool means dev-only, which a shipped consumer may not take — or else its range. A
+   * locked version is an exact edge, so a kept walk takes it from the lock and a deduping one
+   * from the registry, like any other edge.
+   *
+   * Consumers that miss the same name then share the newest answer that meets all their ranges:
+   * `@typescript-eslint/*` caps typescript where `ts-api-utils` does not, and a copy each would
+   * hand them two compilers. Sharing costs no request, since the edges reuse the same picks.
+   */
+  async function fetchPeer(
+    name: string,
+    group: [from: string, range: string][],
+    have: Map<string, ResolvedPackage[]>,
+  ): Promise<void> {
+    const specs = group.map(([from, range]): [spec: string, fresh: boolean] => {
+      const own = lockedPeer(from, name);
+      const again =
+        own !== undefined &&
+        satisfies(own, range) &&
+        !have.get(name)?.some((p) => p.version === own);
+      return again ? [own, false] : [range, true];
+    });
+    // Only answers take part: a spec we cannot read as a range, an alias or a tag, has none,
+    // and neither has a failed pick, which its own edge then reports.
+    const answers = await Promise.all(
+      specs.map(async ([spec, fresh], i) => {
+        try {
+          if (!validRange(group[i]![1])) return undefined;
+          return fresh ? (await pick(parseDep(name, spec), true)).version : spec;
+        } catch {}
+      }),
+    );
+    let best = -1;
+    for (const [i, v] of answers.entries()) {
+      if (v === undefined) continue;
+      if (!group.every(([, r], j) => answers[j] === undefined || satisfies(v, r))) continue;
+      const c = best < 0 ? 1 : compare(v, answers[best]!);
+      // On a tie a locked spec wins, so the record is the lock's rather than the registry's.
+      if (c > 0 || (c === 0 && !specs[i]![1])) best = i;
+    }
+    await Promise.all(
+      group.map(([from], i) => {
+        const [spec, fresh] = specs[best >= 0 && answers[i] !== undefined ? best : i]!;
+        // prune() decides what an unmet peer costs: an optional ancestor drops, a required one dies.
+        return edge(from, name, spec, false, fresh).catch((e: unknown) => void dead.set(from, e));
+      }),
+    );
   }
 
   /**

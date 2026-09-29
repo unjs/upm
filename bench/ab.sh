@@ -9,7 +9,7 @@
 #   mode   cold   — empty private store, no lockfile, no node_modules, every run
 #          warm   — primed once per build (store + upm.lock kept), node_modules removed per run
 #          repeat — primed once per build, nothing removed per run
-#          lock   — `upm lock` on a fresh project dir, no store; fails when the builds' upm.lock differ
+#          lock   — `upm lock` on a fresh project dir and store; fails when the builds' upm.lock differ
 #   pairs  10 or more for a claim (see .agents/perf.md)
 #
 # Env:  AB_ENV="K=V K2=V2"    extra env for every run
@@ -18,13 +18,14 @@
 #       AB_KEEP=1             keep the work dirs
 #
 # Holds bench/.work/ab/.lock while it runs, so two runs on one machine queue instead of
-# timing over each other.
+# timing over each other. Projects go outside the repo, as with bench.sh (BENCH_WORK).
 set -u
 BENCH=$(cd "$(dirname "$0")" && pwd)
 FIX=$BENCH/fixtures
 MEASURE=$BENCH/measure.pl
 AB=$BENCH/.work/ab
-WORK=$AB/run-$$
+WORK=${BENCH_WORK:-${XDG_CACHE_HOME:-$HOME/.cache}/upm-bench}/ab-$$
+[ $# -ge 2 ] || { sed -n 2,21p "$0"; exit 2; }
 MODE=$1; RUNS=$2; shift 2
 BUILDS=()
 while [ $# -gt 0 ] && [ "$1" != "--" ]; do BUILDS+=("$1"); shift; done
@@ -51,22 +52,25 @@ STAMP=$(date -u +%Y%m%dT%H%M%SZ)
 OUT=${AB_OUT:-$AB/$STAMP-$MODE.rows}
 mkdir -p "$WORK" "$(dirname "$OUT")"
 trap '[ -n "${AB_KEEP:-}" ] && echo "work: $WORK" || rm -rf "$WORK"' EXIT
-export npm_config_min_release_age= npm_config_ignore_scripts=
+# The same 1-day gate as bench.sh, not the machine's npmrc. An inherited dashed spelling
+# is dropped in run(), since upm would pick between the two by environment order.
+export npm_config_min_release_age="${BENCH_MIN_AGE_DAYS:-1}" npm_config_ignore_scripts=
 
 run() { # <label> <dist> <fixture> <measure-out|-> ; the install or lock, in the build's project dir
   local lbl=$1 d=$2 fx=$3 mo=$4 dir=$WORK/$1-$3 envvar
   envvar="AB_ENV_$lbl"
   if [ "$MODE" = lock ]; then
-    ( cd "$dir/p" && env ${AB_ENV:-} ${!envvar:-} perl "$MEASURE" "$mo" node "$(bin "$d")" lock >"$dir/out.log" 2>&1 )
+    ( cd "$dir/p" && env -u npm_config_min-release-age ${AB_ENV:-} ${!envvar:-} perl "$MEASURE" "$mo" node "$(bin "$d")" lock --store "$dir/store" >"$dir/out.log" 2>&1 )
   else
-    ( cd "$dir/p" && env ${AB_ENV:-} ${!envvar:-} perl "$MEASURE" "$mo" node "$(bin "$d")" install --store "$dir/store" >"$dir/out.log" 2>&1 )
+    ( cd "$dir/p" && env -u npm_config_min-release-age ${AB_ENV:-} ${!envvar:-} perl "$MEASURE" "$mo" node "$(bin "$d")" install --store "$dir/store" >"$dir/out.log" 2>&1 )
   fi
 }
 prepare() { # <label> <fixture> — the project dir (fresh, with a fresh store, for cold and lock)
   local dir=$WORK/$1-$2
   case $MODE in cold|lock) rm -rf "$dir";; esac
   mkdir -p "$dir/p" "$dir/store"
-  cp "$FIX/$2/package.json" "$dir/p/"
+  # Copied once: a new mtime would send every repeat run past upm's up-to-date stamps.
+  [ -f "$dir/p/package.json" ] || cp "$FIX/$2/package.json" "$dir/p/"
   [ "$MODE" = warm ] && rm -rf "$dir/p/node_modules"
   return 0
 }

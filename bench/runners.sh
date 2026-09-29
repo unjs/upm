@@ -54,7 +54,7 @@ runner_resolve() {
     local version
     case "$UPM_CLI" in */dist/*) version="dist-" RUNNER_DIR[upm]="$UPM_ROOT/dist" ;; *) version="src-" RUNNER_DIR[upm]="$UPM_ROOT/src" ;; esac
     version+="$(git -C "$UPM_ROOT" rev-parse --short HEAD 2>/dev/null || echo nogit)"
-    git -C "$UPM_ROOT" diff --quiet HEAD -- src 2>/dev/null || version+="-dirty"
+    [ -z "$(git -C "$UPM_ROOT" status --porcelain -- src 2>/dev/null)" ] || version+="-dirty"
     RUNNER_VERSION[upm]="$version"
     RUNNER_ENTRY[upm]="$UPM_CLI"
     return
@@ -135,10 +135,10 @@ pnpm_age() {
 
 # Runs one install command under measure.pl, which times it and records its rusage into
 # $MEASURE_OUT. Only the command is measured, not the setup around it in runner_install.
-# The gate goes in the environment: npm's `min-release-age` in days (upm, npm, deno) and
+# The gate goes in the environment: npm's `min-release-age` in days (upm, npm) and
 # yarn 4's in minutes. An inherited `npm_config_min-release-age` is dropped, since which
 # spelling wins would be each manager's choice. pnpm, aube and nub read pnpm's key instead
-# (`pnpm_age`), and bun takes a flag; both are set in runner_install.
+# (`pnpm_age`), and bun and deno take a flag; both are set in runner_install.
 measure() {
   env -u npm_config_min-release-age \
     npm_config_min_release_age="$MIN_AGE_DAYS" YARN_NPM_MINIMAL_AGE_GATE="$((MIN_AGE_DAYS * 1440))" \
@@ -192,7 +192,8 @@ runner_install() {
       ;;
     deno)
       # DENO_DIR holds the npm cache and everything else deno caches.
-      DENO_DIR="$cache/deno" measure "${CMD[@]}" install --node-modules-dir=auto --quiet
+      DENO_DIR="$cache/deno" measure "${CMD[@]}" install --node-modules-dir=auto --quiet \
+        --min-dep-age="$((MIN_AGE_DAYS * 1440))"
       ;;
     aube)
       AUBE_STORE_DIR="$cache/store" XDG_CACHE_HOME="$cache/xdg" pnpm_age measure "${CMD[@]}" install --ignore-scripts

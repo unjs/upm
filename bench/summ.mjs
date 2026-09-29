@@ -1,15 +1,19 @@
 #!/usr/bin/env node
 // summ.mjs <rows-file>... — medians per (fixture, build) and paired differences vs the first
-// build, for rows written by ab.sh. Paired diff = new - first, per pair index; reports median
-// paired diff, how many pairs favored new (wins), and the spread (min..max).
+// build, for rows written by ab.sh. Paired diff = new - first, per pair; reports median
+// paired diff, how many pairs favored new (wins), and the spread (min..max). A pair is its
+// index within one run (a `#` header), so several files or an appended AB_OUT do not mix.
 import { readFileSync } from "node:fs";
 
 const rows = [];
+let run = 0;
 for (const file of process.argv.slice(2)) {
+  run++;
   for (const line of readFileSync(file, "utf8").split("\n")) {
+    if (line.startsWith("#")) run++;
     if (!line || line.startsWith("#")) continue;
     const [fx, label, i, ...kv] = line.split(" ");
-    const r = { fx, label, i: Number(i) };
+    const r = { fx, label, i: `${run}:${i}` };
     for (const p of kv) {
       const [k, v] = p.split("=");
       r[k] = v === "NA" ? NaN : Number(v);

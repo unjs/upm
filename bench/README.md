@@ -3,6 +3,9 @@
 Times cold, warm and repeat installs of one entry package with every supported package
 manager, and records time, peak memory and CPU for each run.
 
+Before benchmarking a fix for repeated work, `node bench/premise.ts <lockfile>...` counts
+how often it repeats in real lockfiles. See [perf.md](../.agents/perf.md).
+
 ```sh
 ./bench.sh                         # every runner and fixture, then the charts
 ./bench.sh -r upm,pnpm12 -f nuxt   # a subset
@@ -79,7 +82,7 @@ hook pays when install had nothing to do.
 ## Runners
 
 upm runs `../dist/upm.mjs`, the same file as the published `bin`. Its version is
-`dist-<sha>`, with `-dirty` when `src/` has uncommitted changes. Set `UPM_CLI=../upm` to
+`dist-<sha>`, with `-dirty` when `src/` has uncommitted or untracked changes. Set `UPM_CLI=../upm` to
 measure the source entry instead (`src-<sha>`, slower to start, not what users run).
 
 Other managers come from jup (a dev dependency, so versions do not depend on the machine).
@@ -121,9 +124,9 @@ store and starts it directly, a native binary as is and a JavaScript entry on th
 - **Lifecycle scripts are off everywhere**, because upm cannot run them.
 - **A 1-day release-age gate for all**, set by the harness and not left to the machine's npmrc,
   yarnrc or environment, so every machine resolves the same versions (`BENCH_MIN_AGE_DAYS`
-  changes it). Each manager gets its own key: npm's `min-release-age` (upm, npm, deno), pnpm's
-  `minimum-release-age` (pnpm, aube, nub), yarn 4's `npmMinimalAgeGate` and bun's
-  `--minimum-release-age`. `runners.sh` has the details.
+  changes it). Each manager gets its own key: npm's `min-release-age` (upm, npm), pnpm's
+  `minimum-release-age` (pnpm, aube, nub), yarn 4's `npmMinimalAgeGate`, bun's
+  `--minimum-release-age` and deno's `--min-dep-age`. `runners.sh` has the details.
 - **`CI` is unset**, since pnpm turns on `--frozen-lockfile` under CI and a cold run fails.
   Colors, update notices, audit, fund and telemetry are off for all.
 - **Packages are counted by inode**, following symlinks. Isolated layouts hold both a real
@@ -146,20 +149,21 @@ Real differences, left in on purpose:
 
 Only the install command is measured, by `perl measure.pl`, not the setup around it.
 
-| field               | meaning                                     | source                                      |
-| ------------------- | ------------------------------------------- | ------------------------------------------- |
-| `ms`                | wall time                                   | `CLOCK_MONOTONIC` around `fork` and `wait4` |
-| `user_ms`, `sys_ms` | CPU time of the whole process tree          | `wait4()` rusage, exact                     |
-| `rss_bytes`         | peak memory of the whole tree at one moment | `/proc` VmHWM summed, sampled every 10 ms   |
-| `rss_process_bytes` | peak memory of the largest single process   | `wait4()` `ru_maxrss`, exact                |
+| field               | meaning                                   | source                                      |
+| ------------------- | ----------------------------------------- | ------------------------------------------- |
+| `ms`                | wall time                                 | `CLOCK_MONOTONIC` around `fork` and `wait4` |
+| `user_ms`, `sys_ms` | CPU time of the whole process tree        | `wait4()` rusage, exact                     |
+| `rss_bytes`         | peak memory of the whole process tree     | `/proc` VmHWM summed, sampled every 10 ms   |
+| `rss_process_bytes` | peak memory of the largest single process | `wait4()` `ru_maxrss`, exact                |
 
 Perl, because neither bash nor Node can read a child's rusage. Worker threads are part of
 their process, so they always count. A daemon that leaves the tree is not counted.
 
-`rss_bytes` is what reports and charts show. It adds up the processes alive at the same
-time, so helpers and wrappers count, and it is never below `rss_process_bytes`. For a
-single-process manager the two match within about 1 MB. It can miss growth only in a
-process's last 10 ms.
+`rss_bytes` is what reports and charts show. It adds up the own peak (VmHWM) of each
+process alive at the same time, so helpers and wrappers count, and it is never below
+`rss_process_bytes`. Processes that peak at different times can make it read above the true
+combined peak. For a single-process manager the two match within about 1 MB. It can miss
+growth only in a process's last 10 ms.
 
 - CPU is user + sys, not divided by wall time; a manager using many cores has more CPU than
   wall time.
@@ -271,9 +275,12 @@ each pair. Every run goes through `measure.pl` into a rows file under `.work/ab/
 pairs the new build won.
 
 - Modes: `cold`, `warm` and `repeat` as above, with a private store per build, and `lock`,
-  which times `upm lock` alone in a fresh project and fails if the builds' `upm.lock`
-  differ.
+  which times `upm lock` alone in a fresh project and store and fails if the builds'
+  `upm.lock` differ. `package.json` is copied once per project, so `repeat` keeps upm's
+  up-to-date stamps.
+- Projects live under `BENCH_WORK`, outside the repo like `bench.sh`'s.
 - Env: `AB_ENV` / `AB_ENV_<label>` add environment for all builds or one, `AB_OUT` names
-  the rows file, `AB_KEEP=1` keeps the work directories. `min-release-age` is cleared.
+  the rows file, `AB_KEEP=1` keeps the work directories. The release-age gate is 1 day
+  (`BENCH_MIN_AGE_DAYS`), as in `bench.sh`.
 - It holds `.work/ab/.lock` (via `flock`), so two runs on one machine wait for each other.
 - Use ten or more pairs before claiming a result: [../.agents/perf.md](../.agents/perf.md).

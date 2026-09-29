@@ -4,6 +4,18 @@ The goal is less end-to-end work for real installs, not a better isolated counte
 A bottleneck can move after a change. Re-profile instead of treating an old finding
 as a permanent ranking. Open candidates are in [status.md](status.md).
 
+## Count the premise first
+
+An optimization for repeated work only pays off if the work repeats in real installs.
+Before any benchmark, run `node bench/premise.ts <lockfile>...` on this project's
+`upm.lock` and on the lockfiles of the compared managers. It counts store-entry repeats
+(one tarball placed more than once) and spec-ask repeats (one name and specifier asked
+by more than one edge); `upm.lock` pins package deps to versions, so its ask count is an
+upper bound. Put the counts in the PR before the benchmark numbers. If the
+pattern does not occur, drop the idea however good the isolated gain looks: its extra
+bookkeeping runs on every install. A store-entry cache once benchmarked well on repeats
+while only 2 of 1,264 packages in the real graph shared an entry.
+
 ## Make the comparison fair
 
 Use [bench/README.md](../bench/README.md) for the suite, the paired A/B runner
@@ -68,7 +80,8 @@ Avoid conclusions from a smaller counter alone:
 
 ## Accept or drop the experiment
 
-Require a repeatable end-to-end gain on the intended workload, equivalent output and
-no hidden small-install or recovery regression. State the CPU/memory tradeoff and
-which environments were not tested. Keep raw results and a runnable method with the
-change. Do not add complexity for a result that cannot be separated from noise.
+Require a premise count that shows the repeated work exists, a repeatable end-to-end
+gain on the intended workload, equivalent output and no hidden small-install or recovery
+regression. State the CPU/memory tradeoff and which environments were not tested. Keep
+raw results and a runnable method with the change. Do not add complexity for a result
+that cannot be separated from noise.
