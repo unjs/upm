@@ -28,13 +28,11 @@ describe("progress bar", () => {
     expect(fraction({ link: { phase: "link", done: 1, total: 4 } })).toBe(0.25);
   });
 
-  it("draws nothing in the first half second and clears its line when stopped", () => {
+  it("draws on each tick it changed and clears its line when stopped", () => {
     vi.useFakeTimers();
     const write = vi.fn();
     const bar = startBar({ columns: 80, write } as unknown as NodeJS.WriteStream, (t) => t, {})!;
     bar.hear({ phase: "resolve", done: 3 });
-    vi.advanceTimersByTime(400);
-    expect(write).not.toHaveBeenCalled();
     vi.advanceTimersByTime(100);
     expect(write).toHaveBeenLastCalledWith("\rresolving 3 packages\x1b[K");
     // Unchanged, so not drawn again.
@@ -57,12 +55,12 @@ describe("progress bar", () => {
     startBar(stream, (t) => t, { CI: "false" })!.stop();
   });
 
-  it("stopped within half a second, never writes at all", () => {
+  it("stopped before its first tick, never writes at all", () => {
     vi.useFakeTimers();
     const write = vi.fn();
     const bar = startBar({ columns: 80, write } as unknown as NodeJS.WriteStream, (t) => t, {})!;
     bar.hear({ phase: "fetch", done: 1, total: 2 });
-    vi.advanceTimersByTime(400);
+    vi.advanceTimersByTime(50);
     bar.stop();
     vi.advanceTimersByTime(2000);
     expect(write).not.toHaveBeenCalled();

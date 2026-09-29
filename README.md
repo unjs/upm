@@ -460,7 +460,7 @@ Most npm install and run lines work as they are:
 - `-s`, `--silent`, `-q`, `--quiet` and `--loglevel` set to `silent`, `error` or `warn`
   hide progress, the script banner and the install summary. Warnings and errors stay.
 - `--no-progress` hides the progress bar. It is drawn on stderr only on a terminal,
-  never when `CI` is set, and only once a command runs past half a second.
+  never when `CI` is set.
 - These are accepted and do nothing, since upm already works this way: `-S`, `--save`,
   `-P`, `--save-prod`, `--ignore-scripts`, `--no-audit`, `--no-fund`,
   `--legacy-peer-deps` and `--force`.

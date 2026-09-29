@@ -11,13 +11,11 @@ export interface Bar {
   stop: () => void;
 }
 
-/** A command under this long never draws, so a fast one prints its summary alone. */
-const DELAY = 500;
 const WIDTH = 20;
 
 /**
- * What it hears is kept, and drawn half a second in, then every 100 ms it changes. Never in CI or
- * on a terminal that cannot move the cursor.
+ * What it hears is kept, and drawn every 100 ms it changes. Never in CI or on a terminal that
+ * cannot move the cursor.
  */
 export function startBar(
   stream: NodeJS.WriteStream,
@@ -33,11 +31,7 @@ export function startBar(
     stream.write(`\r${line}\x1b[K`);
     shown = line;
   };
-  // Either handle clears with `clearTimeout`.
-  let timer = setTimeout(() => {
-    timer = setInterval(draw, 100).unref();
-    draw();
-  }, DELAY).unref();
+  const timer = setInterval(draw, 100).unref();
   const clear = () => {
     if (shown) stream.write("\r\x1b[K");
     shown = "";
@@ -46,7 +40,7 @@ export function startBar(
     hear: (progress) => void (seen[progress.phase] = progress),
     clear,
     stop: () => {
-      clearTimeout(timer);
+      clearInterval(timer);
       clear();
     },
   };

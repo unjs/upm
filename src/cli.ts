@@ -73,7 +73,7 @@ Options
                        run --workspaces: run the root first
   --json               print JSON
   --lock               fetch: use ${LOCKFILE}
-  --no-progress        no progress bar (drawn on a terminal, not in CI, after 0.5 s)
+  --no-progress        no progress bar (drawn on a terminal, not in CI)
   --offline            never use the network; fail if the registry or a download is needed
   --prefer-offline     pick from kept registry documents without checking for newer ones
   -O, --optional       add: save to optionalDependencies
