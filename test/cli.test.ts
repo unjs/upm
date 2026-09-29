@@ -49,6 +49,38 @@ describe("parseArgv", () => {
     });
   });
 
+  it("reads --verbose before or after the command and its specs", () => {
+    for (const args of [
+      ["--verbose", "resolve", "vue", "nanoid"],
+      ["resolve", "--verbose", "vue", "nanoid"],
+      ["resolve", "vue", "--verbose", "nanoid"],
+      ["resolve", "vue", "nanoid", "--verbose"],
+    ]) {
+      expect(parseArgv(args)).toEqual({
+        command: "resolve",
+        specs: ["vue", "nanoid"],
+        json: false,
+        help: false,
+        verbose: true,
+      });
+    }
+  });
+
+  it("leaves --verbose to forwarded commands and after --", () => {
+    for (const args of [
+      ["run", "build", "--verbose"],
+      ["build", "--verbose"],
+      ["exec", "tool", "--verbose"],
+      ["publish", "--verbose"],
+      ["resolve", "--", "--verbose"],
+    ]) {
+      const cli = parseArgv(args);
+      expect(cli.verbose).toBeUndefined();
+      expect(cli.specs.at(-1)).toBe("--verbose");
+      expect(cli.error).toBeUndefined();
+    }
+  });
+
   it("accepts --registry=<url>", () => {
     expect(parseArgv(["--registry=https://r.test"]).registry).toBe("https://r.test");
   });
@@ -378,6 +410,102 @@ describe("cli process", () => {
   });
 });
 
+describe("logging", () => {
+  let main: typeof import("../src/cli.ts").main;
+  let stdout: string;
+  let stderr: string;
+  const manifest = {
+    name: "demo",
+    version: "1.0.0",
+    dist: { tarball: "https://r.test/demo.tgz" },
+  };
+  const normal = "upm: progress\nupm: warning\n";
+  const debug = "upm: details\n";
+
+  beforeEach(async () => {
+    vi.resetModules();
+    vi.stubEnv("UPM_DEBUG", undefined);
+    vi.stubEnv("UPM_RESOLVE_POOL", undefined);
+    vi.stubEnv("FORCE_COLOR", undefined);
+    vi.stubEnv("NO_COLOR", "1");
+
+    // These calls share a process
+    // do not keep main's stdout error handlers between them.
+    vi.spyOn(process.stdout, "on").mockReturnValue(process.stdout);
+    vi.spyOn(process.stdout, "write").mockImplementation((chunk) => ((stdout += chunk), true));
+    vi.spyOn(process.stderr, "write").mockImplementation((chunk) => ((stderr += chunk), true));
+
+    const api = await import("../src/api.ts");
+    vi.spyOn(api, "resolve").mockImplementation(async (_specs, options) => {
+      options?.log?.("progress", "info");
+      options?.log?.("warning", "warn");
+      options?.log?.("details", "debug");
+      return [manifest];
+    });
+    ({ main } = await import("../src/cli.ts"));
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.unstubAllEnvs();
+    vi.resetModules();
+  });
+
+  async function resolve(...flags: string[]) {
+    stdout = stderr = "";
+    expect(await main(["resolve", "demo", ...flags])).toBe(0);
+    return { stdout, stderr };
+  }
+
+  it.each([undefined, "", "0", "off", "true"])(
+    "hides debug logs with UPM_DEBUG=%s",
+    async (value) => {
+      vi.stubEnv("UPM_DEBUG", value);
+      expect(await resolve()).toEqual({
+        stdout: "demo@1.0.0  https://r.test/demo.tgz\n",
+        stderr: normal,
+      });
+    },
+  );
+
+  it.each([undefined, "0"])(
+    "enables --verbose with UPM_DEBUG=%s and resets it for the next invocation",
+    async (value) => {
+      vi.stubEnv("UPM_DEBUG", value);
+      const before = await resolve();
+      expect(await resolve("--verbose")).toEqual({ ...before, stderr: normal + debug });
+      expect(await resolve()).toEqual(before);
+      expect(process.env.UPM_DEBUG).toBe(value);
+    },
+  );
+
+  it.each(["1", "on"])("keeps UPM_DEBUG=%s equivalent to --verbose", async (value) => {
+    const verbose = await resolve("--verbose");
+    vi.stubEnv("UPM_DEBUG", value);
+    expect(await resolve()).toEqual(verbose);
+    expect(await resolve("--verbose")).toEqual(verbose);
+  });
+
+  it("keeps JSON unchanged with either debug option, even with forced color", async () => {
+    vi.stubEnv("NO_COLOR", undefined);
+    vi.stubEnv("FORCE_COLOR", "1");
+    const before = await resolve("--json");
+    const verbose = await resolve("--json", "--verbose");
+    expect(verbose.stdout).toBe(before.stdout);
+    expect(JSON.parse(verbose.stdout)).toEqual([manifest]);
+    expect(verbose.stderr).toContain("upm: details");
+    vi.stubEnv("UPM_DEBUG", "on");
+    expect(await resolve("--json")).toEqual(verbose);
+  });
+
+  it("keeps quiet's warning and debug behavior with --verbose", async () => {
+    const verbose = await resolve("--silent", "--verbose");
+    expect(verbose.stderr).toBe("upm: warning\n" + debug);
+    vi.stubEnv("UPM_DEBUG", "1");
+    expect(await resolve("--silent")).toEqual(verbose);
+  });
+});
+
 describe("colors", () => {
   afterEach(() => {
     vi.restoreAllMocks();
@@ -495,6 +623,7 @@ describe("the ./upm entry", () => {
   it("turns the compile cache on and still runs the cli", async () => {
     const { stdout } = await run(process.execPath, [ENTRY, "--help"]);
     expect(stdout).toContain("upm resolve <spec>...");
+    expect(stdout).toContain("--verbose            print debug messages (also UPM_DEBUG=1 or on)");
   });
 
   // The entry's `await import` keeps the process alive past the write, so a reader that has
@@ -1041,11 +1170,11 @@ describe("startup budget", () => {
     // sharing a missing peer, `--help` within noise (46/42 and 121/114 ms); 143,973 with kept
     // documents read in parts and the resolve's threads started early (42/43 and 110/111 ms);
     // 144,476 with a warm link that skips the fill and links tops side by side (43/44 and
-    // 115/112 ms).
+    // 115/112 ms); 144,595 with --verbose (34/34 and 81/81 ms).
     const modules = await reachable();
     const bytes = [...modules.values()].reduce((total, size) => total + size, 0);
     expect(modules.size).toBeLessThanOrEqual(27); // `upm.ts` is the bin, `cli.ts` the program
-    expect(bytes).toBeLessThanOrEqual(144_500);
+    expect(bytes).toBeLessThanOrEqual(144_650);
     // Found through `import()` by the commands that read a project, like the pools: each holds
     // its worker's whole code in the build.
     const lazy = [

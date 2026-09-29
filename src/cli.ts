@@ -80,6 +80,7 @@ Options
   --registry <url>     override the registry
   -s, --silent         no progress, run banner or install summary (also -q, --loglevel)
   --store <dir>        package store directory
+  --verbose            print debug messages (also UPM_DEBUG=1 or on)
   --verify             install: check sizes, links, bins and peers, not file contents
   -w, --workspace <name|path>
                        add, remove, run: select workspaces (repeatable; parent paths work)
@@ -188,6 +189,7 @@ export interface Cli {
   minReleaseAgeExclude?: string[];
   /** `-s`, `-q` or a low `--loglevel`: no progress notes, run banner or install summary. */
   quiet?: boolean;
+  verbose?: boolean;
   /** `--offline`: never ask the registry or download a tarball. */
   offline?: boolean;
   /** `--prefer-offline`: pick from kept registry documents without revalidating them. */
@@ -263,6 +265,7 @@ const SWITCHES = {
   "-h": "help",
   "--help": "help",
   "--json": "json",
+  "--verbose": "verbose",
   "--production": "production",
   "--lock": "lock",
   "--offline": "offline",
@@ -443,6 +446,7 @@ export async function main(argv: string[]): Promise<number> {
   trace("argv");
   if (cli.error) return usage(cli.error);
   quiet = cli.quiet === true;
+  verbose = cli.verbose === true;
   if (cli.help || cli.command === undefined) {
     write("stdout", `${help("stdout")}\n`);
     return 0;
@@ -790,12 +794,13 @@ const DEBUG = new Set(["1", "on"]);
 
 /** `-s`, `-q` or a low `--loglevel`: `note` keeps only warnings. */
 let quiet = false;
+let verbose = false;
 
-/** Summaries go to stderr, so `--json` keeps stdout clean. `debug` only under `UPM_DEBUG`. */
+/** Summaries go to stderr, so `--json` keeps stdout clean. */
 function note(message: string, level: LogLevel = "info"): void {
   if (quiet && level === "info") return;
   if (level === "debug") {
-    if (!DEBUG.has(globalThis.process?.env?.UPM_DEBUG ?? "")) return;
+    if (!verbose && !DEBUG.has(globalThis.process?.env?.UPM_DEBUG ?? "")) return;
     write("stderr", `${paint("gray", `upm: ${message}`)}\n`);
   } else if (level === "warn") {
     write("stderr", `${paint("yellow", "upm:")} ${paint("yellow", message)}\n`);
