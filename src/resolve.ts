@@ -556,24 +556,27 @@ export async function resolveTree(
         !have.get(name)?.some((p) => p.version === own);
       return again ? [own, false] : [range, true];
     });
-    // A spec we cannot read as a range, an alias or a tag, takes no part. A failed pick is its
-    // edge's to report.
-    const joins = group.map(([, range]) => validRange(range));
+    // Only answers take part: a spec we cannot read as a range, an alias or a tag, has none,
+    // and neither has a failed pick, which its own edge then reports.
     const answers = await Promise.all(
       specs.map(async ([spec, fresh], i) => {
         try {
-          if (joins[i]) return fresh ? (await pick(parseDep(name, spec), true)).version : spec;
+          if (!validRange(group[i]![1])) return undefined;
+          return fresh ? (await pick(parseDep(name, spec), true)).version : spec;
         } catch {}
       }),
     );
     let best = -1;
     for (const [i, v] of answers.entries()) {
-      const fits = v !== undefined && group.every(([, r], j) => !joins[j] || satisfies(v, r));
-      if (fits && (best < 0 || compare(v, answers[best]!) > 0)) best = i;
+      if (v === undefined) continue;
+      if (!group.every(([, r], j) => answers[j] === undefined || satisfies(v, r))) continue;
+      const c = best < 0 ? 1 : compare(v, answers[best]!);
+      // On a tie a locked spec wins, so the record is the lock's rather than the registry's.
+      if (c > 0 || (c === 0 && !specs[i]![1])) best = i;
     }
     await Promise.all(
       group.map(([from], i) => {
-        const [spec, fresh] = specs[best >= 0 && joins[i] ? best : i]!;
+        const [spec, fresh] = specs[best >= 0 && answers[i] !== undefined ? best : i]!;
         // prune() decides what an unmet peer costs: an optional ancestor drops, a required one dies.
         return edge(from, name, spec, false, fresh).catch((e: unknown) => void dead.set(from, e));
       }),

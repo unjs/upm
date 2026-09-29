@@ -1071,6 +1071,32 @@ describe("peer dependencies", () => {
       expect(again.calls).toEqual([]);
     });
 
+    it("share past one whose pick failed", async () => {
+      // `aaa` sorts first and asks for a version nobody published; the others still share.
+      const out = await resolve(
+        { ...fixture, aaa: { "1.0.0": { peerDependencies: { ts: "^9" } } } },
+        { dependencies: { open: "^1", capped: "^1" }, optionalDependencies: { aaa: "^1" } },
+      );
+      expect(out.packages["open@1.0.0"]?.dependencies).toEqual({ ts: "6.0.3" });
+      expect(out.packages["capped@1.0.0"]?.dependencies).toEqual({ ts: "6.0.3" });
+      expect(out.packages["aaa@1.0.0"]).toBeUndefined();
+    });
+
+    it("take the locked copy when a fresh pick lands on the same version", async () => {
+      const then: Fixture = { ...fixture, ts: { "6.0.3": {} } };
+      const first = await resolve(then, { dependencies: { capped: "^1" } });
+      const locked = structuredClone(first);
+      locked.packages["ts@6.0.3"]!.integrity = "sha512-locked";
+      // `any` sorts first and picks 6.0.3 fresh; `capped` holds it locked.
+      const out = await resolve(
+        { ...then, any: { "1.0.0": { peerDependencies: { ts: ">=4.8.4" } } } },
+        { dependencies: { any: "^1", capped: "^1" } },
+        { locked },
+      );
+      expect(out.packages["any@1.0.0"]?.dependencies).toEqual({ ts: "6.0.3" });
+      expect(out.packages["ts@6.0.3"]?.integrity).toBe("sha512-locked");
+    });
+
     it("never let a dev-only consumer narrow what a shipped one gets", async () => {
       const out = await resolve(fixture, {
         dependencies: { open: "^1" },
