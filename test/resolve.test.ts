@@ -1031,6 +1031,43 @@ describe("peer dependencies", () => {
     expect(out.packages["new@1.0.0"]?.dependencies).toEqual({ react: "18.2.0" });
   });
 
+  describe("two consumers missing the same peer", () => {
+    // typescript-eslint caps typescript where ts-api-utils takes any: a copy each gave
+    // ts-api-utils a typescript with no JS API (unjs/upm#8).
+    const fixture: Fixture = {
+      capped: { "1.0.0": { peerDependencies: { ts: ">=4.8.4 <6.1.0" } } },
+      open: { "1.0.0": { peerDependencies: { ts: ">=4.8.4" } } },
+      ts: { "5.9.0": {}, "6.0.3": {}, "7.0.2": {} },
+    };
+
+    it("share one version that meets both ranges", async () => {
+      const { result, count } = run(fixture, { dependencies: { open: "^1", capped: "^1" } });
+      const out = await result;
+      expect(Object.keys(out.packages)).toEqual(["capped@1.0.0", "open@1.0.0", "ts@6.0.3"]);
+      expect(out.packages["open@1.0.0"]?.dependencies).toEqual({ ts: "6.0.3" });
+      expect(out.packages["capped@1.0.0"]?.dependencies).toEqual({ ts: "6.0.3" });
+      expect(count("ts")).toBe(1);
+      expect(unmetPeers(out)).toEqual([]);
+    });
+
+    it("heal a lock that gave them a copy each", async () => {
+      const capped = await resolve(fixture, { dependencies: { capped: "^1" } });
+      const open = await resolve(fixture, { dependencies: { open: "^1" } });
+      const split = { ...capped, packages: { ...capped.packages, ...open.packages } };
+      expect(Object.keys(split.packages)).toContain("ts@7.0.2");
+
+      const { result, calls } = run(
+        fixture,
+        { dependencies: { capped: "^1", open: "^1" } },
+        { locked: split },
+      );
+      const out = await result;
+      // The locked version that meets both wins, straight from the lock.
+      expect(calls).toEqual([]);
+      expect(Object.keys(out.packages)).toEqual(["capped@1.0.0", "open@1.0.0", "ts@6.0.3"]);
+    });
+  });
+
   it("marks a peer dev when only a dev package pulls it in", async () => {
     const out = await resolve(
       { tool: { "1.0.0": { peerDependencies: { host: "^1" } } }, host: { "1.0.0": {} } },

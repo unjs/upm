@@ -145,6 +145,9 @@ These need a scope decision, not just a patch:
 - No hoisting or separate copies of a consumer for different peer environments. Different
   consumers can have different peer versions, but an own dependency can still conflict
   with that consumer's peer range. `--verify` reports such conflicts; it cannot fix them.
+- Consumers missing the same peer in one settling round share a version that meets every
+  range. One found in a later round, behind a fetched peer, settles against what is already
+  fetched and can still get its own copy. Start at `fetchPeer` in `src/resolve.ts`.
 - An alias does not supply a peer under the package's real name.
 - `dedupe` prefers versions already locked; it is not an upgrade strategy. A fresh resolve
   requires removing the lockfile and `node_modules`, whose copy of the lockfile an install

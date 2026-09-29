@@ -696,8 +696,8 @@ during an install; that grace period does not guarantee safe concurrent cleanup.
   dependencies.
 - **Workspaces install as one tree.** No filtered installs or catalogs. A
   `workspace:` spec names a workspace by its own name, not by path or alias.
-- **Limited peer handling.** Missing required peers are installed; optional peers
-  are linked only if already present. A package gets one copy, not one per set of
+- **Limited peer handling.** Missing required peers are installed, one version for
+  all consumers when their ranges allow; optional peers are linked only if already present. A package gets one copy, not one per set of
   peers, and an aliased package does not count as a peer.
 
 ## Credits

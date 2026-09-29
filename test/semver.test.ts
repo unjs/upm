@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   compare,
+  intersect,
   maxSatisfying,
   parse,
   rcompare,
@@ -334,6 +335,32 @@ describe("validRange", () => {
   ];
   it.each(invalid)("rejects %j", (range) => {
     expect(validRange(range)).toBe(false);
+  });
+});
+
+describe("intersect", () => {
+  const versions = ["1.0.0", "1.5.0", "2.0.0", "2.5.0", "3.0.0"];
+
+  it.each([
+    [[">=1.0.0 <2.1.0", ">=1.0.0"], "2.0.0"],
+    [["^1 || ^2", "^2 || ^3"], "2.5.0"],
+    [["1.0.0 - 2.0.0", ">=1.5.0"], "2.0.0"],
+    [[">=1.0.0", "<=1.0.0"], "1.0.0"],
+    [["*", "~1.5.0"], "1.5.0"],
+  ] as [string[], string][])("%j -> %s", (list, expected) => {
+    const range = intersect(list);
+    expect(range).toBeDefined();
+    expect(maxSatisfying(versions, range!)).toBe(expected);
+  });
+
+  it("drops the branches that exclude each other", () => {
+    expect(intersect(["^1 || ^2", "^2 || ^3"])).toBe("^2 ^2");
+  });
+
+  it("gives nothing when no version meets them all, or one is not a range", () => {
+    expect(intersect(["^1", "^2"])).toBeUndefined();
+    expect(intersect([">1.0.0", "<=1.0.0"])).toBeUndefined();
+    expect(intersect(["^1", "latest"])).toBeUndefined();
   });
 });
 
