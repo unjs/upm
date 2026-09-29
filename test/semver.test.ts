@@ -372,4 +372,37 @@ describe("maxSatisfying", () => {
     expect(maxSatisfying(["1.0.0", "oops", "v1.1.0"], "^1.0.0")).toBe("v1.1.0");
     expect(maxSatisfying([], "*")).toBeUndefined();
   });
+
+  it("drops a prerelease unparsed only where the range cannot take one", () => {
+    const listed = [
+      "1.0.0+build-1",
+      "1.0.1-rc.1",
+      "1.0.1",
+      "v1.0.2-beta",
+      "=1.0.3",
+      "1.0.4-",
+      "1.1.0-0",
+      "2.0.0-0",
+      "2.0.0+x-y",
+    ];
+    // The highest by testing every one, as before.
+    const tested = (range: string, pre: boolean) =>
+      listed
+        .filter((v) => satisfies(v, range, pre))
+        .reduce<string | undefined>((a, b) => (!a || compare(b, a) > 0 ? b : a), undefined);
+    for (const range of [
+      "^1.0.0",
+      "*",
+      ">=1.0.1-rc.0",
+      "1.0.0 - 2.0.0",
+      "<=2.0.0-0",
+      "~1.0",
+      "x",
+    ]) {
+      for (const pre of [false, true])
+        expect(maxSatisfying(listed, range, pre)).toBe(tested(range, pre));
+    }
+    expect(maxSatisfying(listed, "^1.0.0")).toBe("=1.0.3");
+    expect(maxSatisfying(listed, "*")).toBe("2.0.0+x-y");
+  });
 });
