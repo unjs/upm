@@ -125,9 +125,8 @@ These need a scope decision, not just a patch:
   registry package's transitive edge (npm links one; here a `.upm` entry never points at a
   workspace, which keeps the store portable), `workspace:<other>@<range>` installed under a
   different name, `workspace:./path`, `catalog:`, injected packages, `init -w` and
-  `--no-workspaces`. A frozen install still globs the patterns to check the lockfile against
-  the tree; make that a fast path only if it shows in a profile. Publishing a manifest with a
-  `workspace:` range is another manager's job: `upm publish` is npm's, which keeps it.
+  `--no-workspaces`. Publishing a manifest with a `workspace:` range is another manager's
+  job: `upm publish` is npm's, which keeps it.
 - `.npmrc` is read for the registry, `@scope:registry`, the credential keys, `save-exact`,
   `min-release-age`, `before`, `min-release-age-exclude`, `offline` and `prefer-offline`, from the project,
   user and global files and `npm_config_*`. Not npm's own built-in npmrc, and no `proxy`, `strict-ssl`,
@@ -215,10 +214,16 @@ Unranked: take a fresh profile before choosing one. Use [perf.md](perf.md) for e
   release-age window made `upm lock` over documents past their `max-age` 299 ms where
   revalidating them took 993 ms (`next`: 214 against 624). Writing documents after the walk,
   where nothing waits on them, is untried. A compressed body could not be read in parts.
-- A warm resolve of a large workspace monorepo (86 workspaces) spends about a third of its
-  time before the walk, reading the workspaces: the glob of `packages/**/*` walks every
-  directory under it and tries a package.json in each. Start at `findWorkspaces` in
-  `src/workspaces.ts`; measure with `bench/ab.sh relock` on a workspace project.
+- The workspace glob (Node's `fs.glob`, `listWorkspaces` in `src/workspaces.ts`) still runs
+  wherever the install state holds no proof of the set: a warm resolve of a fresh clone, where
+  on an 86-workspace monorepo it is about a third of the time before the walk (`packages/**/*`
+  walks every directory under it and tries a package.json in each), and the first install
+  after a folder changes under a `**` pattern (a build writing `dist/`, a branch switch).
+  Under `**` any symlink means no proof at all. The proof's own walk (`record`) reads the same
+  folders in a fraction of the glob's time; answering from it instead needs the glob's
+  matching rules, and `implied` already checks the two agree. Measure with `bench/ab.sh
+relock` on a workspace project, and the no-op with a folder toggled under `packages/`
+  before each run; the `monorepo` fixture has no sources to walk.
 - On a warm walk the registry threads are still the bound on a large workspace, about 85%
   busy: parsing the manifests a pick reads, the head of each kept document (its index is
   three JSON entries per version, and is parsed whole even when a pick reads one version),

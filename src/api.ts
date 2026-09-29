@@ -75,6 +75,7 @@ import { describe, replaceFile, take, trace, tracing } from "./util.ts";
 /** Only a type: the module itself is loaded by the commands that read a project. */
 type Workspace = import("./workspaces.ts").Workspace;
 type Root = import("./workspaces.ts").Root;
+type Listed = import("./workspaces.ts").Listed;
 
 export type { Added, Group };
 
@@ -505,17 +506,19 @@ async function installed(ctx: Context, edit?: Edit, loaded?: Project): Promise<I
   trace("project");
   const { dir } = project;
   // Before the lockfile: the pool wants to know now whether there is a tree to compare.
-  const state = options.verify ? undefined : await readState(dir);
+  const state = options.verify ? undefined : (project.state ?? (await readState(dir)));
   trace("state");
   if (!options.frozen) await restoreLock(ctx, project, state);
   // The state names the inputs it was made from: the same bytes and settings again, with the
   // tree still standing, is a no-op install that never reads the graph. The two files'
-  // stamps say "same bytes" without a read or a hash; failing that, the hash decides. A local
-  // tarball has only its stamp: any other, and the install below checks its bytes.
-  if (state?.inputs !== undefined && !edit && !ctx.dedupe && project.workspaces.length === 0) {
+  // stamps, and the workspace set proven off the state, say "same bytes" without a read or a
+  // hash; failing that, the hash decides. A local tarball has only its stamp: any other, and
+  // the install below checks its bytes.
+  if (state?.inputs !== undefined && !edit && !ctx.dedupe) {
     const stamps = stampsOf(ctx, dir);
     const stamped =
       stamps !== undefined &&
+      project.proven &&
       sameStamp(stamps.lock, state.stamps?.lock) &&
       sameStamp(stamps.manifest, state.stamps?.manifest) &&
       stamps.settings === state.stamps?.settings;
@@ -528,14 +531,16 @@ async function installed(ctx: Context, edit?: Edit, loaded?: Project): Promise<I
     trace("inputs");
     const files = state.tarballs;
     if (matched && files && sameFiles(dir, files) && treeStanding(dir, state)) {
-      // Read and hashed this time: the stamps are recorded so the next install need not.
-      if (!stamped && stamps) await writeState(dir, { ...state, stamps });
+      // Read and hashed, or folders read again, this time: recorded so the next install need not.
+      if (!stamped || project.learned) {
+        await writeState(dir, { ...state, stamps, workspaces: project.proof });
+      }
       trace("linked");
       const { packages, otherPlatforms, warnings } = state.summary!;
       for (const warning of warnings) log(warning, "warn");
       return {
         packages,
-        workspaces: 0,
+        workspaces: project.workspaces.length,
         otherPlatforms,
         upToDate: true,
         missingOptional: [],
@@ -638,7 +643,7 @@ async function installed(ctx: Context, edit?: Edit, loaded?: Project): Promise<I
   // Closed by the fill otherwise: the walk's prefetch may have started unpack threads.
   if (!filling) store.close();
   // The inputs, for the state file, read back off disk: `plan` may just have written them.
-  const inputs = project.workspaces.length === 0 ? await lockText(ctx, dir) : undefined;
+  const inputs = await lockText(ctx, dir);
   // The linker is handed the hash rather than computing it again: 3.7 ms on `nuxt`.
   const link = {
     dir,
@@ -659,6 +664,7 @@ async function installed(ctx: Context, edit?: Edit, loaded?: Project): Promise<I
             stamps: stampsOf(ctx, dir),
           },
     tarballs: filesOf(ctx, lock),
+    workspaces: project.proof,
   };
   const linked = await linkTree(resolution, link).catch(async (error: unknown) => {
     await filling;
@@ -813,11 +819,12 @@ async function movedIn(
 
 /** What the tree is a function of, besides the store's content. */
 function inputsOf(ctx: Context, project: Project, lock: string): Inputs {
-  return { lock, manifest: project.manifest, ...settingsIn(ctx) };
+  const workspaces = project.workspaces.map((ws): [string, unknown] => [ws.path, ws.manifest]);
+  return { lock, manifest: project.manifest, workspaces, ...settingsIn(ctx) };
 }
 
-/** The inputs that are neither file. */
-function settingsIn(ctx: Context): Omit<Inputs, "lock" | "manifest"> {
+/** The inputs that are not files. */
+function settingsIn(ctx: Context): Omit<Inputs, "lock" | "manifest" | "workspaces"> {
   const { registry, scopes } = settings(ctx);
   return {
     production: ctx.options.production === true,
@@ -1120,7 +1127,8 @@ async function installFirst(ctx: Context): Promise<void> {
   let found: Root | undefined;
   if (ctx.root === undefined) {
     const { findRoot } = await import("./workspaces.ts");
-    found = await findRoot(builtin.path.resolve(options.dir ?? globalThis.process.cwd()));
+    const cwd = options.dir ?? globalThis.process.cwd();
+    found = await findRoot(builtin.path.resolve(cwd), !options.verify);
   }
   const root = found?.dir ?? ctx.root!;
   const state = await readState(root);
@@ -1530,13 +1538,13 @@ async function projectDir(ctx: Context): Promise<string> {
   const { dir } = ctx.options;
   if (dir !== undefined) return (ctx.root = builtin.path.resolve(dir));
   const { findRoot } = await import("./workspaces.ts");
-  const found = (ctx.found = await findRoot(globalThis.process.cwd()));
+  const found = (ctx.found = await findRoot(globalThis.process.cwd(), !ctx.options.verify));
   ctx.inside = found.workspace;
   return (ctx.root = found.dir);
 }
 
 /** The root's package.json and the workspaces it declares: what one install is of. */
-interface Project {
+interface Project extends Omit<Listed, "workspaces"> {
   dir: string;
   manifest: RootManifest;
   workspaces: Workspace[];
@@ -1545,11 +1553,12 @@ interface Project {
 /** `resolving` opens the registry early for a resolve with no lockfile (`openEarly`). */
 async function loadProject(ctx: Context, resolving?: "lock" | "tree"): Promise<Project> {
   const dir = await projectDir(ctx);
-  const manifest = ctx.found?.manifest ?? (await loadManifest(dir)).manifest;
+  const { found } = ctx;
+  const manifest = found?.manifest ?? (await loadManifest(dir)).manifest;
   if (resolving) openEarly(ctx, dir, manifest, resolving === "tree");
-  const { findWorkspaces } = await import("./workspaces.ts");
-  const workspaces = ctx.found?.workspaces ?? (await findWorkspaces(dir, manifest));
-  return { dir, manifest, workspaces };
+  if (found?.listed) return { dir, manifest, ...found.listed };
+  const { workspacesOf } = await import("./workspaces.ts");
+  return { dir, manifest, ...(await workspacesOf(dir, manifest, !ctx.options.verify)) };
 }
 
 /** What the resolver is told about the workspaces: where each is and what it declares. */

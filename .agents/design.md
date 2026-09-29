@@ -80,12 +80,25 @@ do not claim byte verification from a size check.
 
 The install state carries two levels of evidence. Its `hash` describes the resolution and is
 compared with one computed from the lockfile; its `inputs` describe what that resolution was
-computed from (lockfile bytes, root manifest, store, registry hosts, platform, flags), and an
-install whose inputs match checks only what the state recorded — the root's links and bins,
-the `.upm` entry names — without reading the graph. Both trust the state's `entries` and
-`root` for _which_ names to look for; neither reads a file's bytes. Anything that changes
-what a resolution is a function of (a new `.npmrc` key that changes hosts, say) must be added
-to the inputs (`inputsOf` in `src/api.ts`), or the short check lies.
+computed from (lockfile bytes, root manifest, each workspace's path and manifest, store,
+registry hosts, platform, flags), and an install whose inputs match checks only what the state
+recorded — the links and bins of the root and of each workspace, the `.upm` entry names —
+without reading the graph. Both trust the state's `entries`, `root` and `tops` for _which_
+names to look for; neither reads a file's bytes. Anything that changes what a resolution is a
+function of (a new `.npmrc` key that changes hosts, say) must be added to the inputs
+(`inputsOf` in `src/api.ts`), or the short check lies.
+
+Which workspaces there are is an input too, and globbing for them was most of a no-op install
+in a big monorepo. The state keeps a proof of the set (`listWorkspaces` in
+`src/workspaces.ts`): the names in each folder the glob could list, and which folders hold a
+package.json. A folder whose stamp moved is read again, and only other names, or a package.json
+come or gone, send the install back to the glob; the folder's own `node_modules`, where the
+install writes, is not among them. A link is walked into whatever it leads to, nothing or a file
+included, since either may become a folder; under `**`, with no depth to stop at, a link means
+no proof. A stamp stands in for a read only once it is older than a timestamp's tick can hide,
+so a change in the same tick as the recording is still seen, and it is taken before the read
+it stands for. A proof is kept only when the glob found what the folders read just before it
+imply; `--verify` never uses one.
 
 The tree also keeps a copy of the lockfile it was last linked from (`node_modules/.upm.lock`).
 With no lockfile, an install writes it back only when it still describes package.json, as

@@ -1041,11 +1041,11 @@ describe("startup budget", () => {
     // sharing a missing peer, `--help` within noise (46/42 and 121/114 ms); 143,973 with kept
     // documents read in parts and the resolve's threads started early (42/43 and 110/111 ms);
     // 144,476 with a warm link that skips the fill and links tops side by side (43/44 and
-    // 115/112 ms).
+    // 115/112 ms); 145,049 with each workspace's links in the state (43/42 and 107/107 ms).
     const modules = await reachable();
     const bytes = [...modules.values()].reduce((total, size) => total + size, 0);
     expect(modules.size).toBeLessThanOrEqual(27); // `upm.ts` is the bin, `cli.ts` the program
-    expect(bytes).toBeLessThanOrEqual(144_500);
+    expect(bytes).toBeLessThanOrEqual(145_100);
     // Found through `import()` by the commands that read a project, like the pools: each holds
     // its worker's whole code in the build.
     const lazy = [

@@ -479,9 +479,9 @@ root `package.json`:
 ```
 
 The `{ "workspaces": { "packages": [...] } }` form also works. Each matching
-folder with a `package.json` becomes a workspace. Names must be unique; if a
-package has no name, upm uses its folder name. Patterns must stay inside the
-project root.
+folder with a `package.json` becomes a workspace, except a `node_modules` folder
+and anything in one. Names must be unique; if a package has no name, upm uses its
+folder name. Patterns must stay inside the project root.
 
 ### Link local packages
 
