@@ -100,9 +100,16 @@ describe("createStore", () => {
       return most;
     }
 
-    const [small, large, narrow] = [await peak(30, 8), await peak(150, 8), await peak(150, 4)];
-    expect(large).toBeLessThanOrEqual(small); // five times the tree, no more in hand
-    expect(narrow).toBeLessThan(large); // and the ceiling is what decides how much
+    // With `held` at one byte, a download starts only once nothing landed waits to be stored,
+    // index and all: the slots' worth downloading, and at most as many more landing meanwhile.
+    // Bounds, not a comparison of two runs, whose peaks move with the scheduler by one or two.
+    for (const [packages, ceiling] of [
+      [30, 8],
+      [150, 8],
+      [150, 4],
+    ] as const) {
+      expect(await peak(packages, ceiling)).toBeLessThanOrEqual(2 * ceiling);
+    }
   });
 
   it("gives a download's slot back at its last byte, while its tarball waits for a thread", async () => {

@@ -338,18 +338,17 @@ export function createStore(options: StoreOptions = {}): Store {
     return await disk(() => writer.unpack(integrity, bytes, repair));
   }
 
+  /** The tarball fetched, unpacked and its index written. */
   async function download(tarball: Tarball, integrity: string, repair: boolean) {
-    let index: PackageIndex;
     try {
-      index = await fill(tarball, integrity, repair, true);
+      return await fill(tarball, integrity, repair, true);
     } catch (error) {
       // A dead worker reported nothing, so its tarball is simply un-unpacked — but the bytes
       // were transferred to it rather than copied, so the redo starts back at the network.
       // Once, and here: whatever killed a worker must not be handed to another one.
       if ((error as { code?: string }).code !== WORKER_DIED) throw error;
-      index = await fill(tarball, integrity, repair, false);
+      return await fill(tarball, integrity, repair, false);
     }
-    return await publish(integrity, index);
   }
 
   /** Wait until the bytes landed and not yet in the store are under `held`. */
@@ -375,10 +374,10 @@ export function createStore(options: StoreOptions = {}): Store {
   }
 
   /**
-   * Fetch a tarball and turn it into content, in a worker when `offer` and the pool allow. The
-   * download slot is given back at the last byte, not at the index: held through the unpack,
-   * `large` had all 32 slots waiting on busy workers and no request out for 600 ms. What bounds
-   * memory past the slot is `room`.
+   * Fetch a tarball and turn it into content and an index, in a worker when `offer` and the
+   * pool allow. The download slot is given back at the last byte, not at the index: held
+   * through the unpack, `large` had all 32 slots waiting on busy workers and no request out
+   * for 600 ms. What bounds memory past the slot is `room`.
    */
   async function fill(
     tarball: Tarball,
@@ -399,13 +398,14 @@ export function createStore(options: StoreOptions = {}): Store {
     });
     held += pulled.size;
     try {
-      if ("streamed" in pulled) return await pulled.streamed;
+      // Held until the index is written, or the index writes would queue past the bound.
+      if ("streamed" in pulled) return await publish(integrity, await pulled.streamed);
       // The hash is checked where the unpack runs, so a worker takes that off this thread too.
       const { bytes } = pulled;
       const ready = offer ? (pool ?? (await loadPool())) : undefined;
       const offered = ready?.offer(integrity, bytes, repair, behind);
       trace("offer", { i: integrity, behind, taken: !!offered });
-      return await (offered ?? unpackHere(integrity, bytes, repair));
+      return await publish(integrity, await (offered ?? unpackHere(integrity, bytes, repair)));
     } finally {
       unheld(pulled.size);
     }
