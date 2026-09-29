@@ -1,0 +1,21 @@
+{
+  "name": "@acme/feature-admin-tools",
+  "version": "0.0.0",
+  "private": true,
+  "dependencies": {
+    "@acme/api-client": "*",
+    "@acme/ui-card": "*",
+    "@acme/ui-theme": "*",
+    "@acme/utils": "*",
+    "@tanstack/react-query": "5.102.8",
+    "zod": "4.5.4"
+  },
+  "devDependencies": {
+    "@acme/tsconfig": "*",
+    "@types/react": "19.2.18",
+    "react": "19.2.8"
+  },
+  "peerDependencies": {
+    "react": "^19.0.0"
+  }
+}

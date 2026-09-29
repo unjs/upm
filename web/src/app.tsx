@@ -246,14 +246,13 @@ export function App({ ready }: { ready?: Promise<unknown> }) {
   // later drops a pick, so it is summed again each draw.
   const estimate =
     installed || view?.installed instanceof Error ? undefined : estimateOf(sized.current);
-  // Half for the store filling, half for the project it links into, or all the project when an
-  // earlier run in this tab left the store full. Drawn on the install's clock. Pending while
-  // there is nothing to measure yet: the resolve, and the install's first downloads.
+  // upm's own counts, as the CLI's bar draws them, on the install's clock. Pending while there
+  // is nothing to count yet: the resolve, and the install's first downloads.
   const busy =
     !!view &&
     !(view.top instanceof Error || view.resolved instanceof Error) &&
     (view.installed === undefined || view.installed === true);
-  const progress = busy ? progressOf(view.installed === true, estimate) : undefined;
+  const progress = busy ? progressOf(view.installed === true) : undefined;
   const problems = useMemo(() => problemsOf(view), [view]);
   // A bare name shows the version it resolved to, while the box still holds that run's spec.
   const top = view?.top instanceof Error ? undefined : view?.top;
@@ -382,15 +381,9 @@ export function App({ ready }: { ready?: Promise<unknown> }) {
   );
 }
 
-function progressOf(installing: boolean, estimate: Size | undefined): number | "pending" {
-  if (!installing || !estimate?.bytes) return "pending";
-  const { store, project } = installProgress();
-  const s = Math.min(1, store / estimate.bytes);
-  const p = project / estimate.bytes;
-  const done = Math.max(p, (s + p) / 2);
-  if (done <= 0) return "pending";
-  // The estimate fills 90%. Past it, the rest is only ever approached: installs run over it.
-  return done <= 1 ? done * 0.9 : 0.99 - 0.09 * Math.exp(-10 * (done - 1));
+function progressOf(installing: boolean): number | "pending" {
+  const done = installing ? installProgress() : undefined;
+  return done ? done : "pending";
 }
 
 /** What the picks that run here unpack to, as the registry says. */

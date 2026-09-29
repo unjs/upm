@@ -125,9 +125,8 @@ These need a scope decision, not just a patch:
   registry package's transitive edge (npm links one; here a `.upm` entry never points at a
   workspace, which keeps the store portable), `workspace:<other>@<range>` installed under a
   different name, `workspace:./path`, `catalog:`, injected packages, `init -w` and
-  `--no-workspaces`. A frozen install still globs the patterns to check the lockfile against
-  the tree; make that a fast path only if it shows in a profile. Publishing a manifest with a
-  `workspace:` range is another manager's job: `upm publish` is npm's, which keeps it.
+  `--no-workspaces`. Publishing a manifest with a `workspace:` range is another manager's
+  job: `upm publish` is npm's, which keeps it.
 - `.npmrc` is read for the registry, `@scope:registry`, the credential keys, `save-exact`,
   `min-release-age`, `before`, `min-release-age-exclude`, `offline` and `prefer-offline`, from the project,
   user and global files and `npm_config_*`. Not npm's own built-in npmrc, and no `proxy`, `strict-ssl`,
@@ -202,6 +201,24 @@ Unranked: take a fresh profile before choosing one. Use [perf.md](perf.md) for e
   because the big tarball trickled in with no silence long enough for the stall watchdog,
   the main thread idle and no lookup slow. A throughput floor after the first megabytes, or a
   second range request racing the slow one, would bound it. Start at `once` in `src/store.ts`.
+- A cold install of many small tarballs is bound by round trips and the main thread: on
+  `large` with a lockfile, 32 downloads are in flight from start to end while main is busy for
+  about 70% of the install. The same 1,350 GETs alone took 1.35 s at 32 at a time and 0.9 s at
+  64, yet 64 slots in the install were a wash on `large` and a quarter slower on `next`, whose
+  big tarballs then share the wire: at 64 a request waited ~55 ms for its first byte against
+  ~30 ms, main being too busy to read it. Past the request, each tarball costs main its index
+  write (a `JSON.stringify` and several threadpool calls, about a tenth of its busy time) and
+  the pool's messages. Writing the index in the worker that stored the files would take the
+  first away, but only main writes an index today: decide that first. Start at `publish` in
+  `src/store.ts`; the fetch thread below is the other way.
+- Through the library, a host that has imported `node:http` never gets upm's agent: on Node 22
+  and 24 an ESM import of it makes undici's default dispatcher (a `require` does not), which
+  `install` in `src/dns.ts` takes for the host's own, so its requests go through `fetch` with
+  no lookup cache. Telling a default the host never configured from one it did would fix it;
+  test from a process that imported `node:http` first, as `test/get.test.ts` explains.
+- The tarball GET (`getter` in `src/dns.ts`) uses undici's legacy handler callbacks, which
+  undici 6 and 7 both call. An undici that drops them would fail every download with
+  `ENETWORK`, with no fallback to `fetch`: check `test/get.test.ts` on each new Node major.
 - Prefetch decides per package with its parent's fate, which may wait on a libc read
   (`prefetch` in `src/api.ts`): what only an off-platform build reaches is never fetched. A
   regression here shows as extra store indexes on a cold install; check the index count
@@ -215,10 +232,16 @@ Unranked: take a fresh profile before choosing one. Use [perf.md](perf.md) for e
   release-age window made `upm lock` over documents past their `max-age` 299 ms where
   revalidating them took 993 ms (`next`: 214 against 624). Writing documents after the walk,
   where nothing waits on them, is untried. A compressed body could not be read in parts.
-- A warm resolve of a large workspace monorepo (86 workspaces) spends about a third of its
-  time before the walk, reading the workspaces: the glob of `packages/**/*` walks every
-  directory under it and tries a package.json in each. Start at `findWorkspaces` in
-  `src/workspaces.ts`; measure with `bench/ab.sh relock` on a workspace project.
+- The workspace glob (Node's `fs.glob`, `listWorkspaces` in `src/workspaces.ts`) still runs
+  wherever the install state holds no proof of the set: a warm resolve of a fresh clone, where
+  on an 86-workspace monorepo it is about a third of the time before the walk (`packages/**/*`
+  walks every directory under it and tries a package.json in each), and the first install
+  after a folder changes under a `**` pattern (a build writing `dist/`, a branch switch).
+  Under `**` any symlink means no proof at all. The proof's own walk (`record`) reads the same
+  folders in a fraction of the glob's time; answering from it instead needs the glob's
+  matching rules, and `implied` already checks the two agree. Measure with `bench/ab.sh
+relock` on a workspace project, and the no-op with a folder toggled under `packages/`
+  before each run; the `monorepo` fixture has no sources to walk.
 - On a warm walk the registry threads are still the bound on a large workspace, about 85%
   busy: parsing the manifests a pick reads, the head of each kept document (its index is
   three JSON entries per version, and is parsed whole even when a pick reads one version),
@@ -229,5 +252,7 @@ Unranked: take a fresh profile before choosing one. Use [perf.md](perf.md) for e
 - For warm installs, profile planning, messages and index work before adding more threads.
   A no-op or small incremental install must not pay for a whole-tree optimization.
 - A tarball fetch thread freed main-thread CPU without a clear end-to-end gain worth its
-  resource cost. Try it again only with a new measured reason, and test abort of a stream
-  main opened, recovery after the fetch thread dies, and exit when it never reports ready.
+  resource cost, when the download slots still waited on the unpack. Now that they do not, the
+  main thread bounds a cold install of small tarballs (above), which is a reason to measure it
+  again; test abort of a stream main opened, recovery after the fetch thread dies, and exit
+  when it never reports ready.

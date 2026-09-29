@@ -1,0 +1,8 @@
+{
+  "name": "@acme/types",
+  "version": "0.0.0",
+  "private": true,
+  "devDependencies": {
+    "@acme/tsconfig": "*"
+  }
+}

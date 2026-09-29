@@ -3,6 +3,7 @@
 // store's content is kept on OPFS (./opfs.ts) across runs, tabs and visits, and upm asks it
 // before a download. Those, and upm's commands, load on the first install.
 import type { InstallResult } from "upm/src/api.ts";
+import { fraction, type Seen } from "upm/src/progress.ts";
 import type { TarEntry } from "upm/src/tar.ts";
 import { blobKey, indexKey } from "upm/src/store-backend.ts";
 import type { BackendIndex } from "upm/src/store-backend.ts";
@@ -101,13 +102,12 @@ export function manifestOf(dependencies: Record<string, string>): InstalledFile 
 
 const STORE = `${HOME}/.upm/store/`;
 
-/**
- * How far the running install has got: bytes written into the store and into the project.
- * Each ends near the unpacked size of what it installs.
- */
-export function installProgress(): { store: number; project: number } {
-  const written = shim?.written;
-  return { store: written?.[STORE] ?? 0, project: written?.[`${PROJECT}/`] ?? 0 };
+/** What the running install last reported of each phase, through `onProgress`. */
+let seen: Seen = {};
+
+/** How far the running install has got, 0 to 1, as the CLI's bar draws it; undefined before. */
+export function installProgress(): number | undefined {
+  return fraction(seen);
 }
 
 /**
@@ -129,8 +129,7 @@ export function installInTab(
     node.fs.mkdirSync(PROJECT, { recursive: true });
     node.fs.writeFileSync(`${PROJECT}/package.json`, manifestOf(dependencies).data);
     if (lockfile) node.fs.writeFileSync(`${PROJECT}/upm.lock`, lockfile);
-    node.written[STORE] = 0;
-    node.written[`${PROJECT}/`] = 0;
+    seen = {};
     const { install } = await import("upm/src/api.ts");
     const start = performance.now();
     // No release age: the same picks as the resolve beside it, which asks for none.
@@ -145,6 +144,7 @@ export function installInTab(
       minReleaseAge: 0,
       storeBackend,
       log: quiet,
+      onProgress: (progress) => void (seen[progress.phase] = progress),
     });
     const ms = performance.now() - start;
     // The store now holds something worth keeping.

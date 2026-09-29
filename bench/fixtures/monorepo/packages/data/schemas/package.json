@@ -1,0 +1,12 @@
+{
+  "name": "@acme/schemas",
+  "version": "0.0.0",
+  "private": true,
+  "dependencies": {
+    "@acme/types": "*",
+    "zod": "4.5.4"
+  },
+  "devDependencies": {
+    "@acme/tsconfig": "*"
+  }
+}

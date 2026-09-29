@@ -136,7 +136,7 @@ describe("install", () => {
   it("installs the whole tree from the root, or from inside a workspace, the same way", async () => {
     const fromInside = await upm("packages/a", "install");
     expect(fromInside).toMatchObject({ code: 0 });
-    expect(fromInside.stdout).toMatch(/^Installed 2 packages, 2 workspaces, /);
+    expect(fromInside.stdout).toMatch(/^✓ installed · 2 pkgs · 2 ws · /);
     const lock = await read("upm.lock");
     expect(Object.keys((await lockfile()).workspaces)).toEqual(["packages/a", "packages/b"]);
     expect(Object.keys((await lockfile()).packages).sort()).toEqual(["c@1.0.0", "nanoid@5.0.0"]);
@@ -154,7 +154,7 @@ describe("install", () => {
     expect(requests.some((url) => url.startsWith("/b"))).toBe(false);
 
     const again = await upm("", "install");
-    expect(again.stdout).toMatch(/^2 packages, 2 workspaces up to date in [\d.]+m?s\n/);
+    expect(again.stdout).toMatch(/^✓ up to date · 2 pkgs · 2 ws · [\d.]+m?s\n/);
     expect(await read("upm.lock")).toBe(lock);
     const json = JSON.parse((await upm("packages/b", "install", "--json")).stdout);
     expect(json).toMatchObject({ packages: 2, workspaces: 2, upToDate: true });
@@ -162,7 +162,7 @@ describe("install", () => {
 
   it("counts the workspaces in lock's summary", async () => {
     const result = await upm("", "lock");
-    expect(result.stderr).toContain("2 packages, 0 optional, 1 dev, 2 workspaces");
+    expect(result.stderr).toContain("2 pkgs · 1 dev · 2 ws");
   });
 
   it("is stale under --frozen-lockfile when a workspace's ranges or the set of workspaces move", async () => {

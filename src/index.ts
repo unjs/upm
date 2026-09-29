@@ -43,6 +43,7 @@ export type {
   ListScriptsOptions,
   LockOptions,
   LogLevel,
+  Progress,
   ProjectOptions,
   PruneOptions,
   PruneResult,

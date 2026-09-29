@@ -1,7 +1,8 @@
 // Per-file content-addressed store. Files are keyed by their own hash, indexes by
 // the tarball integrity, so a tarball we have seen before is never fetched or untarred again.
 import { builtin } from "./builtin.ts";
-import { cacheLookups, fetching } from "./dns.ts";
+import { cacheLookups, fetching, getter } from "./dns.ts";
+import type { Answer } from "./dns.ts";
 import type { BackendClient, StoreBackend } from "./store-backend.ts";
 import type { Pool, Sink } from "./unpack-pool.ts";
 import {
@@ -52,8 +53,13 @@ export interface StoreOptions {
   fetch?: typeof fetch;
   /** `.npmrc` credentials by `//host/path/`, sent with a tarball request under one. */
   auth?: Record<string, string>;
-  /** Ceiling on tarballs in hand at once, downloading or unpacking. Default 32. */
+  /** Ceiling on tarballs downloading at once. Default 32. */
   concurrency?: number;
+  /**
+   * Compressed bytes that may have landed and wait to be stored before another download starts.
+   * Default 64 MiB. Injectable for tests.
+   */
+  held?: number;
   /** Worker threads unpacking tarballs, at most. 0 keeps every tarball on the main thread. */
   workers?: number;
   /** Injectable for tests. */
@@ -117,10 +123,18 @@ const BLOCK = 1024 * 1024;
 const STREAM_MIN = SHARD_MIN;
 
 /** What a download came to: the bytes, or the index a worker is making of them as they land. */
-type Pulled = { bytes: Uint8Array[] } | { streamed: Promise<PackageIndex> };
+type Pulled = ({ bytes: Uint8Array[] } | { streamed: Promise<PackageIndex> }) & { size: number };
 
 /** Asks the pool for a worker to stream a tarball of this many bytes to. */
 type Open = (size: number) => Promise<Sink | undefined>;
+
+/**
+ * Compressed bytes that may have landed and wait for their unpack before a new download starts.
+ * The download slots bound what is on the wire; this bounds what is past it. A cold `large`
+ * peaked at 28 MiB in 200 tarballs, where slots held to the index had peaked at 23 MiB in 32;
+ * `next`'s two biggest (67 MiB) reach it either way.
+ */
+const HELD = 64 * 1024 * 1024;
 
 /** Tries per tarball, and the first pause between them. Matches the registry client. */
 const ATTEMPTS = 5;
@@ -147,15 +161,16 @@ export function createStore(options: StoreOptions = {}): Store {
   const request = options.fetch ?? fetching();
   const auth = options.auth;
   // A tree of many small tarballs waits on round trips, not on CPU. At sixteen `nuxt` had
-  // nearly every slot in the network with ~85 waiting; thirty-two was ~300 ms faster, and
-  // sixty-four gave some of that back. What the count costs is big tarballs held in memory
-  // at once: up to this many of them, whole, while they wait for a worker.
+  // nearly every slot in the network with ~85 waiting; thirty-two was ~300 ms faster. Sixty-four
+  // was a wash on `large` and a quarter slower on `next`, whose big tarballs then share the wire
+  // with twice as many others.
   const concurrency = options.concurrency ?? 32;
-  // Two gates over one pipeline. The outer one spans a whole package, first byte to stored
-  // index, so the count keeps meaning what it meant: tarballs that may be in memory at once.
-  // It comes down off that number when the registry says to. The inner one caps how many
-  // tarballs this thread tears apart at once when there are no workers to do it, which is the
-  // machine's business and not the registry's; the pool bounds itself by its thread count.
+  // Three gates over one pipeline. The first spans a download, request to last byte, and comes
+  // down off its count when the registry says to. The second is `held`: bytes landed and not
+  // yet stored, which is what bounds memory past the wire. The third caps how many tarballs
+  // this thread tears apart at once when there are no workers to do it, which is the machine's
+  // business and not the registry's; the pool bounds itself by its thread count.
+  const most = options.held ?? HELD;
   const stall = options.stall ?? STALL;
   const verify = options.verify === true;
   const backend = options.backend;
@@ -185,6 +200,9 @@ export function createStore(options: StoreOptions = {}): Store {
   // Tarballs missed and not yet unpacked. An install asks for everything at once, so at the
   // first landing this is the whole install: what tells the pool how many threads to start.
   let behind = 0;
+  // Bytes landed and not yet stored, and the downloads waiting for them to go under `most`.
+  let held = 0;
+  const roomy: (() => void)[] = [];
   /** Shard directories under `index/`, listed on the first read. */
   let shards: Set<string> | undefined;
 
@@ -198,6 +216,12 @@ export function createStore(options: StoreOptions = {}): Store {
       if ((error as { code?: string }).code === "ENOENT") return new Set();
       throw wrapped(error, `list indexes in ${dir}`);
     }
+  }
+
+  /** Whether an index could be at `file`: its shard was there at the first look, or made since. */
+  function listed(file: string): boolean {
+    shards ??= listShards();
+    return shards.has(shardOf(file));
   }
 
   function readIndex(integrity: string): PackageIndex | undefined {
@@ -220,8 +244,7 @@ export function createStore(options: StoreOptions = {}): Store {
     // Folded to one case: a shard is two base64url characters, and on a case-insensitive
     // disk `Ab` and `aB` are one directory listed under whichever spelling made it. Folding
     // can only say "maybe there", which costs the read it would have cost anyway.
-    shards ??= listShards();
-    if (!shards.has(shardOf(file))) return undefined;
+    if (!listed(file)) return undefined;
     let raw: string;
     const t = tracing ? now() : 0;
     try {
@@ -274,10 +297,7 @@ export function createStore(options: StoreOptions = {}): Store {
       // The address cache, in place before a download slot is taken; already, on a cold walk.
       const lookups = cacheLookups();
       if (lookups) await lookups;
-      const index = await net((signal) => {
-        trace("slot", { i: integrity, behind });
-        return download(tarball, integrity, hit !== undefined, signal);
-      });
+      const index = await download(tarball, integrity, hit !== undefined);
       if (backend?.set) void client().then((it) => it?.put(integrity, index, tarball));
       return index;
     } finally {
@@ -318,23 +338,27 @@ export function createStore(options: StoreOptions = {}): Store {
     return await disk(() => writer.unpack(integrity, bytes, repair));
   }
 
-  async function download(
-    tarball: Tarball,
-    integrity: string,
-    repair: boolean,
-    signal: Signal,
-  ): Promise<PackageIndex> {
-    let index: PackageIndex;
+  /** The tarball fetched, unpacked and its index written. */
+  async function download(tarball: Tarball, integrity: string, repair: boolean) {
     try {
-      index = await fill(tarball, integrity, repair, true, signal);
+      return await fill(tarball, integrity, repair, true);
     } catch (error) {
       // A dead worker reported nothing, so its tarball is simply un-unpacked — but the bytes
       // were transferred to it rather than copied, so the redo starts back at the network.
       // Once, and here: whatever killed a worker must not be handed to another one.
       if ((error as { code?: string }).code !== WORKER_DIED) throw error;
-      index = await fill(tarball, integrity, repair, false, signal);
+      return await fill(tarball, integrity, repair, false);
     }
-    return await publish(integrity, index);
+  }
+
+  /** Wait until the bytes landed and not yet in the store are under `held`. */
+  async function room(): Promise<void> {
+    while (held >= most) await new Promise<void>((resolve) => roomy.push(resolve));
+  }
+
+  function unheld(bytes: number): void {
+    held -= bytes;
+    while (held < most && roomy.length > 0) roomy.shift()!();
   }
 
   /** The index is what makes the content findable, so only this thread ever writes one. */
@@ -349,30 +373,42 @@ export function createStore(options: StoreOptions = {}): Store {
     return index;
   }
 
-  /** Fetch a tarball and turn it into content, in a worker when `offer` and the pool allow. */
+  /**
+   * Fetch a tarball and turn it into content and an index, in a worker when `offer` and the
+   * pool allow. The download slot is given back at the last byte, not at the index: held
+   * through the unpack, `large` had all 32 slots waiting on busy workers and no request out
+   * for 600 ms. What bounds memory past the slot is `room`.
+   */
   async function fill(
     tarball: Tarball,
     integrity: string,
     repair: boolean,
     offer: boolean,
-    signal: Signal,
   ): Promise<PackageIndex> {
     const open = offer
       ? async (size: number) => (pool ?? (await loadPool()))?.open(integrity, repair, size)
       : undefined;
-    trace("pull", { i: integrity, url: tarball });
-    const pulled = await pull(tarball, signal, open);
-    // The network's part is over here. Everything past it is ours, and counting it against
-    // the registry would have a slow disk read as a slow server — closing the very gate that
-    // was meant to keep the network busy.
-    signal.settled();
-    if ("streamed" in pulled) return await pulled.streamed;
-    // The hash is checked where the unpack runs, so a worker takes that off this thread too.
-    const { bytes } = pulled;
-    const ready = offer ? (pool ?? (await loadPool())) : undefined;
-    const offered = ready?.offer(integrity, bytes, repair, behind);
-    trace("offer", { i: integrity, behind, taken: !!offered });
-    return await (offered ?? unpackHere(integrity, bytes, repair));
+    const pulled = await net(async (signal) => {
+      // Asked with the slot in hand: before it, every tarball of the install would pass at once.
+      await room();
+      signal.restart();
+      trace("slot", { i: integrity, behind });
+      trace("pull", { i: integrity, url: tarball });
+      return await pull(tarball, signal, open);
+    });
+    held += pulled.size;
+    try {
+      // Held until the index is written, or the index writes would queue past the bound.
+      if ("streamed" in pulled) return await publish(integrity, await pulled.streamed);
+      // The hash is checked where the unpack runs, so a worker takes that off this thread too.
+      const { bytes } = pulled;
+      const ready = offer ? (pool ?? (await loadPool())) : undefined;
+      const offered = ready?.offer(integrity, bytes, repair, behind);
+      trace("offer", { i: integrity, behind, taken: !!offered });
+      return await publish(integrity, await (offered ?? unpackHere(integrity, bytes, repair)));
+    } finally {
+      unheld(pulled.size);
+    }
   }
 
   /**
@@ -385,7 +421,10 @@ export function createStore(options: StoreOptions = {}): Store {
    * outside a retried request is indistinguishable from a slow one.
    */
   async function pull(tarball: Tarball, signal: Signal, open?: Open): Promise<Pulled> {
-    if (typeof tarball !== "string") return { bytes: [await readLocal(tarball.path)] };
+    if (typeof tarball !== "string") {
+      const bytes = await readLocal(tarball.path);
+      return { bytes: [bytes], size: bytes.byteLength };
+    }
     if (options.offline) {
       throw Object.assign(new Error(`offline: ${tarball} is not in the store`), {
         code: "EOFFLINE",
@@ -454,18 +493,19 @@ export function createStore(options: StoreOptions = {}): Store {
     open?: Open,
   ): Promise<Pulled> {
     const authorization = auth && authFor(auth, tarball);
-    const response = await request(tarball, {
-      ...(authorization && { headers: { authorization } }),
-      signal: aborted,
-    });
-    if (!response.ok) {
+    const headers = authorization ? { authorization } : undefined;
+    const get = options.fetch ? undefined : getter();
+    const response: Answer = get
+      ? await get(tarball, headers, aborted)
+      : await request(tarball, { ...(headers && { headers }), signal: aborted });
+    if (response.status < 200 || response.status > 299) {
       throw Object.assign(new Error(`Tarball ${tarball} returned ${response.status}`), {
         code: response.status === 404 ? "E404" : "ENETWORK",
         status: response.status,
         wait: isThrottle(response.status) ? retryAfter(response) : 0,
       });
     }
-    const body = response.body as unknown as AsyncIterable<Uint8Array> | null;
+    const body = response.body;
     if (!body) throw Object.assign(new Error("Tarball response had no body"), { code: "ENETWORK" });
     // A big tarball's blocks go to a worker as they land, when there is one to go to.
     const length = Number(response.headers.get("content-length"));
@@ -500,7 +540,7 @@ export function createStore(options: StoreOptions = {}): Store {
       sink?.abort();
       throw error;
     }
-    return sink ? { streamed: sink.end() } : { bytes };
+    return sink ? { streamed: sink.end(), size: got } : { bytes, size: got };
   }
 
   const store: Store = {
@@ -516,7 +556,9 @@ export function createStore(options: StoreOptions = {}): Store {
       let size = sizes.get(integrity);
       if (size !== undefined) return size;
       try {
-        size = Math.max(0, sizeOfSync(indexPath(integrity)));
+        // A cold store has no shard for most of these: the listing answers without a stat each.
+        const file = indexPath(integrity);
+        size = listed(file) ? Math.max(0, sizeOfSync(file)) : 0;
       } catch {
         return 0;
       }

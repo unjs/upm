@@ -258,7 +258,7 @@ describe("npm's spellings", () => {
   });
 
   it("accepts npm's flags for what upm already does, and nothing else", () => {
-    const noops = ["--ignore-scripts", "--no-audit", "--no-fund", "--no-progress"];
+    const noops = ["--ignore-scripts", "--no-audit", "--no-fund"];
     noops.push("--legacy-peer-deps", "--force", "-S", "--save", "-P");
     noops.push("--save-prod");
     expect(parseArgv(["add", "x", ...noops])).toEqual({
@@ -268,6 +268,7 @@ describe("npm's spellings", () => {
       help: false,
     });
     expect(parseArgv(["ci", "--no-save"]).error).toBe('unknown flag "--no-save"');
+    expect(parseArgv(["ci", "--no-progress"]).noProgress).toBe(true);
   });
 
   it("turns one field on for each switch, spelled exactly", () => {
@@ -1170,11 +1171,13 @@ describe("startup budget", () => {
     // sharing a missing peer, `--help` within noise (46/42 and 121/114 ms); 143,973 with kept
     // documents read in parts and the resolve's threads started early (42/43 and 110/111 ms);
     // 144,476 with a warm link that skips the fill and links tops side by side (43/44 and
-    // 115/112 ms); 144,595 with --verbose (34/34 and 81/81 ms).
+    // 115/112 ms); 145,049 with each workspace's links in the state (43/42 and 107/107 ms);
+    // 147,156 with tarballs fetched through the agent's callbacks (41/42 and 108/108 ms);
+    // 147,684 with the progress hooks and `--no-progress`, the bar itself lazy; 147,803 with --verbose.
     const modules = await reachable();
     const bytes = [...modules.values()].reduce((total, size) => total + size, 0);
     expect(modules.size).toBeLessThanOrEqual(27); // `upm.ts` is the bin, `cli.ts` the program
-    expect(bytes).toBeLessThanOrEqual(144_650);
+    expect(bytes).toBeLessThanOrEqual(147_850);
     // Found through `import()` by the commands that read a project, like the pools: each holds
     // its worker's whole code in the build.
     const lazy = [
@@ -1185,6 +1188,7 @@ describe("startup budget", () => {
       "link-pool.ts",
       "registry-pool.ts",
       "unpack-pool.ts",
+      "progress.ts",
     ];
     for (const name of lazy) {
       expect(modules.has(name)).toBe(false);
@@ -1599,7 +1603,7 @@ describe("add and remove", () => {
     );
     const result = await upm("dedupe");
     expect(result).toMatchObject({ code: 0 });
-    expect(result.stderr).toContain("wrote");
+    expect(result.stderr).toContain("wrote upm.lock");
     const lock = JSON.parse(await readFile(join(dir, "upm.lock"), "utf8"));
     expect(Object.keys(lock.packages)).toEqual(["a@1.1.0", "e@1.0.0"]);
     expect(lock.packages["e@1.0.0"].dependencies).toEqual({ a: "1.1.0" });
@@ -1613,7 +1617,7 @@ describe("add and remove", () => {
 
     const again = await upm("dedupe");
     expect(again.stderr).toContain("nothing to dedupe");
-    expect(again.stderr).not.toContain("wrote");
+    expect(again.stderr).not.toContain("wrote upm.lock");
     expect(await upm("dedupe", "--frozen-lockfile")).toMatchObject({ code: 2 });
     expect(await upm("dedupe", "a")).toMatchObject({ code: 2 });
   });

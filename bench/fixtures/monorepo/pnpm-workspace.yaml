@@ -1,0 +1,6 @@
+# For pnpm, aube and nub, which do not read package.json workspaces.
+linkWorkspacePackages: true
+packages:
+  - "apps/*"
+  - "packages/**"
+  - "tools/*"

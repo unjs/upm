@@ -7,6 +7,7 @@ import { graphHash, shortHash } from "./keys.ts";
 import { pid } from "./runtime.ts";
 import { replaceFile } from "./util.ts";
 import type { Resolution } from "./resolve.ts";
+import type { WorkspaceProof } from "./workspaces.ts";
 
 export const STATE_FILE = ".upm.json";
 export const TREE_LOCK = ".upm.lock";
@@ -24,15 +25,22 @@ export interface InstallState {
   /** Linked under `production`, so an install on its own behalf (`run`'s) keeps it that way. */
   production?: true;
   /**
-   * `inputsHash` of what the install was made from, when that was the lockfile and the root
-   * manifest alone (no workspaces): the next install with the same bytes and settings can find
-   * the tree up to date without reading the graph, which is most of a no-op install.
+   * `inputsHash` of what the install was made from: the lockfile, the root manifest and each
+   * workspace's. The next install with the same bytes and settings can find the tree up to
+   * date without reading the graph, which is most of a no-op install.
    */
   inputs?: string;
   /** What that install reported, said again by one that finds the tree up to date. */
   summary?: { packages: number; otherPlatforms: number; warnings: string[] };
   /** The root's direct links (name -> target) and bin names: what the up-to-date check reads. */
-  root?: { links: Record<string, string>; bins: string[] };
+  root?: TopLinks;
+  /** The same for each workspace's own `node_modules`, by its path. */
+  tops?: Record<string, TopLinks>;
+  /**
+   * What proves the workspace set unchanged, so the next install need not glob for it:
+   * see `listWorkspaces`. Absent when the set could not be proven.
+   */
+  workspaces?: WorkspaceProof;
   /**
    * The lockfile and the root manifest as `stat` saw them when `inputs` was computed, and
    * the rest of the inputs as `settingsOf` spells them. The same stamps again mean the same
@@ -49,6 +57,12 @@ export interface InstallState {
    * older upm wrote, which is then no proof of anything.
    */
   tarballs?: Record<string, Stamp | null>;
+}
+
+/** A top's direct links (name -> target) and the bin names it places. */
+export interface TopLinks {
+  links: Record<string, string>;
+  bins: string[];
 }
 
 /** A file as `stat` sees it: size, mtime and ctime in nanoseconds, inode, as decimal strings. */
@@ -79,6 +93,8 @@ export interface Inputs {
   lock: string;
   /** The root's package.json, parsed: what `sameTree` compares the lockfile with. */
   manifest: unknown;
+  /** Each workspace's path and parsed package.json, in order, when there are any. */
+  workspaces?: [string, unknown][];
   production: boolean;
   store: string;
   /** The registry and scope registries the `.npmrc` gives, as `hosts` reads them. */
@@ -93,11 +109,14 @@ export interface Inputs {
  */
 export function inputsHash(inputs: Inputs): Promise<string> {
   const settings = settingsOf(inputs);
-  return shortHash(`upm-inputs-1\n${JSON.stringify(inputs.manifest)}\n${settings}\n${inputs.lock}`);
+  // Without workspaces, the same value as before they counted: an older state still matches.
+  const workspaces = inputs.workspaces?.length ? `${JSON.stringify(inputs.workspaces)}\n` : "";
+  const manifest = JSON.stringify(inputs.manifest);
+  return shortHash(`upm-inputs-1\n${manifest}\n${workspaces}${settings}\n${inputs.lock}`);
 }
 
 /** The inputs that are not the two files, as one string. */
-export function settingsOf(inputs: Omit<Inputs, "lock" | "manifest">): string {
+export function settingsOf(inputs: Omit<Inputs, "lock" | "manifest" | "workspaces">): string {
   const { production, store, hosts, platform } = inputs;
   return JSON.stringify([production, builtin.path.resolve(store), hosts, platform]);
 }
@@ -221,24 +240,34 @@ function isState(value: unknown): value is InstallState {
         typeof state.summary.otherPlatforms === "number" &&
         Array.isArray(state.summary.warnings) &&
         state.summary.warnings.every((w) => typeof w === "string") &&
-        typeof state.root?.links === "object" &&
-        state.root.links !== null &&
-        Object.values(state.root.links).every((to) => typeof to === "string") &&
-        Array.isArray(state.root.bins) &&
-        state.root.bins.every((bin) => typeof bin === "string") &&
+        isRecord(state.tops ?? {}) &&
+        [state.root, ...Object.values(state.tops ?? {})].every(isTop) &&
         (state.stamps === undefined ||
           (isStamp(state.stamps.lock) &&
             isStamp(state.stamps.manifest) &&
             typeof state.stamps.settings === "string")))) &&
     (state.tarballs === undefined ||
-      (typeof state.tarballs === "object" &&
-        state.tarballs !== null &&
-        !Array.isArray(state.tarballs) &&
+      (isRecord(state.tarballs) &&
         Object.values(state.tarballs).every((stamp) => stamp === null || isStamp(stamp))))
+    // `workspaces` is checked by its one reader, `listWorkspaces`: nothing else loads it.
   );
 }
 
-function isStamp(value: unknown): value is Stamp {
+export function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isTop(value: unknown): value is TopLinks {
+  const top = value as TopLinks | undefined;
+  return (
+    isRecord(top?.links) &&
+    Object.values(top.links).every((to) => typeof to === "string") &&
+    Array.isArray(top.bins) &&
+    top.bins.every((bin) => typeof bin === "string")
+  );
+}
+
+export function isStamp(value: unknown): value is Stamp {
   return Array.isArray(value) && value.length === 4 && value.every((p) => typeof p === "string");
 }
 

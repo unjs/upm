@@ -7,6 +7,7 @@ import type { ResolvedPackage, Resolution } from "../src/resolve.ts";
 import {
   STATE_FILE,
   clearState,
+  inputsHash,
   readState,
   stateHash,
   statePath,
@@ -145,6 +146,35 @@ describe("readState", () => {
     expect(await readState(project)).toEqual(whole);
     await put(JSON.stringify({ ...whole, root: { links: { a: 1 }, bins: [] } }));
     expect(await readState(project)).toBeUndefined();
+    // Each workspace's links, the same shape as the root's.
+    const tops = { "packages/a": { links: { b: "../b" }, bins: [] } };
+    await put(JSON.stringify({ ...whole, tops }));
+    expect(await readState(project)).toEqual({ ...whole, tops });
+    for (const bad of [[], { "packages/a": { links: {} } }, { "packages/a": { bins: [] } }]) {
+      await put(JSON.stringify({ ...whole, tops: bad }));
+      expect(await readState(project), JSON.stringify(bad)).toBeUndefined();
+    }
+  });
+
+  it("changes the inputs with a workspace's path or manifest, and not without workspaces", async () => {
+    const inputs = {
+      lock: "l",
+      manifest: {},
+      production: false,
+      store: STORE,
+      hosts: [],
+      platform: [],
+    };
+    const alone = await inputsHash(inputs);
+    expect(await inputsHash({ ...inputs, workspaces: [] })).toBe(alone);
+    const one = await inputsHash({ ...inputs, workspaces: [["packages/a", { name: "a" }]] });
+    expect(one).not.toBe(alone);
+    expect(await inputsHash({ ...inputs, workspaces: [["packages/b", { name: "a" }]] })).not.toBe(
+      one,
+    );
+    expect(await inputsHash({ ...inputs, workspaces: [["packages/a", { name: "b" }]] })).not.toBe(
+      one,
+    );
   });
 
   it("reads the local tarballs' stamps, and refuses any that is not one", async () => {
