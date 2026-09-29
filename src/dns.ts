@@ -98,6 +98,129 @@ export function fetching(): typeof fetch {
   };
 }
 
+/** A response as a download reads it: what `fetch` returns, or what `get` makes of the same. */
+export interface Answer {
+  status: number;
+  headers: { get(name: string): string | null };
+  body: AsyncIterable<Uint8Array> | null;
+}
+
+/** A GET of a url with these headers, aborted by the signal. */
+export type Get = (
+  url: string,
+  headers: Record<string, string> | undefined,
+  signal: AbortSignal,
+) => Promise<Answer>;
+
+/**
+ * `fetch`'s GET without `fetch`, through our agent's own callbacks: its Request, Response,
+ * Headers and web stream cost the main thread about 0.3 ms a tarball, much of what it did on a
+ * cold install of 1,350 packages. Undefined until `cacheLookups` has made the agent, and where
+ * it could not: `fetching()` is then the way. A redirect is followed as `fetch` follows it, and
+ * a credential goes no further than the origin it was sent to.
+ */
+export function getter(): Get | undefined {
+  const own = agent as Dispatcher | undefined;
+  if (!own) return undefined;
+  return async (url, headers, signal) => {
+    for (let hop = 0; ; hop++) {
+      const answer = await getOnce(own, url, headers, signal);
+      const location = answer.headers.get("location");
+      if (!REDIRECTS.has(answer.status) || location === null || hop === MAX_REDIRECTS) {
+        return answer;
+      }
+      const next = new URL(location, url);
+      if (next.protocol !== "http:" && next.protocol !== "https:") return answer;
+      if (next.origin !== new URL(url).origin) headers = undefined;
+      url = next.href;
+    }
+  };
+}
+
+const REDIRECTS = new Set([301, 302, 303, 307, 308]);
+/** As `fetch` has it. */
+const MAX_REDIRECTS = 20;
+
+/** The part of undici's `Dispatcher` a GET uses: the callbacks that both undici 6 and 7 call. */
+interface Dispatcher {
+  dispatch(
+    options: { origin: string; path: string; method: "GET"; headers?: Record<string, string> },
+    handler: {
+      onConnect(abort: (reason?: unknown) => void): void;
+      onHeaders(status: number, raw: (Uint8Array | Uint8Array[])[]): boolean;
+      onData(chunk: Uint8Array): boolean;
+      onComplete(): void;
+      onError(error: Error): void;
+    },
+  ): boolean;
+}
+
+function getOnce(
+  own: Dispatcher,
+  url: string,
+  headers: Record<string, string> | undefined,
+  signal: AbortSignal,
+): Promise<Answer> {
+  const { origin, pathname, search } = new URL(url);
+  const chunks: Uint8Array[] = [];
+  let done = false;
+  let failed: Error | undefined;
+  let wake: (() => void) | undefined;
+  let abort: ((reason?: unknown) => void) | undefined;
+  const stop = () => abort?.(signal.reason);
+  signal.addEventListener("abort", stop, { once: true });
+  const settle = () => {
+    signal.removeEventListener("abort", stop);
+    wake?.();
+  };
+  async function* body(): AsyncGenerator<Uint8Array> {
+    for (;;) {
+      if (chunks.length > 0) yield* chunks.splice(0);
+      else if (failed) throw failed;
+      else if (done) return;
+      else await new Promise<void>((resolve) => (wake = resolve));
+    }
+  }
+  return new Promise((resolve, reject) => {
+    own.dispatch(
+      { origin, path: `${pathname}${search}`, method: "GET", ...(headers && { headers }) },
+      {
+        onConnect(cancel) {
+          abort = cancel;
+          if (signal.aborted) cancel(signal.reason);
+        },
+        onHeaders(status, raw) {
+          const found = new Map<string, string>();
+          const text = (value: Uint8Array | Uint8Array[]): string =>
+            Array.isArray(value) ? value.map(text).join(", ") : decoder.decode(value);
+          for (let at = 0; at + 1 < raw.length; at += 2) {
+            found.set(text(raw[at]!).toLowerCase(), text(raw[at + 1]!));
+          }
+          resolve({ status, headers: { get: (name) => found.get(name) ?? null }, body: body() });
+          return true;
+        },
+        onData(chunk) {
+          chunks.push(chunk);
+          wake?.();
+          return true;
+        },
+        onComplete() {
+          done = true;
+          settle();
+        },
+        onError(error) {
+          // Uncoded, as `fetch` rejects: the caller tells a transient failure by the lack of one.
+          failed = new Error(error?.message ?? String(error), { cause: error });
+          reject(failed);
+          settle();
+        },
+      },
+    );
+  });
+}
+
+const decoder = new TextDecoder();
+
 /**
  * Our agent is one of undici's own `Agent` class with a `connect.lookup`; the class is read off
  * the default dispatcher undici makes for itself. A dispatcher that was there before — a host

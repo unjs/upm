@@ -86,7 +86,7 @@ const PATIENCE = 30_000;
  * an HTTP date, per RFC 9110. Guessing instead is what makes a retry useless: three tries
  * 100 ms apart all land inside the one second the server just asked us to skip.
  */
-export function retryAfter(response: Response): number {
+export function retryAfter(response: { headers: { get(name: string): string | null } }): number {
   const asked = response.headers.get("retry-after");
   if (!asked) return 0;
   const seconds = Number(asked);

@@ -1,7 +1,8 @@
 // Per-file content-addressed store. Files are keyed by their own hash, indexes by
 // the tarball integrity, so a tarball we have seen before is never fetched or untarred again.
 import { builtin } from "./builtin.ts";
-import { cacheLookups, fetching } from "./dns.ts";
+import { cacheLookups, fetching, getter } from "./dns.ts";
+import type { Answer } from "./dns.ts";
 import type { BackendClient, StoreBackend } from "./store-backend.ts";
 import type { Pool, Sink } from "./unpack-pool.ts";
 import {
@@ -490,18 +491,19 @@ export function createStore(options: StoreOptions = {}): Store {
     open?: Open,
   ): Promise<Pulled> {
     const authorization = auth && authFor(auth, tarball);
-    const response = await request(tarball, {
-      ...(authorization && { headers: { authorization } }),
-      signal: aborted,
-    });
-    if (!response.ok) {
+    const headers = authorization ? { authorization } : undefined;
+    const get = options.fetch ? undefined : getter();
+    const response: Answer = get
+      ? await get(tarball, headers, aborted)
+      : await request(tarball, { ...(headers && { headers }), signal: aborted });
+    if (response.status < 200 || response.status > 299) {
       throw Object.assign(new Error(`Tarball ${tarball} returned ${response.status}`), {
         code: response.status === 404 ? "E404" : "ENETWORK",
         status: response.status,
         wait: isThrottle(response.status) ? retryAfter(response) : 0,
       });
     }
-    const body = response.body as unknown as AsyncIterable<Uint8Array> | null;
+    const body = response.body;
     if (!body) throw Object.assign(new Error("Tarball response had no body"), { code: "ENETWORK" });
     // A big tarball's blocks go to a worker as they land, when there is one to go to.
     const length = Number(response.headers.get("content-length"));
