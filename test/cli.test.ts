@@ -181,6 +181,13 @@ describe("parseArgv", () => {
     expect(parseArgv(["-h"]).help).toBe(true);
   });
 
+  it("treats -v and --version as version, and leaves a script's -v to it", () => {
+    expect(parseArgv(["--version"]).version).toBe(true);
+    expect(parseArgv(["-v"]).version).toBe(true);
+    expect(parseArgv(["run", "build", "-v"])).toMatchObject({ specs: ["build", "-v"] });
+    expect(parseArgv(["view", "vue", "-v"]).version).toBeUndefined();
+  });
+
   it("collects every -w, and reads the other workspace flags", () => {
     expect(
       parseArgv(["run", "-w", "a", "-w=packages/b", "--workspace", "c", "--if-present", "build"]),
@@ -318,6 +325,13 @@ describe("cli process", () => {
   it("prints usage and exits 0 with no args", async () => {
     const { stdout } = await run(process.execPath, [CLI]);
     expect(stdout).toContain("upm resolve <spec>...");
+  });
+
+  it("prints the version with -v and --version", async () => {
+    const { version } = createRequire(import.meta.url)("../package.json");
+    for (const flag of ["-v", "--version"]) {
+      expect((await run(process.execPath, [CLI, flag])).stdout).toBe(`${version}\n`);
+    }
   });
 
   it("exits 2 on a word that is neither a command nor a script", async () => {
@@ -1173,11 +1187,12 @@ describe("startup budget", () => {
     // 144,476 with a warm link that skips the fill and links tops side by side (43/44 and
     // 115/112 ms); 145,049 with each workspace's links in the state (43/42 and 107/107 ms);
     // 147,156 with tarballs fetched through the agent's callbacks (41/42 and 108/108 ms);
-    // 147,684 with the progress hooks and `--no-progress`, the bar itself lazy; 147,803 with --verbose.
+    // 147,684 with the progress hooks and `--no-progress`, the bar itself lazy; 147,803 with --verbose;
+    // 147,986 with --version.
     const modules = await reachable();
     const bytes = [...modules.values()].reduce((total, size) => total + size, 0);
     expect(modules.size).toBeLessThanOrEqual(27); // `upm.ts` is the bin, `cli.ts` the program
-    expect(bytes).toBeLessThanOrEqual(147_850);
+    expect(bytes).toBeLessThanOrEqual(147_986);
     // Found through `import()` by the commands that read a project, like the pools: each holds
     // its worker's whole code in the build.
     const lazy = [
