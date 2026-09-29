@@ -145,7 +145,7 @@ Keep local and pooled results equivalent, including failure and shutdown behavio
 Bound memory as well as job counts: moving download completion ahead of unpack can
 turn a concurrency change into an unbounded queue of archive bytes. A download slot ends at
 the last byte, so the bytes past it have a bound of their own (`held` in `src/store.ts`),
-asked with the slot in hand. Each pool is closed
+asked with the slot in hand and kept out of the slot's latency sample. Each pool is closed
 by the phase that used it; only the bin exits the process, and only after its output is
 out and a failed write has set the exit code. Through the library nothing exits: an
 idle thread is unref'd. A one-package install must not boot a thread it will not use.

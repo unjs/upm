@@ -32,6 +32,12 @@ export interface Signal {
    */
   settled(): void;
   /**
+   * The wait so far was not the far end's: the clock starts again here. A task that waits on
+   * something of its own, slot in hand, before its request says so, or a full disk would read
+   * as a slow server.
+   */
+  restart(): void;
+  /**
    * The far end asked for fewer, whatever this task goes on to return. A request that was
    * retried until it succeeded is still a request the server pushed back on, and it is the
    * only one that can say so — from the outside it looks like a slow success.
@@ -53,7 +59,7 @@ export interface AdaptiveOptions {
   start?: number;
   /** Never go below this, so a registry that throttles everything still makes progress. */
   min?: number;
-  /** Never go above this. For tarballs it is also the memory bound. */
+  /** Never go above this. */
   max?: number;
 }
 
@@ -166,12 +172,15 @@ export function createAdaptiveLimiter(options: AdaptiveOptions = {}): AdaptiveLi
     } else {
       active++;
     }
-    const started = performance.now();
+    let started = performance.now();
     let took = -1;
     let pushed = false;
     const signal: Signal = {
       settled: () => {
         if (took < 0) took = performance.now() - started;
+      },
+      restart: () => {
+        started = performance.now();
       },
       throttled: () => {
         pushed = true;

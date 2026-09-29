@@ -201,20 +201,24 @@ Unranked: take a fresh profile before choosing one. Use [perf.md](perf.md) for e
   because the big tarball trickled in with no silence long enough for the stall watchdog,
   the main thread idle and no lookup slow. A throughput floor after the first megabytes, or a
   second range request racing the slow one, would bound it. Start at `once` in `src/store.ts`.
-- A cold install of many small tarballs waits on the main thread: on `large` it was busy for
-  about 80% of the fill even with tarballs fetched without `fetch`, and a request took ~55 ms to
-  its first byte there against ~30 ms for the same requests with nothing else to do. More
-  download slots do not help while that holds: 64 was a wash on `large` and slower on `next`.
-  Past the request, each tarball costs main its index write (a `JSON.stringify` and four
-  threadpool calls, about a tenth of its busy time) and the pool's messages. Writing the index
-  in the worker that stored the files would take the first away, but only main writes an
-  index today: decide that first. Start at `publish` in `src/store.ts`; the fetch thread below
-  is the other way.
-- Through the library, a host that has loaded `node:http` never gets upm's agent: on Node 24
-  that import makes undici's default dispatcher, which `install` in `src/dns.ts` takes for the
-  host's own, so its requests go through `fetch` with no lookup cache. Telling a default the
-  host never configured from one it did would fix it; test from a process that loaded
-  `node:http` first, as `test/get.test.ts` explains.
+- A cold install of many small tarballs is bound by round trips and the main thread: on
+  `large` with a lockfile, 32 downloads are in flight from start to end while main is busy for
+  about 70% of the install. The same 1,350 GETs alone took 1.35 s at 32 at a time and 0.9 s at
+  64, yet 64 slots in the install were a wash on `large` and a quarter slower on `next`, whose
+  big tarballs then share the wire: at 64 a request waited ~55 ms for its first byte against
+  ~30 ms, main being too busy to read it. Past the request, each tarball costs main its index
+  write (a `JSON.stringify` and several threadpool calls, about a tenth of its busy time) and
+  the pool's messages. Writing the index in the worker that stored the files would take the
+  first away, but only main writes an index today: decide that first. Start at `publish` in
+  `src/store.ts`; the fetch thread below is the other way.
+- Through the library, a host that has imported `node:http` never gets upm's agent: on Node 22
+  and 24 an ESM import of it makes undici's default dispatcher (a `require` does not), which
+  `install` in `src/dns.ts` takes for the host's own, so its requests go through `fetch` with
+  no lookup cache. Telling a default the host never configured from one it did would fix it;
+  test from a process that imported `node:http` first, as `test/get.test.ts` explains.
+- The tarball GET (`getter` in `src/dns.ts`) uses undici's legacy handler callbacks, which
+  undici 6 and 7 both call. An undici that drops them would fail every download with
+  `ENETWORK`, with no fallback to `fetch`: check `test/get.test.ts` on each new Node major.
 - Prefetch decides per package with its parent's fate, which may wait on a libc read
   (`prefetch` in `src/api.ts`): what only an off-platform build reaches is never fetched. A
   regression here shows as extra store indexes on a cold install; check the index count

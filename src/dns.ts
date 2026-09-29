@@ -138,6 +138,7 @@ export function getter(): Get | undefined {
 }
 
 const REDIRECTS = new Set([301, 302, 303, 307, 308]);
+const SAYS = { "user-agent": "node", accept: "*/*" };
 /** As `fetch` has it. */
 const MAX_REDIRECTS = 20;
 
@@ -183,20 +184,29 @@ function getOnce(
   }
   return new Promise((resolve, reject) => {
     own.dispatch(
-      { origin, path: `${pathname}${search}`, method: "GET", ...(headers && { headers }) },
+      // What `fetch` would say it is: some proxies turn away a request that says nothing.
+      { origin, path: `${pathname}${search}`, method: "GET", headers: { ...SAYS, ...headers } },
       {
         onConnect(cancel) {
           abort = cancel;
           if (signal.aborted) cancel(signal.reason);
         },
         onHeaders(status, raw) {
+          // An informational answer, 103 Early Hints say, comes before the real one.
+          if (status < 200) return true;
           const found = new Map<string, string>();
           const text = (value: Uint8Array | Uint8Array[]): string =>
             Array.isArray(value) ? value.map(text).join(", ") : decoder.decode(value);
           for (let at = 0; at + 1 < raw.length; at += 2) {
-            found.set(text(raw[at]!).toLowerCase(), text(raw[at + 1]!));
+            const name = text(raw[at]!).toLowerCase();
+            const value = text(raw[at + 1]!);
+            const before = found.get(name);
+            found.set(name, before === undefined ? value : `${before}, ${value}`);
           }
-          resolve({ status, headers: { get: (name) => found.get(name) ?? null }, body: body() });
+          // As `fetch` has it: these statuses have no body.
+          const none = status === 204 || status === 205 || status === 304;
+          const headers = { get: (name: string) => found.get(name) ?? null };
+          resolve({ status, headers, body: none ? null : body() });
           return true;
         },
         onData(chunk) {

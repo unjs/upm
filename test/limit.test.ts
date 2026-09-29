@@ -132,6 +132,34 @@ describe("createAdaptiveLimiter", () => {
     }
   });
 
+  it("does not count a wait of the task's own before its request", async () => {
+    // The store waits, slot in hand, for landed bytes to be stored before it asks for more: a
+    // full disk, not a slow server. Fake time, as above.
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "performance"] });
+    try {
+      const limit = createAdaptiveLimiter({ start: 8, min: 2, max: 64 });
+      const late = async (signal: { restart: () => void }) => {
+        await new Promise((resolve) => setTimeout(resolve, 60)); // the disk catching up
+        signal.restart();
+        await new Promise((resolve) => setTimeout(resolve, 2));
+      };
+      const through = async (task: Promise<unknown>, ms: number) => {
+        await vi.advanceTimersByTimeAsync(ms);
+        await task;
+      };
+      for (let i = 0; i < 5; i++) {
+        await through(
+          limit(() => new Promise((r) => setTimeout(r, 2))),
+          2,
+        );
+      }
+      for (let i = 0; i < 10; i++) await through(limit(late), 62);
+      expect(limit.limit).toBe(8); // counted from the start, these trip RISING as above
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("treats a timeout as back pressure and a 404 as a fault", async () => {
     const throttled = createAdaptiveLimiter({ start: 16, min: 2, max: 64 });
     const broken = createAdaptiveLimiter({ start: 16, min: 2, max: 64 });

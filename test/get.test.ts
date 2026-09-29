@@ -46,14 +46,19 @@ async function serve(handler: Handler): Promise<string> {
 }
 
 describe("a download without fetch", () => {
-  it("stores what fetch would, small or streamed to a thread, whatever its headers repeat", async () => {
+  it("stores what fetch would, small or streamed to a thread, early hints and all", async () => {
     const small = makeTarball([{ path: "a.js", data: "alpha" }]);
-    // Past the size that streams to a worker as it lands.
     const big = makeTarball([
-      { path: "big.txt", data: randomBytes(3 * 1024 * 1024).toString("base64") },
+      { path: "big.txt", data: randomBytes(4.5 * 1024 * 1024).toString("base64") },
     ]);
+    // Past the size that streams to a worker as it lands (`STREAM_MIN`).
+    expect(big.length).toBeGreaterThan(4 * 1024 * 1024);
+    const agents = new Set<string | undefined>();
     const base = await serve((request, response) => {
+      agents.add(request.headers["user-agent"]);
       const bytes = request.url === "/big.tgz" ? big : small;
+      // A 103 comes first, then the answer: the first headers are not the response's.
+      response.writeEarlyHints({ link: "</style.css>; rel=preload; as=style" });
       response.setHeader("set-cookie", ["a=1", "b=2"]);
       response.writeHead(200, { "content-length": String(bytes.length) });
       response.end(Buffer.from(bytes));
@@ -72,6 +77,7 @@ describe("a download without fetch", () => {
     }
     direct.close();
     fetched.close();
+    expect([...agents]).toEqual(["node"]); // what `fetch` says it is, on both routes
   });
 
   it("asks again when busy or cut off, and not when missing", async () => {

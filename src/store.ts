@@ -130,8 +130,9 @@ type Open = (size: number) => Promise<Sink | undefined>;
 
 /**
  * Compressed bytes that may have landed and wait for their unpack before a new download starts.
- * The download slots bound what is on the wire; this bounds what is past it, which on a cold
- * `large` peaked at 30 MiB in 600 tarballs while the workers caught up.
+ * The download slots bound what is on the wire; this bounds what is past it. A cold `large`
+ * peaked at 28 MiB in 200 tarballs, where slots held to the index had peaked at 23 MiB in 32;
+ * `next`'s two biggest (67 MiB) reach it either way.
  */
 const HELD = 64 * 1024 * 1024;
 
@@ -391,6 +392,7 @@ export function createStore(options: StoreOptions = {}): Store {
     const pulled = await net(async (signal) => {
       // Asked with the slot in hand: before it, every tarball of the install would pass at once.
       await room();
+      signal.restart();
       trace("slot", { i: integrity, behind });
       trace("pull", { i: integrity, url: tarball });
       return await pull(tarball, signal, open);
