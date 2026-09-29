@@ -235,6 +235,13 @@ describe("createRegistryPool", () => {
     expect(await none.pick(parseSpec("foo@^1"))).not.toHaveProperty("deprecated");
   });
 
+  it("starts the threads when it is made, told of as many names as start them", async () => {
+    const told = pool({ entry: FLAKY, expected: 4 });
+    expect(await told.pick(parseSpec("foo@^1"))).toHaveProperty("deprecated", "thread");
+    const few = pool({ entry: FLAKY, expected: 3 });
+    expect(await few.pick(parseSpec("foo@^1"))).not.toHaveProperty("deprecated");
+  });
+
   it("hands a name to a thread still booting, and asks here after the grace", async () => {
     // The first three names are answered here and start nothing.
     const p = pool({ entry: FLAKY });

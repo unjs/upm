@@ -97,6 +97,27 @@ describe("api", () => {
     expect((await upm.fetchPackages(["nanoid"], base))[0]!.cached).toBe(true);
   });
 
+  it("resolves a workspace root on threads opened before the workspaces are read", async () => {
+    const ws = (name: string) =>
+      JSON.stringify({ name, version: "1.0.0", dependencies: { nanoid: "^5" } });
+    await mkdir(join(dir, "packages", "a"), { recursive: true });
+    await writeFile(join(dir, "package.json"), JSON.stringify({ workspaces: ["packages/*"] }));
+    await writeFile(join(dir, "packages", "a", "package.json"), ws("a"));
+    const threads = { ...base, experimental: { resolvePool: 1 } };
+    const locked = await upm.lock(threads);
+    expect(await upm.lock({ ...base, write: false })).toEqual(locked);
+    await rm(join(dir, "upm.lock"));
+    expect(await upm.install(threads)).toMatchObject({ packages: 1, workspaces: 1 });
+    // A command that fails before its resolve closes them again, and says why it failed.
+    await rm(join(dir, "upm.lock"));
+    await rm(join(dir, "node_modules"), { recursive: true });
+    await mkdir(join(dir, "packages", "b"), { recursive: true });
+    await writeFile(join(dir, "packages", "b", "package.json"), ws("a"));
+    for (const run of [upm.lock, upm.install]) {
+      await expect(run(threads)).rejects.toMatchObject({ code: "EWORKSPACE" });
+    }
+  });
+
   it("installs through a store backend, which holds the package once the install returns", async () => {
     const data = new Map<string, Uint8Array>();
     const storeBackend: upm.StoreBackend = {

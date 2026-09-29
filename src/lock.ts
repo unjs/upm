@@ -183,6 +183,18 @@ export function fromCheckedLockfile(lock: Lockfile, baseFor = npmjs): Resolution
   return { root: root(lock.root), packages, warnings: [] };
 }
 
+/**
+ * The packages a checked lockfile holds, and how many of them are optional or dev-only, with
+ * both flags derived as `fromCheckedLockfile` derives them. Workspaces are not packages.
+ */
+export function lockCounts(lock: Lockfile): { packages: number; optional: number; dev: number } {
+  const shipped = shippedSet(lock);
+  const required = requiredSet(lock);
+  const keys = Object.keys(lock.packages);
+  const count = (set: Set<string>) => keys.filter((key) => !set.has(key)).length;
+  return { packages: keys.length, optional: count(required), dev: count(shipped) };
+}
+
 /** Fixed field order plus sorted maps, so the same resolution is always the same bytes. */
 export function formatLockfile(lock: Lockfile): string {
   validate(lock); // a lockfile our own reader would reject must never reach disk

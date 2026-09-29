@@ -34,6 +34,11 @@ export interface PoolOptions extends RegistryOptions {
   graceMs?: number;
   /** The distinct name whose question starts the threads; 0 starts them now. */
   startAt?: number;
+  /**
+   * How many distinct names the walk is known to ask, when that is known before it starts:
+   * `startAt` of them start the threads now, so they boot while the caller is still busy.
+   */
+  expected?: number;
   /** Documents kept on disk, by every thread: each opens the directory itself. */
   metadata?: MetadataOptions;
 }
@@ -288,7 +293,7 @@ export function createRegistryPool(options: PoolOptions = {}): RegistryPool {
     for (const slot of slots) if (slot) void slot.worker.terminate();
   }
 
-  if (startAt === 0) start();
+  if ((options.expected ?? 0) >= startAt) start();
   return {
     base: local.base,
     baseFor: local.baseFor,

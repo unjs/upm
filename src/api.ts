@@ -14,6 +14,7 @@ import {
   fromCheckedLockfile,
   fromLockfile,
   LOCKFILE,
+  lockCounts,
   parseLockfile,
   readLockfile,
   sameTree,
@@ -28,6 +29,7 @@ import { createRegistry, hosts } from "./registry.ts";
 import type { BaseFor, Registry } from "./registry.ts";
 import {
   currentPlatform,
+  declaredWorkspaces,
   filterPlatform,
   GROUPS,
   integrityOf,
@@ -408,6 +410,8 @@ interface Context {
   stamped?: Map<string, Stamp>;
   /** Told by any pool that no thread of its would start; said once per command. */
   noThreads: () => void;
+  /** The resolve's registry, opened before the workspaces are read (`openEarly`). */
+  early?: Promise<OpenRegistry>;
 }
 
 /** The options checked, before anything is read. */
@@ -482,8 +486,13 @@ export async function dedupe(options: DedupeOptions = {}): Promise<InstallResult
 }
 
 async function installTree(ctx: Context, edit?: Edit, loaded?: Project): Promise<InstallResult> {
+  return await installed(ctx, edit, loaded).finally(() => closeEarly(ctx));
+}
+
+async function installed(ctx: Context, edit?: Edit, loaded?: Project): Promise<InstallResult> {
   const { options, log } = ctx;
-  const project = edit?.project ?? loaded ?? (await loadProject(ctx));
+  // Without a lockfile, one in node_modules may stand in: `restoreLock`. Deduping resolves anyway.
+  const project = edit?.project ?? loaded ?? (await loadProject(ctx, ctx.dedupe ? "lock" : "tree"));
   trace("project");
   const { dir } = project;
   // Before the lockfile: the pool wants to know now whether there is a tree to compare.
@@ -1383,7 +1392,11 @@ async function resolveLock(
  */
 export async function lock(options: LockOptions = {}): Promise<Lockfile> {
   const ctx = await open(options);
-  const project = await loadProject(ctx);
+  return await lockProject(ctx, options).finally(() => closeEarly(ctx));
+}
+
+async function lockProject(ctx: Context, options: LockOptions): Promise<Lockfile> {
+  const project = await loadProject(ctx, "lock");
   const { dir, manifest, workspaces } = project;
   const { foreign } = lockSource(ctx, dir);
   if (foreign) {
@@ -1412,10 +1425,11 @@ export async function lock(options: LockOptions = {}): Promise<Lockfile> {
     return store.flush();
   });
   const lock = toLockfile(resolution, registry.baseFor);
+  const text = formatLockfile(lock); // checked here, whether it is written or not
   for (const warning of resolution.warnings) ctx.log(warning, "warn");
   ctx.log(counts(lock), "info");
   if (options.write === false) return lock;
-  await writeLockfile(dir, lock);
+  await writeLockfile(dir, text);
   ctx.log(`wrote ${builtin.path.join(dir, LOCKFILE)}`, "info");
   return lock;
 }
@@ -1502,9 +1516,11 @@ interface Project {
   workspaces: Workspace[];
 }
 
-async function loadProject(ctx: Context): Promise<Project> {
+/** `resolving` opens the registry early for a resolve with no lockfile (`openEarly`). */
+async function loadProject(ctx: Context, resolving?: "lock" | "tree"): Promise<Project> {
   const dir = await projectDir(ctx);
   const manifest = ctx.found?.manifest ?? (await loadManifest(dir)).manifest;
+  if (resolving) openEarly(ctx, dir, manifest, resolving === "tree");
   const { findWorkspaces } = await import("./workspaces.ts");
   const workspaces = ctx.found?.workspaces ?? (await findWorkspaces(dir, manifest));
   return { dir, manifest, workspaces };
@@ -1675,14 +1691,14 @@ async function foreignLock(ctx: Context, project: Project, file: ForeignFile): P
   return lock;
 }
 
+/** Of a checked lockfile: one read, written (`formatLockfile`) or another manager's, mapped. */
 function counts(lock: Lockfile): string {
-  // Through `fromLockfile`, so `dev` is the derived flag an install would see, not a stored one.
-  const all = Object.values(fromLockfile(lock).packages).filter((pkg) => pkg.local === undefined);
-  const of = (flag: "optional" | "dev") => all.filter((pkg) => pkg[flag]).length;
+  // Derived flags, as an install would see them, not stored ones.
+  const { packages, optional, dev } = lockCounts(lock);
   const n = Object.keys(lock.workspaces ?? {}).length;
   const workspaces = n > 0 ? `, ${n} workspace${n === 1 ? "" : "s"}` : "";
   // Every platform's packages, so this is larger than what any one install materializes.
-  return `${all.length} packages, ${of("optional")} optional, ${of("dev")} dev${workspaces}`;
+  return `${packages} packages, ${optional} optional, ${dev} dev${workspaces}`;
 }
 
 /** A registry with threads to stop once the resolving is done. */
@@ -1697,7 +1713,16 @@ interface OpenRegistry extends Registry {
  * for by count, and a `debug` log line otherwise. A pool that cannot load is the plain
  * registry, as with 0.
  */
-async function openRegistry(ctx: Context, size = ctx.resolvePool): Promise<OpenRegistry> {
+async function openRegistry(
+  ctx: Context,
+  size = ctx.resolvePool,
+  expected?: number,
+): Promise<OpenRegistry> {
+  if (ctx.early && size === ctx.resolvePool) {
+    const early = ctx.early;
+    ctx.early = undefined;
+    return await early;
+  }
   const { registry, scopes, auth, before, releaseAgeExclude: exclude } = settings(ctx);
   const { offline, preferOffline } = settings(ctx);
   const mode = offline ? "only" : preferOffline ? "prefer" : "revalidate";
@@ -1717,6 +1742,7 @@ async function openRegistry(ctx: Context, size = ctx.resolvePool): Promise<OpenR
         warn: (message) => ctx.log(message, "debug"),
         noThreads: ctx.noThreads,
         metadata,
+        expected,
       })
     : {
         ...createRegistry({
@@ -1730,6 +1756,31 @@ async function openRegistry(ctx: Context, size = ctx.resolvePool): Promise<OpenR
         close() {},
       };
   return pool;
+}
+
+/**
+ * The registry for a resolve that is sure to come — no lockfile to install from, nor, under
+ * `tree`, one in node_modules to restore — opened before the workspaces are read, so that its
+ * threads boot during the glob rather than after the walk's first questions: 25–40 ms of a
+ * warm resolve. The root's own names tell the pool whether its threads would start at all.
+ */
+function openEarly(ctx: Context, dir: string, manifest: RootManifest, tree: boolean): void {
+  if (ctx.options.frozen || ctx.resolvePool === 0 || !lockSource(ctx, dir).missing) return;
+  if (tree && builtin.fs.existsSync(treeLockPath(dir))) return;
+  const names = new Set(GROUPS.flatMap((group) => Object.keys(manifest[group] ?? {})));
+  // A workspace root has a tree behind it, however few names it declares itself.
+  const expected = declaredWorkspaces(manifest)?.length ? Infinity : names.size;
+  ctx.early = openRegistry(ctx, ctx.resolvePool, expected);
+  ctx.early.catch(() => {}); // the resolve that takes it reports a failure
+}
+
+/** An early registry nothing took, when the command failed before its resolve. */
+function closeEarly(ctx: Context): void {
+  void ctx.early?.then(
+    (registry) => registry.close(),
+    () => {},
+  );
+  ctx.early = undefined;
 }
 
 async function pickAll(ctx: Context, specs: string[]): Promise<Manifest[]> {
