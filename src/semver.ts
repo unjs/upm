@@ -288,16 +288,28 @@ export function inRange(range: string, includePrerelease = false): (version: Ver
   return (v) => !!sets && sets.some((set) => testSet(v, set, includePrerelease));
 }
 
+/**
+ * Whether a version as written is a prerelease, told without parsing it: a `-` before any `+`.
+ * Without a `-` in a range no prerelease is in it, so one can be dropped unparsed: most of a
+ * document like `react`'s thousands of canaries.
+ */
+export function prerelease(version: string): boolean {
+  const dash = version.indexOf("-");
+  return dash >= 0 && version.lastIndexOf("+", dash) < 0;
+}
+
 export function maxSatisfying(
-  versions: string[],
+  versions: readonly string[],
   range: string,
   includePrerelease = false,
 ): string | undefined {
   const sets = parseRange(range, includePrerelease);
   if (!sets) return undefined;
+  const plain = !includePrerelease && !range.includes("-");
   let best: Version | undefined;
   let raw: string | undefined;
   for (const candidate of versions) {
+    if (plain && prerelease(candidate)) continue;
     const v = parse(candidate);
     if (!v || !sets.some((set) => testSet(v, set, includePrerelease))) continue;
     if (!best || compare(v, best) > 0) {

@@ -380,6 +380,168 @@ describe("kept registry documents", () => {
   });
 });
 
+describe("a big document, read in parts", () => {
+  /**
+   * Past the size read whole: `1.0.0` to `1.299.9`, with a head past the first read. With
+   * `few`, `1.0.0` to `1.29.9` and a short head, as most big documents have.
+   */
+  function big(pad = "x", few = false): Packument {
+    const count = few ? 300 : 3000;
+    const versions = Array.from({ length: count }, (_, i) => `1.${Math.floor(i / 10)}.${i % 10}`);
+    const out = packument(...versions, "2.0.0-rc.1");
+    for (const v of versions) {
+      out.versions[v] = { ...manifest(v), description: pad.repeat(few ? 1000 : 100) } as Manifest;
+    }
+    out["dist-tags"] = { latest: versions.at(-1)!, next: "2.0.0-rc.1" };
+    return out;
+  }
+  const key = () => `corgi ${base()}/foo`;
+  const cache = () => createDocumentCache({ dir: join(dir, "metadata"), mode: "only" });
+  const version = async (registry: ReturnType<typeof run>, raw: string) =>
+    (await registry.pick!(parseSpec(raw))) as Manifest & { description?: string };
+
+  beforeEach(async () => {
+    doc = big();
+    await pick("revalidate", "foo@^1");
+  });
+
+  it("reads the head and tail, and the rest only where asked", async () => {
+    const file = await readFile(corgiFile());
+    const end = file.indexOf(10);
+    expect(end).toBeGreaterThan(64 * 1024);
+    const body = file.subarray(end + 1);
+    const kept = cache().get(key())!;
+    const n = body.length;
+    expect(kept.size).toBe(n);
+    for (const [a, b] of [
+      [0, 10],
+      [0, 200_000],
+      [n - 96, n],
+      [n - 5, n + 10],
+      [5000, 300_000],
+      [n, n + 1],
+    ] as const) {
+      expect(Buffer.from(kept.read!(a, b)!).equals(body.subarray(a, b)), `${a}-${b}`).toBe(true);
+    }
+    expect(Buffer.from(kept.bytes).equals(body)).toBe(true);
+  });
+
+  it.each([false, true])("picks what the whole document picks (short head: %s)", async (few) => {
+    if (few) {
+      doc = big("x", few);
+      cache().set(key(), encode(doc), Date.now(), undefined, 300, indexVersions(encode(doc)));
+      const file = await readFile(corgiFile());
+      expect(file.indexOf(10)).toBeLessThan(16 * 1024);
+      expect(file.length).toBeGreaterThan(256 * 1024);
+    }
+    const parts = cache();
+    // The same documents, handed over whole.
+    const whole = createRegistry({
+      registry: base(),
+      cache: {
+        mode: "only",
+        get: (at) => {
+          const kept = parts.get(at);
+          return kept && { bytes: kept.bytes, at: kept.at, etag: kept.etag, index: kept.index };
+        },
+        set() {},
+        touch() {},
+      },
+    });
+    const before = Date.now() - DAY;
+    for (const raw of ["foo@^1", "foo@~1.25", "foo@1.2.3", "foo@latest", "foo@next", "foo@<1.1"]) {
+      const spec = parseSpec(raw);
+      expect(await run("only").pick!(spec)).toEqual(await whole.pick!(spec));
+      expect(await run("only", { before }).pick!(spec)).toEqual(await whole.pick!(spec));
+      expect(await run("only").pick!(spec, "1.25.3")).toEqual(await whole.pick!(spec, "1.25.3"));
+    }
+    expect(log).toEqual(["200 /foo"]);
+  });
+
+  it("takes a slice that is not the version asked for from the whole document", async () => {
+    const parts = cache();
+    const kept = parts.get(key())!;
+    const offset = (v: string) => kept.index!.indexOf(v) + 1;
+    const [from, to] = [kept.index![offset("1.250.2")], kept.index![offset("1.250.2") + 1]];
+    // Where 1.250.3 was, a file replaced since has 1.250.2: the same size, the same inode.
+    const shifted = createRegistry({
+      registry: base(),
+      cache: {
+        mode: "only",
+        get: (url) => {
+          const found = parts.get(url)!;
+          const read = found.read!;
+          const moved = (a: number, b: number) =>
+            a === kept.index![offset("1.250.3")] ? read(from as number, to as number) : read(a, b);
+          return Object.assign(found, { read: moved });
+        },
+        set() {},
+        touch() {},
+      },
+    });
+    expect((await shifted.pick!(parseSpec("foo@1.250.3"), "1.250.3")).version).toBe("1.250.3");
+  });
+
+  it("reads on from the file a 304 rewrote with an index", async () => {
+    const file = await readFile(corgiFile());
+    const end = file.indexOf(10);
+    const { index: _, ...old } = JSON.parse(file.subarray(0, end).toString());
+    const body = file.subarray(end);
+    await writeFile(corgiFile(), Buffer.concat([Buffer.from(JSON.stringify(old)), body]));
+    await backdate(corgiFile(), Date.now() - DAY);
+    const registry = run("revalidate");
+    expect((await version(registry, "foo@~1.250")).version).toBe("1.250.9");
+    expect((await version(registry, "foo@~1.260")).version).toBe("1.260.9");
+    expect(log).toEqual(["200 /foo", "304 /foo"]);
+    expect(cache().get(key())!.index).toEqual(indexVersions(file.subarray(end + 1)));
+  });
+
+  it("reads publish dates off the start of a big full document", async () => {
+    const before = Date.now() - DAY;
+    const old = new Date(before - DAY).toISOString();
+    const young = new Date(Date.now() - DAY / 12).toISOString();
+    const dated = big();
+    dated.time = Object.fromEntries(Object.keys(dated.versions).map((v) => [v, old]));
+    dated.time["1.299.9"] = young;
+    dated.modified = young;
+    const parts = cache();
+    parts.set(key(), encode(dated), Date.now(), undefined, 300, indexVersions(encode(dated)));
+    parts.set(`full ${base()}/foo`, encode(dated), Date.now());
+    expect((await parts.get(`full ${base()}/foo`)!.read!(0, 10))!.length).toBe(10);
+    // `latest` is too young: it moves down, and so does a range it tops.
+    expect((await version(run("only", { before }), "foo@latest")).version).toBe("1.299.8");
+    expect((await version(run("only", { before }), "foo@^1")).version).toBe("1.299.8");
+    expect(log).toEqual(["200 /foo"]);
+  });
+
+  it("reads a document replaced since its head afresh, never at the old offsets", async () => {
+    const registry = run("only");
+    expect((await version(registry, "foo@^1")).description).toMatch(/^x/);
+    // Another run keeps a new copy meanwhile: another file, its versions elsewhere.
+    const next = big("yz");
+    cache().set(key(), encode(next), Date.now(), undefined, 300, indexVersions(encode(next)));
+    const found = await version(registry, "foo@~1.250");
+    expect(found).toMatchObject({ version: "1.250.9", description: "yz".repeat(100) });
+    // What the first read holds is still the old file's.
+    const kept = cache().get(key())!;
+    await writeFile(corgiFile(), "gone");
+    expect(kept.read!(0, 10)).toBeDefined();
+    expect(kept.read!(400_000, 400_010)).toBeUndefined();
+    expect(() => kept.bytes).toThrow(expect.objectContaining({ code: "ECHANGED" }));
+  });
+
+  it("asks the registry for a document removed while it is read, unless offline", async () => {
+    const offline = run("only");
+    const prefer = run("prefer");
+    expect((await version(offline, "foo@^1")).version).toBe("1.299.9");
+    expect((await version(prefer, "foo@^1")).version).toBe("1.299.9");
+    await rm(corgiFile());
+    await expect(version(offline, "foo@~1.250")).rejects.toMatchObject({ code: "EOFFLINE" });
+    expect((await version(prefer, "foo@~1.250")).version).toBe("1.250.9");
+    expect(log).toEqual(["200 /foo", "200 /foo"]);
+  });
+});
+
 describe("trimPackument", () => {
   const entry = (version: string, extra: object = {}) => ({ ...manifest(version), ...extra });
   const tags = { latest: "2.0.0" };

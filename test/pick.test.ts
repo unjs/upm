@@ -363,6 +363,16 @@ describe("asOf", () => {
     expect(asOf(doc, times, 0)["dist-tags"]).toEqual({});
   });
 
+  it("reads one tag as all of them are read, a document's own `__proto__` tag too", () => {
+    const text = JSON.stringify(doc).replace('"dist-tags":{', '"dist-tags":{"__proto__":"1.0.0",');
+    const own: Packument = JSON.parse(text);
+    for (const at of [0, cutoff]) {
+      const names = ["latest", "__proto__", "constructor", "none"];
+      const one = names.map((t) => viewAsOf(listed(own), times, at).tag!(t));
+      expect(one).toEqual(names.map((t) => viewAsOf(listed(own), times, at).tags()[t]));
+    }
+  });
+
   it("says a miss is the cutoff's, not the spec's", () => {
     const aged = asOf(doc, times, cutoff);
     expect(() => pick(aged, "foo@^2.0.0")).toThrow(
@@ -379,7 +389,14 @@ describe("asOf", () => {
     const counted = { ...view, version: (v: string) => (read.push(v), view.version(v)) };
     for (const at of [0, cutoff, Date.parse("2026-03-01T12:00:00.000Z"), Date.now()]) {
       const aged = viewAsOf(counted, times, at);
-      expect(aged.tags()).toEqual(asOf(doc, times, at)["dist-tags"]);
+      // One tag at a time, before the rest are worked out and after.
+      const tags = asOf(doc, times, at)["dist-tags"];
+      const names = ["latest", "next", "old", "none", "constructor", "__proto__"];
+      const each = () => names.map((t) => aged.tag!(t));
+      const expected = names.map((t) => tags[t]);
+      expect(each()).toEqual(expected);
+      expect(aged.tags()).toEqual(tags);
+      expect(each()).toEqual(expected);
       expect(aged.versions!()).toEqual(Object.keys(asOf(doc, times, at).versions));
     }
     expect(read).toEqual([]);

@@ -8,6 +8,7 @@ import {
   fromCheckedLockfile,
   fromLockfile,
   LOCKFILE,
+  lockCounts,
   parseLockfile,
   readLockfile,
   sameSpecs,
@@ -187,6 +188,18 @@ describe("toLockfile / fromLockfile", () => {
       const resolution = generate(seed);
       expect(Object.keys(resolution.packages).length).toBeGreaterThan(50);
       expect(fromLockfile(toLockfile(resolution))).toEqual(resolution);
+    }
+  });
+
+  it("counts packages and their flags as the conversion derives them", () => {
+    for (let seed = 1; seed <= 12; seed++) {
+      const lock = toLockfile(generate(seed));
+      const all = Object.values(fromCheckedLockfile(lock).packages).filter((p) => !p.local);
+      expect(lockCounts(lock)).toEqual({
+        packages: all.length,
+        optional: all.filter((p) => p.optional).length,
+        dev: all.filter((p) => p.dev).length,
+      });
     }
   });
 
@@ -1112,6 +1125,10 @@ describe("workspaces", () => {
       "tap@1.0.0": tap(),
     },
     warnings: [],
+  });
+
+  it("counts neither a workspace nor what only its devDependencies reach as shipped", () => {
+    expect(lockCounts(toLockfile(tree()))).toEqual({ packages: 2, optional: 0, dev: 1 });
   });
 
   it("writes local entries under workspaces, by path, with no tarball fields", () => {

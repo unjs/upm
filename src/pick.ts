@@ -1,5 +1,5 @@
 // Smaller `npm-pick-manifest`: a packument in, one manifest out. Pure, no I/O.
-import { compare, inRange, maxSatisfying, parse, satisfies } from "./semver.ts";
+import { compare, inRange, maxSatisfying, parse, prerelease, satisfies } from "./semver.ts";
 import type { Version } from "./semver.ts";
 import type { Spec } from "./spec.ts";
 import type { Manifest, Packument } from "./types.ts";
@@ -11,6 +11,8 @@ import type { Manifest, Packument } from "./types.ts";
  */
 export interface PackumentView {
   tags(): Record<string, string>;
+  /** One tag, when the view can tell it without working out the rest (`viewAsOf`). */
+  tag?(name: string): string | undefined;
   version(version: string): Manifest | undefined;
   /** Every version, in the document's order, when known without parsing the document. */
   versions?(): readonly string[] | undefined;
@@ -72,9 +74,23 @@ export function viewAsOf(
   const kept = all.filter((v) => !(Date.parse(times[v] ?? "") > before));
   const has = new Set(kept);
   let tags: Record<string, string> | undefined;
+  // A tag on a version too young is a ranking of every version left, so only those asked for.
+  const moved = new Map<string, string | undefined>();
   let whole: Packument | undefined;
   return {
     tags: () => (tags ??= tagsAsOf(view.tags(), kept, has)),
+    // Read back as `tags()` gives it, from an object like the one `tagsAsOf` builds.
+    tag: (name) => {
+      if (tags) return tags[name];
+      if (!moved.has(name)) {
+        const source = view.tags();
+        const found = Object.hasOwn(source, name) ? tagAsOf(source[name]!, kept, has) : undefined;
+        const one: Record<string, string> = {};
+        if (found) one[name] = found;
+        moved.set(name, one[name]);
+      }
+      return moved.get(name);
+    },
     version: (version) => (has.has(version) ? view.version(version) : undefined),
     versions: () => kept,
     whole: () => (whole ??= asOf(view.whole(), times, before)),
@@ -89,24 +105,23 @@ function tagsAsOf(
 ): Record<string, string> {
   const moved: Record<string, string> = {};
   for (const [tag, v] of Object.entries(tags)) {
-    const found = has.has(v) ? v : maxSatisfying(kept, `<=${v}`);
+    const found = tagAsOf(v, kept, has);
     if (found) moved[tag] = found;
   }
   return moved;
 }
 
-/**
- * The versions in `range`, parsed, in the list's order. Without a `-` in the range no
- * prerelease is in it, so one is dropped unparsed: most of a document like `react`'s thousands
- * of canaries.
- */
+function tagAsOf(v: string, kept: string[], has: Set<string>): string | undefined {
+  return (has.has(v) ? v : maxSatisfying(kept, `<=${v}`)) || undefined;
+}
+
+/** The versions in `range`, parsed, in the list's order. A prerelease is dropped unparsed. */
 function matching(keys: readonly string[], range: string): [Version, string][] {
   const plain = !range.includes("-");
   const fits = inRange(range);
   const found: [Version, string][] = [];
   for (const key of keys) {
-    const dash = key.indexOf("-");
-    if (plain && dash >= 0 && key.lastIndexOf("+", dash) < 0) continue;
+    if (plain && prerelease(key)) continue;
     const v = parse(key);
     if (v && fits(v)) found.push([v, key]);
   }
@@ -139,12 +154,12 @@ export function pickManifest(
 ): Manifest {
   const view = isView(source) ? source : viewOf(source);
   const defaultTag = options.defaultTag ?? "latest";
-  const tags = view.tags();
+  const tagged = (name: string) => (view.tag ? view.tag(name) : view.tags()[name]);
   const fresh = (m: Manifest) => options.includeDeprecated === true || !m.deprecated;
 
   // A tag or an exact version resolves to one key, or to nothing.
   if (spec.type === "tag" || spec.type === "version") {
-    const wanted = spec.type === "tag" ? tags[spec.fetchSpec] : spec.fetchSpec;
+    const wanted = spec.type === "tag" ? tagged(spec.fetchSpec) : spec.fetchSpec;
     // `=1.2.3` and `v1.2.3` are valid specs but never packument keys.
     const key = wanted === undefined ? undefined : parse(wanted)?.version;
     const manifest = key === undefined ? undefined : view.version(key);
@@ -155,9 +170,9 @@ export function pickManifest(
   const range = spec.fetchSpec;
 
   // Fast path: the default tag usually wins, and skips both parsing and sorting the list.
-  const tagged = tags[defaultTag];
-  if (tagged !== undefined && (range === "*" || satisfies(tagged, range))) {
-    const manifest = view.version(tagged);
+  const tag = tagged(defaultTag);
+  if (tag !== undefined && (range === "*" || satisfies(tag, range))) {
+    const manifest = view.version(tag);
     if (manifest && fresh(manifest) && engineOk(manifest)) return manifest;
   }
 

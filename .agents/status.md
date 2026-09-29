@@ -74,7 +74,8 @@ compatibility. Keep this page about open work, not completed implementation step
 - **Kept registry documents are never reclaimed:** the store's `metadata` directory keeps
   every document any resolve read, and `prune` walks only `files` and `index`. The same
   retention question as the compile cache and exec projects; one rule could serve all three.
-  A torn file is a miss, so deleting any of them is always safe, and the paths name the
+  A torn file is a miss, so deleting any of them is always safe (one a resolve is reading in
+  parts sends that name to the registry, or fails it offline), and the paths name the
   registry and package, ready for a `upm cache clean <name>`. Start at `src/metadata.ts`.
 - **npm's commands need the network:** `upm publish`, `version`, `login` and the rest run
   `upm exec npm`, which asks the registry for npm's `latest` once the kept document is older
@@ -184,7 +185,10 @@ Unranked: take a fresh profile before choosing one. Use [perf.md](perf.md) for e
 - Registry threads at pool creation are a wash on a big tree and cost a one-package install
   most of its time ([thread start results][start]); what would make that start free is a
   cheaper thread boot and first request, most of which is the thread's first load of the
-  fetch machinery (at its first request, so a walk over kept documents never pays it).
+  fetch machinery (at its first request, so a walk over kept documents never pays it). A
+  resolve with no lockfile of a root that declares `START_AT` names, or workspaces, starts
+  them before the workspaces are read (`openEarly` in `src/api.ts`); a root with fewer, or a
+  lockfile that turns out stale, still starts them at the walk's fourth name.
   Measure `tiny` cold and `nuxt` cold together. Start at `START_AT` in `src/registry-pool.ts`
   and `src/registry-worker.ts`.
 - Fewer threads (unpack, registry) save CPU at a small wall cost on a many-core machine and are
@@ -210,14 +214,16 @@ Unranked: take a fresh profile before choosing one. Use [perf.md](perf.md) for e
   `dist` signatures stay) at 1.5 times the cost of the index scan, and is not done. The
   release-age window made `upm lock` over documents past their `max-age` 299 ms where
   revalidating them took 993 ms (`next`: 214 against 624). Writing documents after the walk,
-  where nothing waits on them, is untried.
-- A kept document's head says where each version sits (`indexVersions`), so a warm pick
-  parses only the manifests it reads, but the whole file is still read. Reading the head and
-  then only those slices, as pnpm 12 does, would save the rest of the read, its buffer and the
-  collection after it: about a sixth of a registry thread's busy time on the vlt `babylon`
-  fixture, and nothing on the smaller ones, where the threads already wait on the walk. It
-  needs a file handle kept per view, or a reopen that can find the file replaced since.
-  Start at `get` in `src/metadata.ts` and `viewOf` in `src/registry.ts`.
+  where nothing waits on them, is untried. A compressed body could not be read in parts.
+- A warm resolve of a large workspace monorepo (86 workspaces) spends about a third of its
+  time before the walk, reading the workspaces: the glob of `packages/**/*` walks every
+  directory under it and tries a package.json in each. Start at `findWorkspaces` in
+  `src/workspaces.ts`; measure with `bench/ab.sh relock` on a workspace project.
+- On a warm walk the registry threads are still the bound on a large workspace, about 85%
+  busy: parsing the manifests a pick reads, the head of each kept document (its index is
+  three JSON entries per version, and is parsed whole even when a pick reads one version),
+  and each thread's own boot. A fourth thread was a wash (−18 ms of 650, 8/10, +160 ms CPU).
+  Start at `get` in `src/metadata.ts`.
 - For large archives, check both many-file and few-file shapes. Helper startup and retained
   buffers can cost more than parallel writes save. Include peak memory in the result.
 - For warm installs, profile planning, messages and index work before adding more threads.
