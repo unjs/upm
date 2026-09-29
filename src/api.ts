@@ -888,18 +888,22 @@ function linkPool(ctx: Context, fresh: boolean): PoolPlan | undefined {
   const config = ctx.linkPool;
   if (config.size === 0) return undefined;
   let loading: Promise<typeof import("./link-pool.ts")> | undefined;
+  let loaded: typeof import("./link-pool.ts") | undefined;
   let pool: Promise<LinkPool | undefined> | undefined;
   let picks = 0;
-  const load = () => (loading ??= import("./link-pool.ts"));
+  const load = () => (loading ??= import("./link-pool.ts").then((m) => (loaded = m)));
+  const begin = (m: typeof import("./link-pool.ts")) =>
+    m.startLinkPool(config.size, undefined, undefined, ctx.noThreads);
+  // Started now when the module is in: from a `then`, the threads would wait for this thread's
+  // next await, after the lockfile is converted and hashed — 14 ms on `next`, 33 on `large`.
   // A runtime that cannot load the pool builds every entry here, as without one.
   const start = () =>
-    (pool ??= load().then(
-      (m) => m.startLinkPool(config.size, undefined, undefined, ctx.noThreads),
-      () => {
-        ctx.noThreads();
-        return undefined;
-      },
-    ));
+    (pool ??= loaded
+      ? Promise.resolve(begin(loaded))
+      : load().then(begin, () => {
+          ctx.noThreads();
+          return undefined;
+        }));
   const early = fresh && !ctx.options.production;
   if (early) load().catch(() => {});
   return {
