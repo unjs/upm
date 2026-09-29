@@ -97,9 +97,9 @@ describe("a download without fetch", () => {
     const store = (name: string) => createStore({ dir: join(dir, name), workers: 0 });
     await store("busy").add(`${base}/busy.tgz`, hashOf(tarball));
     await store("cut").add(`${base}/cut.tgz`, hashOf(tarball));
-    await expect(store("missing").add(`${base}/missing.tgz`, hashOf(tarball))).rejects.toMatchObject(
-      { code: "E404", status: 404 },
-    );
+    await expect(
+      store("missing").add(`${base}/missing.tgz`, hashOf(tarball)),
+    ).rejects.toMatchObject({ code: "E404", status: 404 });
     expect(Object.fromEntries(hits)).toEqual({ "/busy.tgz": 2, "/cut.tgz": 2, "/missing.tgz": 1 });
   });
 
@@ -111,7 +111,10 @@ describe("a download without fetch", () => {
       const to = { "/loop.tgz": "/loop.tgz", "/a.tgz": "/b.tgz", "/b.tgz": "c.tgz" }[
         request.url ?? ""
       ];
-      if (to) return void response.writeHead(request.url === "/b.tgz" ? 307 : 302, { location: to }).end();
+      if (to)
+        return void response
+          .writeHead(request.url === "/b.tgz" ? 307 : 302, { location: to })
+          .end();
       response.end(Buffer.from(tarball));
     });
     const auth = { [`//${base.slice("http://".length)}/`]: "Bearer t" };

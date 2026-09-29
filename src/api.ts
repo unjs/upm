@@ -843,10 +843,7 @@ function settingsIn(ctx: Context): Omit<Inputs, "lock" | "manifest" | "workspace
  * and `typescript` waited behind hundreds of small tarballs and were the install's last. A
  * top's own dependencies are where the big ones tend to be, as the walk has it with no lockfile.
  */
-export function nearestFirst(
-  resolution: Resolution,
-  wanted: ResolvedPackage[],
-): ResolvedPackage[] {
+export function nearestFirst(resolution: Resolution, wanted: ResolvedPackage[]): ResolvedPackage[] {
   const { packages } = resolution;
   const order = new Set<ResolvedPackage>();
   const reach = (deps: Record<string, string>) => {
