@@ -12,9 +12,11 @@ export interface Bar {
 }
 
 const WIDTH = 20;
+/** About 30 frames a second. */
+const TICK = 33;
 
 /**
- * What it hears is kept, and drawn every 100 ms it changes. Never in CI or on a terminal that
+ * What it hears is kept, and drawn on each tick it changed. Never in CI or on a terminal that
  * cannot move the cursor.
  */
 export function startBar(
@@ -31,7 +33,7 @@ export function startBar(
     stream.write(`\r${line}\x1b[K`);
     shown = line;
   };
-  const timer = setInterval(draw, 100).unref();
+  const timer = setInterval(draw, TICK).unref();
   const clear = () => {
     if (shown) stream.write("\r\x1b[K");
     shown = "";

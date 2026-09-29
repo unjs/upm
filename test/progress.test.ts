@@ -60,7 +60,7 @@ describe("progress bar", () => {
     const write = vi.fn();
     const bar = startBar({ columns: 80, write } as unknown as NodeJS.WriteStream, (t) => t, {})!;
     bar.hear({ phase: "fetch", done: 1, total: 2 });
-    vi.advanceTimersByTime(50);
+    vi.advanceTimersByTime(20);
     bar.stop();
     vi.advanceTimersByTime(2000);
     expect(write).not.toHaveBeenCalled();
