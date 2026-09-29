@@ -88,7 +88,16 @@ export interface RegistryOptions {
 export type CacheMode = "revalidate" | "prefer" | "only";
 
 export interface Kept {
+  /** The document. With `read`, read whole only when first asked for. */
   bytes: Uint8Array;
+  /**
+   * `bytes[start, end)` without the rest, and `bytes.length`, where the cache reads a document
+   * in parts (`src/metadata.ts`). `index` is then believed only about what `read` returns, and
+   * it returns undefined once it cannot give those bytes: the registry's calls then read the
+   * name afresh, and a view already handed out throws `ECHANGED`.
+   */
+  read?(start: number, end: number): Uint8Array | undefined;
+  size?: number;
   etag?: string;
   /**
    * When the registry's copy was current, in epoch ms: when it last sent the document or said
@@ -261,6 +270,15 @@ export function createRegistry(options: RegistryOptions = {}): Registry {
     fail(`offline: cannot ask the registry for ${name}`, "EOFFLINE");
 
   /**
+   * The registry said a kept document has not changed. One kept before heads had an index is
+   * written again with one (`touch`), so one read in parts is read on from the new file.
+   */
+  function touched(key: string, doc: Kept, response: Response): Kept {
+    cache!.touch(key, currentAt(response));
+    return (doc.read && !doc.index && cache!.get(key)) || doc;
+  }
+
+  /**
    * Keep what the registry sent, unless it said not to. An abbreviated document is kept with
    * where its versions are, which its view then reads too: found once, not on every read.
    */
@@ -316,10 +334,7 @@ export function createRegistry(options: RegistryOptions = {}): Registry {
           );
           continue;
         }
-        if (response.status === 304 && doc) {
-          cache!.touch(keyOf(url, accept), currentAt(response));
-          return doc;
-        }
+        if (response.status === 304 && doc) return touched(keyOf(url, accept), doc, response);
         if (response.ok) return keep(url, accept, response, await body(response, url));
         if (response.status === 404) {
           throw fail(`Package "${name}" not found in registry`, "E404");
@@ -371,9 +386,9 @@ export function createRegistry(options: RegistryOptions = {}): Registry {
   ): Promise<TextView | undefined> {
     const url = path(name);
     const { doc, use, full } = found ?? kept(name, url, accept);
-    const hit = () => {
-      if (accept === CORGI && !full) corgiBytes.set(name, doc!.bytes.byteLength);
-      return viewOf(url, doc!);
+    const hit = (kept = doc!) => {
+      if (accept === CORGI && !full) corgiBytes.set(name, sizeOf(kept));
+      return viewOf(url, kept);
     };
     if (use) return hit();
     if (cache?.mode === "only") return undefined;
@@ -394,8 +409,7 @@ export function createRegistry(options: RegistryOptions = {}): Registry {
         clearTimeout(late);
       }
       if (response.status === 304 && doc) {
-        cache!.touch(keyOf(url, accept), currentAt(response));
-        return hit();
+        return hit(touched(keyOf(url, accept), doc, response));
       }
       if (!response.ok && isThrottle(response.status)) signal.throttled();
       if (!response.ok || !response.body) return undefined;
@@ -559,8 +573,8 @@ export function createRegistry(options: RegistryOptions = {}): Registry {
     versions: readonly string[],
   ): Promise<Record<string, string> | undefined> {
     const url = path(name);
-    const read = ({ bytes }: Body) =>
-      pluckTimes(bytes) ?? parseJSON<Packument>(decode(bytes), url).time;
+    const read = (body: Body) =>
+      early(body, pluckTimes, url) ?? parseJSON<Packument>(decode(body.bytes), url).time;
     const found = read(await get(name, url, FULL));
     const dated = versions.every((v) => found?.[v]);
     if (!found || dated || !served.has(keyOf(url, FULL))) return found;
@@ -603,14 +617,29 @@ export function createRegistry(options: RegistryOptions = {}): Registry {
     if (unasked.has(name)) for (const memos of [corgis, peeks, aged, times]) memos.delete(name);
   }
 
+  /**
+   * Once more, afresh, when a document kept in parts could not be read on (`Kept.read`): what
+   * its head said no longer says where to read. The name's documents are dropped, so the next
+   * read is of the file as it is now, or a request.
+   */
+  async function again<T>(name: string, ask: () => Promise<T>): Promise<T> {
+    try {
+      return await ask();
+    } catch (error) {
+      if ((error as { code?: string }).code !== "ECHANGED") throw error;
+      for (const memos of [corgis, peeks, fullPeeks, aged, documents]) memos.delete(name);
+      return await ask();
+    }
+  }
+
   return {
     base,
     baseFor,
-    view,
-    packument: async (name) => (await view(name)).whole(),
-    manifest: (name, version) => loadManifest(name, version),
-    pinned: (name, version) => loadPinned(name, version),
-    pick,
+    view: (name) => again(name, () => view(name)),
+    packument: (name) => again(name, async () => (await view(name)).whole()),
+    manifest: (name, version) => again(name, () => loadManifest(name, version)),
+    pinned: (name, version) => again(name, () => loadPinned(name, version)),
+    pick: (spec, pinned, options) => again(spec.fetchName, () => pick(spec, pinned, options)),
   };
 }
 
@@ -639,9 +668,27 @@ interface TextView extends PackumentView {
 }
 
 /** A document's bytes, and where its versions sit when that is known already. */
-interface Body {
-  bytes: Uint8Array;
-  index?: VersionIndex;
+type Body = Pick<Kept, "bytes" | "index" | "read" | "size">;
+
+const sizeOf = (body: Body) => (body.read ? body.size! : body.bytes.byteLength);
+
+/** `bytes[start, end)`, read alone when the document is kept in parts. */
+function part(body: Body, start: number, end: number, url: string): Uint8Array {
+  if (!body.read) return body.bytes.subarray(start, end);
+  return body.read(start, end) ?? raise(fail(`kept ${url} changed while it was read`, "ECHANGED"));
+}
+
+/**
+ * What a pluck finds in the first bytes, read on while they end before the first version: a
+ * root member it finds there is the one all of them have. Past that, all of them.
+ */
+function early<T>(body: Body, pluck: (bytes: Uint8Array) => T | undefined, url: string) {
+  const first = typeof body.index?.[1] === "number" ? body.index[1] : Infinity;
+  for (let n = 16 * 1024; body.read && n < body.size!; n *= 8) {
+    const found = pluck(part(body, 0, n, url));
+    if (found !== undefined || n > first) return found;
+  }
+  return pluck(body.bytes);
 }
 
 /**
@@ -652,18 +699,20 @@ interface Body {
  * registry's own keys, never a publisher's. Bytes that are not a document have no members, and
  * `whole()` says why.
  */
-function viewOf(url: string, { bytes, index }: Body): TextView {
+function viewOf(url: string, body: Body): TextView {
+  let { index } = body;
   let doc: Packument | undefined;
   let tags: Record<string, string> | undefined;
   /** The versions in `index`'s order, or null when there is no index to trust. */
   let keys: string[] | null | undefined;
   const listed = () =>
-    (keys ??= versionsOf(index) ?? versionsOf((index = indexVersions(bytes))) ?? null);
-  const whole = () => (doc ??= parseJSON<Packument>(decode(bytes), url));
+    (keys ??= versionsOf(index) ?? versionsOf((index = indexVersions(body.bytes))) ?? null);
+  const whole = () => (doc ??= parseJSON<Packument>(decode(body.bytes), url));
   const parsed = () => {
     try {
       return whole();
-    } catch {
+    } catch (error) {
+      if ((error as { code?: string }).code === "ECHANGED") throw error;
       return undefined;
     }
   };
@@ -672,19 +721,30 @@ function viewOf(url: string, { bytes, index }: Body): TextView {
     if (i === -3) return undefined;
     if (i < 0) return parsed()?.versions?.[version];
     const [start, end] = [index![i + 1] as number, index![i + 2] as number];
-    const fits = bytes[start] === OPEN && bytes[end - 1] === CLOSE && end > start;
-    const manifest = fits ? (parseSlice(bytes, start, end) as Manifest | undefined) : undefined;
+    const bytes = end > start && end <= sizeOf(body) ? part(body, start, end, url) : undefined;
+    const fits = bytes?.[0] === OPEN && bytes[bytes.length - 1] === CLOSE;
+    const manifest = fits
+      ? (parseSlice(bytes!, 0, bytes!.length) as Manifest | undefined)
+      : undefined;
     // One the index has but the bytes do not: the whole parse says what is wrong with them.
-    return manifest ?? whole().versions?.[version];
+    if (!manifest) return whole().versions?.[version];
+    // Read in parts, one that is not that version's may be off a file replaced since.
+    if (!body.read || manifest.version === version) return manifest;
+    return parsed()?.versions?.[version] ?? manifest;
   };
+  const size = sizeOf(body);
   return {
     tags: () =>
-      (tags ??= (doc ? doc["dist-tags"] : pluckTags(bytes)) ?? parsed()?.["dist-tags"] ?? {}),
+      (tags ??=
+        (doc ? doc["dist-tags"] : early(body, pluckTags, url)) ?? parsed()?.["dist-tags"] ?? {}),
     version: (version) => (doc ? doc.versions?.[version] : own(version)),
     versions: () => (doc ? undefined : (listed() ?? undefined)),
     whole,
     usable: () => parsed() !== undefined,
-    modified: () => (doc ? doc.modified : (pluckModified(bytes) ?? parsed()?.modified)),
+    modified: () =>
+      doc
+        ? doc.modified
+        : (pluckModified(part(body, Math.max(0, size - 96), size, url)) ?? parsed()?.modified),
   };
 }
 
