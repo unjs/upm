@@ -86,7 +86,7 @@ Options
   --workspaces         run: select all workspaces
   -h, --help           show help
   --experimental-link-pool[=<size>[,<packages>[,<files>]]]
-                      install: worker count and package/file thresholds (4,200,6000).
+                      install: most workers and package/file thresholds (8,200,6000).
                       Size 0 disables; max 64. Thresholds 0,0 always enable.
                       Auto-enabled with spare cores. Also set via UPM_LINK_POOL.
 

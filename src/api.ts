@@ -172,7 +172,10 @@ export interface Experimental {
 }
 
 export interface LinkPoolConfig {
-  /** Workers, 0 to 64; 0 never starts them. Default: up to 4, leaving the main thread a core. */
+  /**
+   * Most workers, 0 to 64; 0 never starts them. A pool starts four, or one per 4,000 files when
+   * it knows them, up to this. Default: up to 8, leaving the main thread a core.
+   */
   size: number;
   /** Start them from this many packages in the lockfile. Default 200. */
   packages: number;
@@ -359,12 +362,16 @@ export interface RunResult {
 }
 
 /**
- * Workers by default: up to four, leaving the main thread a core, and none unless that is at
+ * Workers by default: up to eight, leaving the main thread a core, and none unless that is at
  * least two. One worker measured 15–19% slower than linking here (`nuxt`, `next` on two
  * cores) and two a wash; three won. `--experimental-link-pool=1` can still ask for one.
+ *
+ * A pool starts four, or one per 4,000 files when it knows more, up to this. On a warm link
+ * over sixteen cores, eight beat four by 12% on 40,000 files and 15% on 117,000, twelve did
+ * no better, and on `nuxt`'s 13,575 files eight were a wash for 40% more CPU and 58 MB.
  */
 export function defaultPoolSize(cores: number): number {
-  const spare = Math.min(4, cores - 1);
+  const spare = Math.min(8, cores - 1);
   return spare >= 2 ? spare : 0;
 }
 
@@ -372,9 +379,8 @@ let poolDefaults: LinkPoolConfig | undefined;
 
 /**
  * Where the pool was measured to pay for its own startup: `angular/cli` (238 packages, 7,000
- * files) gains 15%, `webpack` (64, 3,358) loses 10%. Four threads did as well as eight on
- * every shape and boot faster; the main thread keeps a core. Read on first use, so importing
- * the package does not count cores.
+ * files) gains 15%, `webpack` (64, 3,358) loses 10%. Read on first use, so importing the
+ * package does not count cores.
  */
 export function linkPoolDefaults(): LinkPoolConfig {
   return (poolDefaults ??= { size: defaultPoolSize(cpus()), packages: 200, files: 6000 });
@@ -894,9 +900,16 @@ function linkPool(ctx: Context, fresh: boolean): PoolPlan | undefined {
   let loaded: typeof import("./link-pool.ts") | undefined;
   let pool: Promise<LinkPool | undefined> | undefined;
   let picks = 0;
+  // The files known when it starts, which its size follows: see `defaultPoolSize`.
+  let files = 0;
   const load = () => (loading ??= import("./link-pool.ts").then((m) => (loaded = m)));
   const begin = (m: typeof import("./link-pool.ts")) =>
-    m.startLinkPool(config.size, undefined, undefined, ctx.noThreads);
+    m.startLinkPool(
+      Math.min(config.size, Math.max(4, Math.ceil(files / 4000))),
+      undefined,
+      undefined,
+      ctx.noThreads,
+    );
   // Started now when the module is in: from a `then`, the threads would wait for this thread's
   // next await, after the lockfile is converted and hashed — 14 ms on `next`, 33 on `large`.
   // A runtime that cannot load the pool builds every entry here, as without one.
@@ -915,10 +928,11 @@ function linkPool(ctx: Context, fresh: boolean): PoolPlan | undefined {
     },
     planned(lock, store) {
       if (!early || pool) return;
-      const { packages, files } = neutral(lock, store);
-      if (packages >= config.packages || files >= config.files) void start();
+      const found = neutral(lock, store);
+      if ((files = found.files) >= config.files || found.packages >= config.packages) void start();
     },
-    ask: (files) => (pool || files() >= config.files ? start() : Promise.resolve(undefined)),
+    ask: (count) =>
+      pool || (files = count()) >= config.files ? start() : Promise.resolve(undefined),
   };
 }
 

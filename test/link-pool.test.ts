@@ -335,13 +335,14 @@ describe("link pool", () => {
 });
 
 describe("--experimental-link-pool", () => {
-  it("has no default pool without two spare cores, and at most four workers", () => {
+  it("has no default pool without two spare cores, and at most eight workers", () => {
     expect(defaultPoolSize(1)).toBe(0);
     expect(defaultPoolSize(2)).toBe(0);
     expect(defaultPoolSize(3)).toBe(2);
     expect(defaultPoolSize(4)).toBe(3);
-    expect(defaultPoolSize(5)).toBe(4);
-    expect(defaultPoolSize(16)).toBe(4);
+    expect(defaultPoolSize(8)).toBe(7);
+    expect(defaultPoolSize(9)).toBe(8);
+    expect(defaultPoolSize(16)).toBe(8);
     expect(parseLinkPool("")!.size).toBe(defaultPoolSize(cpus()));
     // One worker is a tuning knob: slower than the sync loop, so never the default.
     expect(parseLinkPool("1")!.size).toBe(1);
