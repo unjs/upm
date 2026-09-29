@@ -1469,7 +1469,7 @@ describe("add and remove", () => {
     );
     const result = await upm("dedupe");
     expect(result).toMatchObject({ code: 0 });
-    expect(result.stderr).toContain("wrote");
+    expect(result.stderr).toContain("✎");
     const lock = JSON.parse(await readFile(join(dir, "upm.lock"), "utf8"));
     expect(Object.keys(lock.packages)).toEqual(["a@1.1.0", "e@1.0.0"]);
     expect(lock.packages["e@1.0.0"].dependencies).toEqual({ a: "1.1.0" });
@@ -1483,7 +1483,7 @@ describe("add and remove", () => {
 
     const again = await upm("dedupe");
     expect(again.stderr).toContain("nothing to dedupe");
-    expect(again.stderr).not.toContain("wrote");
+    expect(again.stderr).not.toContain("✎");
     expect(await upm("dedupe", "--frozen-lockfile")).toMatchObject({ code: 2 });
     expect(await upm("dedupe", "a")).toMatchObject({ code: 2 });
   });

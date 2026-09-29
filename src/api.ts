@@ -723,7 +723,7 @@ async function restoreLock(ctx: Context, project: Project, state?: InstallState)
   }
   await writeLockfile(dir, text);
   ctx.source = { path: source.path };
-  ctx.log(`wrote ${source.path} from the tree in node_modules`, "info");
+  ctx.log(`✎ ${source.path} ← node_modules`, "info");
 }
 
 /**
@@ -1403,7 +1403,7 @@ async function resolveLock(
     if (dropped > 0) log(`dropped ${dropped} packages`, "info");
   }
   await writeLockfile(dir, lock);
-  log(`wrote ${builtin.path.join(dir, LOCKFILE)} — ${counts(lock)}`, "info");
+  log(`✎ ${builtin.path.join(dir, LOCKFILE)} · ${counts(lock)}`, "info");
   return lock;
 }
 
@@ -1419,7 +1419,7 @@ export async function lock(options: LockOptions = {}): Promise<Lockfile> {
   const { foreign } = lockSource(ctx, dir);
   if (foreign) {
     const locked = await foreignLock(ctx, project, foreign);
-    ctx.log(`${foreign} is up to date — ${counts(locked)}`, "info");
+    ctx.log(`✓ ${foreign} · ${counts(locked)}`, "info");
     return locked;
   }
   const existing = await currentLock(ctx, dir);
@@ -1427,7 +1427,7 @@ export async function lock(options: LockOptions = {}): Promise<Lockfile> {
   const tarball = tarballReader(ctx, dir, store);
   const moved = existing ? await movedIn(ctx, dir, existing, tarball) : [];
   if (existing && moved.length === 0 && sameTree(existing, manifest, workspaces)) {
-    ctx.log(`${LOCKFILE} is up to date — ${counts(existing)}`, "info");
+    ctx.log(`✓ ${LOCKFILE} · ${counts(existing)}`, "info");
     return existing;
   }
 
@@ -1445,10 +1445,12 @@ export async function lock(options: LockOptions = {}): Promise<Lockfile> {
   });
   const lock = toLockfile(resolution, registry.baseFor);
   for (const warning of resolution.warnings) ctx.log(warning, "warn");
-  ctx.log(counts(lock), "info");
-  if (options.write === false) return lock;
+  if (options.write === false) {
+    ctx.log(counts(lock), "info");
+    return lock;
+  }
   await writeLockfile(dir, lock);
-  ctx.log(`wrote ${builtin.path.join(dir, LOCKFILE)}`, "info");
+  ctx.log(`✎ ${builtin.path.join(dir, LOCKFILE)} · ${counts(lock)}`, "info");
   return lock;
 }
 
@@ -1712,9 +1714,9 @@ function counts(lock: Lockfile): string {
   const all = Object.values(fromLockfile(lock).packages).filter((pkg) => pkg.local === undefined);
   const of = (flag: "optional" | "dev") => all.filter((pkg) => pkg[flag]).length;
   const n = Object.keys(lock.workspaces ?? {}).length;
-  const workspaces = n > 0 ? `, ${n} workspace${n === 1 ? "" : "s"}` : "";
+  const workspaces = n > 0 ? ` · ${n} ws` : "";
   // Every platform's packages, so this is larger than what any one install materializes.
-  return `${all.length} packages, ${of("optional")} optional, ${of("dev")} dev${workspaces}`;
+  return `${all.length} pkgs · ${of("optional")} opt · ${of("dev")} dev${workspaces}`;
 }
 
 /** A registry with threads to stop once the resolving is done. */
