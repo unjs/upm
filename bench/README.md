@@ -274,13 +274,22 @@ each pair. Every run goes through `measure.pl` into a rows file under `.work/ab/
 `summ.mjs` prints medians and paired differences against the first build, with how many
 pairs the new build won.
 
-- Modes: `cold`, `warm` and `repeat` as above, with a private store per build, and `lock`,
-  which times `upm lock` alone in a fresh project and store and fails if the builds'
-  `upm.lock` differ. `package.json` is copied once per project, so `repeat` keeps upm's
-  up-to-date stamps.
+- Modes: `cold`, `warm` and `repeat` as above, with a private store per build, and:
+  - `cache`: a warm store with no lockfile or `node_modules`, as on a fresh clone. Primed once
+    per build; each run removes `upm.lock` and every `node_modules`, then installs.
+  - `lock`: `upm lock` alone in a fresh project and store.
+  - `relock`: `upm lock` over a warm store: primed once per build, `upm.lock` removed per
+    run. The warm resolve without the link, e.g. `AB_ARGS=--prefer-offline`.
+
+  `cache`, `lock` and `relock` fail if the builds' `upm.lock` differ.
+
+- A fixture is a name in `fixtures/`, or a path to a project directory (with a `/`), such as
+  a workspace monorepo. Either is copied whole, without `node_modules` and `upm.lock`, once
+  per project, so `repeat` keeps upm's up-to-date stamps.
 - Projects live under `BENCH_WORK`, outside the repo like `bench.sh`'s.
-- Env: `AB_ENV` / `AB_ENV_<label>` add environment for all builds or one, `AB_OUT` names
-  the rows file, `AB_KEEP=1` keeps the work directories. The release-age gate is 1 day
-  (`BENCH_MIN_AGE_DAYS`), as in `bench.sh`.
+- Env: `AB_ENV` / `AB_ENV_<label>` add environment for all builds or one, `AB_ARGS` adds
+  arguments to every command, `AB_OUT` names the rows file, `AB_KEEP=1` keeps the work
+  directories. The release-age gate is 1 day (`BENCH_MIN_AGE_DAYS`), as in `bench.sh`, so a
+  primed store answers most picks unasked for a day even without `--prefer-offline`.
 - It holds `.work/ab/.lock` (via `flock`), so two runs on one machine wait for each other.
 - Use ten or more pairs before claiming a result: [../.agents/perf.md](../.agents/perf.md).
