@@ -216,6 +216,12 @@ export function createStore(options: StoreOptions = {}): Store {
     }
   }
 
+  /** Whether an index could be at `file`: its shard was there at the first look, or made since. */
+  function listed(file: string): boolean {
+    shards ??= listShards();
+    return shards.has(shardOf(file));
+  }
+
   function readIndex(integrity: string): PackageIndex | undefined {
     const memo = loaded.get(integrity);
     if (memo) return memo;
@@ -236,8 +242,7 @@ export function createStore(options: StoreOptions = {}): Store {
     // Folded to one case: a shard is two base64url characters, and on a case-insensitive
     // disk `Ab` and `aB` are one directory listed under whichever spelling made it. Folding
     // can only say "maybe there", which costs the read it would have cost anyway.
-    shards ??= listShards();
-    if (!shards.has(shardOf(file))) return undefined;
+    if (!listed(file)) return undefined;
     let raw: string;
     const t = tracing ? now() : 0;
     try {
@@ -547,7 +552,9 @@ export function createStore(options: StoreOptions = {}): Store {
       let size = sizes.get(integrity);
       if (size !== undefined) return size;
       try {
-        size = Math.max(0, sizeOfSync(indexPath(integrity)));
+        // A cold store has no shard for most of these: the listing answers without a stat each.
+        const file = indexPath(integrity);
+        size = listed(file) ? Math.max(0, sizeOfSync(file)) : 0;
       } catch {
         return 0;
       }
