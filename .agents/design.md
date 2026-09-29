@@ -143,7 +143,9 @@ but for the date in its head, so a manifest read so must also be the version ask
 Threads are an optional execution strategy, not a different resolver or installer.
 Keep local and pooled results equivalent, including failure and shutdown behavior.
 Bound memory as well as job counts: moving download completion ahead of unpack can
-turn a concurrency change into an unbounded queue of archive bytes. Each pool is closed
+turn a concurrency change into an unbounded queue of archive bytes. A download slot ends at
+the last byte, so the bytes past it have a bound of their own (`held` in `src/store.ts`),
+asked with the slot in hand. Each pool is closed
 by the phase that used it; only the bin exits the process, and only after its output is
 out and a failed write has set the exit code. Through the library nothing exits: an
 idle thread is unref'd. A one-package install must not boot a thread it will not use.
@@ -162,10 +164,12 @@ may not keep `import.meta.url`, so a worker imports nothing at runtime but built
 built pools never read `import.meta.url`. A pool that starts no thread at all says so once,
 through the caller's `log`: a quiet fallback made a bundled install 2.3× slower unnoticed.
 
-Address lookups are cached in an undici agent of upm's own that travels with each registry and
-store request (`fetching()` in `src/dns.ts`). The process's global dispatcher is never written:
-a host that calls into upm keeps its own `fetch` as it was, and one that set a dispatcher of its
-own is used as is.
+Address lookups are cached in an undici agent of upm's own that travels with each registry
+request (`fetching()` in `src/dns.ts`) and each tarball download (`getter()`, the agent's own
+callbacks without `fetch`'s objects). That download follows a redirect as `fetch` does and keeps
+its rule: a credential goes no further than the origin it was sent to. The process's global
+dispatcher is never written: a host that calls into upm keeps its own `fetch` as it was, and one
+that set a dispatcher of its own is used as is, through `fetch`.
 
 Instrumentation stays out of the product's path: the tracer is a chunk loaded only under
 its environment variable, and a call site that is off costs one test of a constant.
