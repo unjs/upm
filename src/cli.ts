@@ -619,18 +619,16 @@ function installed(
     return JSON.stringify({ ...out, dropped: missingOptional, upToDate, seconds }, undefined, 2);
   }
   for (const id of missingOptional) note(`${id} is missing from the store and was not linked`);
+  // What changed, not how: entries, links and copies are in `--json`.
+  const parts = [`${packages} pkgs`];
+  if (workspaces > 0) parts.push(`${workspaces} ws`);
+  if (stats.removed > 0) parts.push(`${stats.removed} removed`);
+  if (stats.repaired > 0) parts.push(`${stats.repaired} repaired`);
   // Shown so the count does not seem to disagree with the lockfile.
-  const others = otherPlatforms > 0 ? ` (+${otherPlatforms} skipped)` : "";
-  const time = ` in ${ms < 1000 ? `${ms}ms` : `${seconds}s`}`;
-  const plural = workspaces > 0 ? `, ${workspaces} workspace${workspaces === 1 ? "" : "s"}` : "";
-  const count = `${packages} packages${plural}`;
-  const gray = (text: string) => paint("gray", text, "stdout");
-  if (upToDate)
-    return `${count}${gray(others)} ${paint("green", "up to date", "stdout")}${gray(time)}`;
-  let detail = `${others}, ${stats.entries} entries (${stats.reused} reused), ${stats.linked} linked, ${stats.copied} copied, ${stats.bins} bins`;
-  if (stats.removed > 0) detail += `, ${stats.removed} removed`;
-  if (stats.repaired > 0) detail += `, ${stats.repaired} repaired`;
-  return `${paint("green", "Installed", "stdout")} ${count}${gray(detail + time)}`;
+  if (otherPlatforms > 0) parts.push(`${otherPlatforms} skipped`);
+  parts.push(ms < 1000 ? `${ms}ms` : `${seconds}s`);
+  const head = paint("green", upToDate ? "✓ up to date" : "✓ installed", "stdout");
+  return `${head} ${paint("gray", `· ${parts.join(" · ")}`, "stdout")}`;
 }
 
 function pruned(cli: Cli, { entries, content }: PruneResult): string {
