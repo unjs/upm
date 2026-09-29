@@ -172,10 +172,11 @@ Unranked: take a fresh profile before choosing one. Use [perf.md](perf.md) for e
   ([walk results][walk]). The next check is `bench/ab.sh lock` on a build that takes a hop
   off the pick path; what would settle it is a walk that runs off the main thread with the
   same `upm.lock`. Start at `ask` in `src/registry-pool.ts`.
-- Link materialize on a big tree is bound by main-thread dispatch, not syscalls; batching was a
-  wash at four workers ([warm results][warm]). Profile main during a warm `nuxt` materialize
-  before adding threads; what would settle it is less main-thread busy time with the same
-  tree. Start at `plan` in `src/link.ts`.
+- A warm link from a full store is bound by the workers' `link` and `mkdir` calls, 90% busy at
+  four; a worker's `mkdir` CPU doubles from four to eight, likely on `.upm`'s directory lock,
+  where every entry's temp dir is made and renamed in. The next check is a temp dir outside
+  `.upm`, or fewer directories per entry; what would settle it is less worker CPU for the
+  same tree at eight. Start at `tempName` and `plan` in `src/link.ts`.
 - The biggest tarballs' tail is their inflate and the hash of their biggest files; overlapping
   the two means helpers writing before the tarball's integrity has passed, which design.md
   forbids ([unpack results][unpack]). A design decision, not a benchmark, comes first.
