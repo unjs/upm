@@ -596,12 +596,16 @@ async function installTree(ctx: Context, edit?: Edit, loaded?: Project): Promise
   }
 
   const fill = async (into: Store): Promise<void> => {
+    // A skipped optional leaves the total, so a finished fill reads as done.
     let fetched = 0;
+    let total = wanted.length;
+    const tell = () => progress?.({ phase: "fetch", done: fetched, total });
     await Promise.all(
       wanted.map(async (pkg) => {
         try {
           await into.ensure(tarballOf(dir, pkg.resolved, pkg.source), pkg.integrity);
-          progress?.({ phase: "fetch", done: ++fetched, total: wanted.length });
+          fetched++;
+          tell();
         } catch (error) {
           // A failure inside an optional subtree must never fail the install.
           if (!pkg.optional && pkg.source !== undefined) {
@@ -611,6 +615,8 @@ async function installTree(ctx: Context, edit?: Edit, loaded?: Project): Promise
           // the resolution changes.
           if (!pkg.optional || (error as { code?: string }).code === "EOFFLINE") throw error;
           log(`skipped optional ${pkg.name}@${pkg.version}: ${describe(error)}`, "warn");
+          total--;
+          tell();
         }
       }),
     ).finally(into.flush);

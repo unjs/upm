@@ -21,6 +21,7 @@ import { linkArgs, readLink } from "../src/util.ts";
 import { storeKeys } from "../src/keys.ts";
 import { builtin } from "../src/builtin.ts";
 import { linkTree } from "../src/link.ts";
+import type { Progress } from "../src/api.ts";
 import type { ResolvedPackage, Resolution } from "../src/resolve.ts";
 import { STATE_FILE, readState, stateHash } from "../src/state.ts";
 import { createStore } from "../src/store.ts";
@@ -397,6 +398,20 @@ describe("linkTree", () => {
     await expect(linkTree(resolution, { dir: join(root, "other"), store })).rejects.toMatchObject({
       code: "ELINK",
     });
+  });
+
+  it("takes an optional dropped while the store fills out of its progress total", async () => {
+    const { store, resolution } = await seed([
+      { name: "a", files: { "index.js": "a" }, deps: { b: "1.0.0" } },
+      { name: "b", files: { "index.js": "b" }, optional: true },
+    ]);
+    const b = resolution.packages["b@1.0.0"] as ResolvedPackage;
+    b.integrity = hashOf(Buffer.from("never stored"));
+    const seen: Progress[] = [];
+    // Still filling: the drop is known only once the total is taken.
+    const awaiting = async () => {};
+    await linkTree(resolution, { dir: project, store, awaiting, onProgress: (p) => seen.push(p) });
+    expect(seen.at(-1)).toEqual({ phase: "link", done: 1, total: 1 });
   });
 
   it("drops an optional package whose index is torn, and fails on a required one", async () => {

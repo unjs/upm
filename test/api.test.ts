@@ -664,6 +664,28 @@ describe("tarball dependencies", () => {
     expect(served).toEqual(["/files/aix-1.0.0.tgz"]);
   });
 
+  it("ends its progress done when an optional's download fails", async () => {
+    const opt = '{"name":"opt","version":"1.0.0"}';
+    files["/files/opt-1.0.0.tgz"] = makeTarball([{ path: "package.json", data: opt }]);
+    const optionalDependencies = { opt: `${registry()}/files/opt-1.0.0.tgz` };
+    const manifest = { dependencies: { nanoid: "^5" }, optionalDependencies };
+    await writeFile(join(dir, "package.json"), JSON.stringify(manifest));
+    await upm.lock(base);
+    // Locked, then gone: a fresh store has to download it, and cannot.
+    delete files["/files/opt-1.0.0.tgz"];
+    const seen: upm.Progress[] = [];
+    const fresh = {
+      ...base,
+      store: join(dir, "fresh"),
+      onProgress: (p: upm.Progress) => seen.push(p),
+    };
+    await upm.install(fresh);
+    expect(lines).toContainEqual(expect.stringContaining("skipped optional opt@1.0.0"));
+    const last = (phase: string) => seen.filter((p) => p.phase === phase).at(-1);
+    expect(last("fetch")).toEqual({ phase: "fetch", done: 1, total: 1 });
+    expect(last("link")).toEqual({ phase: "link", done: 1, total: 1 });
+  });
+
   describe("a local tarball changed in place", () => {
     const source = "file:vendor/local-2.0.0.tgz";
     const file = () => join(dir, "vendor", "local-2.0.0.tgz");

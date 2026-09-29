@@ -24,6 +24,10 @@ describe("progress bar", () => {
     expect(fraction({ fetch: { phase: "fetch", done: 2, total: 4 } })).toBe(0.25);
     const link = { phase: "link", done: 4, total: 4 } as const;
     expect(fraction({ fetch: { phase: "fetch", done: 4, total: 4 }, link })).toBe(1);
+    // Each against its own total, which may differ: the link keys fewer entries than it fetched.
+    expect(fraction({ fetch: { phase: "fetch", done: 5, total: 5 }, link })).toBe(1);
+    // A phase left with nothing to do, every package in it dropped, is done.
+    expect(fraction({ fetch: { phase: "fetch", done: 0, total: 0 } })).toBe(0.5);
     // A tree whose store was already full links only.
     expect(fraction({ link: { phase: "link", done: 1, total: 4 } })).toBe(0.25);
   });

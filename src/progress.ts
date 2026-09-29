@@ -49,14 +49,16 @@ export function startBar(
 }
 
 /**
- * How full the bar is, 0 to 1, or undefined while resolving. Fetch and link each fill half:
- * they overlap, and the link finishes last.
+ * How full the bar is, 0 to 1, or undefined while resolving. Fetch and link each fill half,
+ * each against its own total: they overlap, and the link finishes last.
  */
 export function fraction({ fetch, link }: Seen): number | undefined {
-  const linked = link?.done ?? 0;
-  if (fetch) return (fetch.done + linked) / (2 * fetch.total!);
-  return link && linked / link.total!;
+  const linked = link ? part(link) : 0;
+  return fetch ? (part(fetch) + linked) / 2 : link && linked;
 }
+
+/** A phase with nothing left to do is done. */
+const part = ({ done, total }: Progress): number => (total! > 0 ? done / total! : 1);
 
 /** Past `columns` the line would wrap and `\r` would redraw only its tail, so the bar goes first. */
 export function barLine(seen: Seen, columns: number, gray = (text: string) => text): string {

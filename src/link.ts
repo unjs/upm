@@ -332,12 +332,16 @@ export async function linkTree(resolution: Resolution, options: LinkOptions): Pr
   // its temp name would outlive the throw and race the caller's retry. None starts after it.
   const failures: unknown[] = [];
   let built = 0;
-  const total = wanted.size;
+  let total = wanted.size;
   await Promise.all(
     [...wanted].map(([id, entry]) =>
       limit(async () => {
         await fates.get(id);
-        if (!wanted.has(id)) return;
+        // Dropped after the count was taken: out of the total, so the last entry reads as done.
+        if (!wanted.has(id)) {
+          options.onProgress?.({ phase: "link", done: built, total: --total });
+          return;
+        }
         // Its dependencies too: a dropped optional must not be linked, so it has to be known.
         for (const [name, version] of Object.entries(allDeps(entry.pkg))) {
           if (name !== entry.pkg.name) await fates.get(`${name}@${version}`);
