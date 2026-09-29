@@ -1,17 +1,19 @@
 // Smaller `npm-pick-manifest`: a packument in, one manifest out. Pure, no I/O.
-import { maxSatisfying, parse, rcompare, satisfies } from "./semver.ts";
+import { compare, inRange, maxSatisfying, parse, satisfies } from "./semver.ts";
+import type { Version } from "./semver.ts";
 import type { Spec } from "./spec.ts";
 import type { Manifest, Packument } from "./types.ts";
 
 /**
  * A packument read a member at a time. The registry hands one out over the document's text
- * so that the usual pick — a tag's version, or the tagged one that fits the range — parses
- * that one manifest and not the thousand others; `whole()` is the document, parsed once, for
- * everything else.
+ * so that a pick parses the manifests it looks at and not the thousand others; `whole()` is
+ * the document, parsed once, for everything else.
  */
 export interface PackumentView {
   tags(): Record<string, string>;
   version(version: string): Manifest | undefined;
+  /** Every version, in the document's order, when known without parsing the document. */
+  versions?(): readonly string[] | undefined;
   whole(): Packument;
 }
 
@@ -55,13 +57,60 @@ export function asOf(
   for (const [v, m] of Object.entries(packument.versions ?? {})) {
     if (!(Date.parse(times[v] ?? "") > before)) versions[v] = m;
   }
-  const kept = Object.keys(versions);
-  const tags: Record<string, string> = {};
-  for (const [tag, v] of Object.entries(packument["dist-tags"] ?? {})) {
-    const found = versions[v] ? v : maxSatisfying(kept, `<=${v}`);
-    if (found) tags[tag] = found;
-  }
+  const tags = tagsAsOf(packument["dist-tags"] ?? {}, Object.keys(versions));
   return { ...packument, versions, "dist-tags": tags, before: new Date(before).toISOString() };
+}
+
+/** `asOf` over a view that lists its versions, parsing none of them to filter them. */
+export function viewAsOf(
+  view: PackumentView,
+  times: Record<string, string>,
+  before: number,
+): PackumentView {
+  const all = view.versions?.();
+  if (!all) return viewOf(asOf(view.whole(), times, before));
+  const kept = all.filter((v) => !(Date.parse(times[v] ?? "") > before));
+  const has = new Set(kept);
+  let tags: Record<string, string> | undefined;
+  let whole: Packument | undefined;
+  return {
+    tags: () => (tags ??= tagsAsOf(view.tags(), kept, has)),
+    version: (version) => (has.has(version) ? view.version(version) : undefined),
+    versions: () => kept,
+    whole: () => (whole ??= asOf(view.whole(), times, before)),
+  };
+}
+
+/** Each tag on a version still there, or moved to the highest one at or below it. */
+function tagsAsOf(
+  tags: Record<string, string>,
+  kept: string[],
+  has = new Set(kept),
+): Record<string, string> {
+  const moved: Record<string, string> = {};
+  for (const [tag, v] of Object.entries(tags)) {
+    const found = has.has(v) ? v : maxSatisfying(kept, `<=${v}`);
+    if (found) moved[tag] = found;
+  }
+  return moved;
+}
+
+/**
+ * The versions in `range`, parsed, in the list's order. Without a `-` in the range no
+ * prerelease is in it, so one is dropped unparsed: most of a document like `react`'s thousands
+ * of canaries.
+ */
+function matching(keys: readonly string[], range: string): [Version, string][] {
+  const plain = !range.includes("-");
+  const fits = inRange(range);
+  const found: [Version, string][] = [];
+  for (const key of keys) {
+    const dash = key.indexOf("-");
+    if (plain && dash >= 0 && key.lastIndexOf("+", dash) < 0) continue;
+    const v = parse(key);
+    if (v && fits(v)) found.push([v, key]);
+  }
+  return found;
 }
 
 /** A miss in a document with no versions at all is the document's fault, not the spec's. */
@@ -112,25 +161,18 @@ export function pickManifest(
     if (manifest && fresh(manifest) && engineOk(manifest)) return manifest;
   }
 
-  const packument = view.whole();
-  const versions = packument.versions ?? {};
-
-  // Otherwise rank every match: usable first, newest last as the tiebreaker.
-  const matches = Object.entries(versions).filter(([v]) => satisfies(v, range));
-  matches.sort(([va, a], [vb, b]) => {
-    const okA = engineOk(a);
-    const okB = engineOk(b);
-    const freshA = fresh(a);
-    const freshB = fresh(b);
-    return (
-      Number(freshB && okB) - Number(freshA && okA) ||
-      Number(okB) - Number(okA) ||
-      Number(freshB) - Number(freshA) ||
-      rcompare(va, vb)
-    );
-  });
-
-  const best = matches[0];
-  if (!best) throw fail(packument, spec);
-  return best[1];
+  // Otherwise the matches, newest first (a stable sort, so a tie keeps the document's order):
+  // the first both fresh and engine-ok wins, so only the manifests up to it are read.
+  const keys = view.versions?.() ?? Object.keys(view.whole().versions ?? {});
+  const read: Manifest[] = [];
+  for (const [, key] of matching(keys, range).sort(([a], [b]) => compare(b, a))) {
+    const manifest = view.version(key);
+    if (!manifest) continue;
+    if (fresh(manifest) && engineOk(manifest)) return manifest;
+    read.push(manifest);
+  }
+  // None is both: engine-ok ranks above fresh, and the newest of either wins.
+  const best = read.find(engineOk) ?? read.find(fresh) ?? read[0];
+  if (!best) throw fail(view.whole(), spec);
+  return best;
 }

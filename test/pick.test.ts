@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { asOf, pickManifest } from "../src/pick.ts";
+import { asOf, pickManifest, viewAsOf } from "../src/pick.ts";
+import type { PackumentView } from "../src/pick.ts";
 import { parseSpec } from "../src/spec.ts";
 import type { Manifest, Packument } from "../src/types.ts";
 
@@ -21,8 +22,38 @@ function pkg(versions: Fixture, tags: Record<string, string> = {}): Packument {
 /** A node range the current runtime can never satisfy. */
 const BAD_ENGINE = { engines: { node: ">=99" } };
 
-function pick(packument: Packument, arg: string, options?: Parameters<typeof pickManifest>[2]) {
-  return pickManifest(packument, parseSpec(arg), options);
+/** A view that lists its versions, as the registry's does: the pick then reads only matches. */
+function listed(packument: Packument): PackumentView {
+  const keys = Object.keys(packument.versions ?? {});
+  return {
+    tags: () => packument["dist-tags"] ?? {},
+    version: (version) => packument.versions?.[version],
+    versions: () => keys,
+    whole: () => packument,
+  };
+}
+
+/** Every pick is made over the parsed document and over a listing view, with one outcome. */
+function pick(
+  source: Packument | PackumentView,
+  arg: string,
+  options?: Parameters<typeof pickManifest>[2],
+) {
+  const spec = parseSpec(arg);
+  const outcome = (from: Packument | PackumentView) => {
+    try {
+      return { found: pickManifest(from, spec, options) };
+    } catch (error) {
+      const { message, code } = error as { message: string; code?: string };
+      return { failed: { message, code }, error };
+    }
+  };
+  const whole = outcome("whole" in source ? source.whole() : source);
+  const { error: _, ...seen } = outcome("whole" in source ? source : listed(source as Packument));
+  const { error, ...expected } = whole;
+  expect(seen).toEqual(expected);
+  if (error) throw error;
+  return whole.found!;
 }
 
 describe("fast path", () => {
@@ -99,6 +130,55 @@ describe("ranges", () => {
 
   it("throws ETARGET when nothing satisfies", () => {
     expect(() => pick(doc, "foo@^5")).toThrow(/No matching version found for foo@\^5/);
+  });
+
+  it("lets a `-` in a range, and only then, take a prerelease", () => {
+    const pre = pkg({
+      "1.0.0": {},
+      "1.1.0-rc.1": {},
+      "1.1.0": { deprecated: "x" },
+      "2.0.0-rc.1": {},
+      "2.0.0+build-1": {},
+    });
+    expect(pick(pre, "foo@^1").version).toBe("1.0.0");
+    expect(pick(pre, "foo@1.0.0 - 1.5").version).toBe("1.0.0");
+    expect(pick(pre, "foo@>=1.1.0-rc.1 <1.1.0").version).toBe("1.1.0-rc.1");
+    expect(pick(pre, "foo@^2.0.0-rc.1").version).toBe("2.0.0+build-1");
+    expect(pick(pre, "foo@<=2.0.0-rc.1").version).toBe("2.0.0-rc.1");
+    expect(pick(pre, "foo@2").version).toBe("2.0.0+build-1"); // a `-` in build metadata only
+  });
+
+  it("breaks a tie between builds of one version by the document's order", () => {
+    const builds = pkg({ "1.0.0+b": {}, "1.0.0+a": {}, "0.9.0": {} });
+    expect(pick(builds, "foo@^1").version).toBe("1.0.0+b");
+    const unusable = pkg({ "1.0.0+b": BAD_ENGINE, "1.0.0+a": BAD_ENGINE, "1.0.0+c": {} });
+    expect(pick(unusable, "foo@*").version).toBe("1.0.0+c");
+  });
+
+  it("reads every match, newest first, when none is usable", () => {
+    const old = pkg({
+      "1.0.0": { deprecated: "x", ...BAD_ENGINE },
+      "1.1.0": BAD_ENGINE,
+      "1.2.0": { deprecated: "x" },
+      "1.3.0": { deprecated: "x", ...BAD_ENGINE },
+    });
+    expect(pick(old, "foo@^1").version).toBe("1.2.0");
+    const read: string[] = [];
+    const view = listed(old);
+    const counted = { ...view, version: (v: string) => (read.push(v), view.version(v)) };
+    pickManifest(counted, parseSpec("foo@^1"));
+    expect(read).toEqual(["1.3.0", "1.2.0", "1.1.0", "1.0.0"]);
+    read.length = 0;
+    pickManifest(counted, parseSpec("foo@<1.3"));
+    expect(read).toEqual(["1.2.0", "1.1.0", "1.0.0"]);
+  });
+
+  it("reads only the newest usable match", () => {
+    const read: string[] = [];
+    const view = listed(doc);
+    const counted = { ...view, version: (v: string) => (read.push(v), view.version(v)) };
+    expect(pickManifest(counted, parseSpec("foo@^1")).version).toBe("1.9.1");
+    expect(read).toEqual(["1.9.1"]);
   });
 });
 
@@ -291,5 +371,22 @@ describe("asOf", () => {
     expect(() => pick(asOf(doc, times, 0), "foo")).toThrow(
       expect.objectContaining({ code: "ETARGET" }),
     );
+  });
+
+  it("is the same over a view that lists its versions, parsing none of them", () => {
+    const read: string[] = [];
+    const view = listed(doc);
+    const counted = { ...view, version: (v: string) => (read.push(v), view.version(v)) };
+    for (const at of [0, cutoff, Date.parse("2026-03-01T12:00:00.000Z"), Date.now()]) {
+      const aged = viewAsOf(counted, times, at);
+      expect(aged.tags()).toEqual(asOf(doc, times, at)["dist-tags"]);
+      expect(aged.versions!()).toEqual(Object.keys(asOf(doc, times, at).versions));
+    }
+    expect(read).toEqual([]);
+    const aged = viewAsOf(counted, times, cutoff);
+    for (const arg of ["foo", "foo@latest", "foo@next", "foo@^1.0.0", "foo@^2.0.0", "foo@2.0.0"]) {
+      expect(() => pick(aged, arg)).not.toThrow(/Expected/);
+    }
+    expect(aged.version("2.0.0")).toBeUndefined(); // too young, though the document has it
   });
 });

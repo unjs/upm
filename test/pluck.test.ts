@@ -1,5 +1,15 @@
 import { describe, expect, it } from "vitest";
-import { pluckModified, pluckTags, pluckTimes, pluckVersion } from "../src/pluck.ts";
+import { indexVersions, parseSlice, pluckModified, pluckTags, pluckTimes } from "../src/pluck.ts";
+
+/** A version's manifest where the index says it is, as the registry's view reads it. */
+function pluckVersion(bytes: Uint8Array, version: string) {
+  const index = indexVersions(bytes);
+  for (let i = 0; index && i < index.length; i += 3) {
+    if (index[i] === version)
+      return parseSlice(bytes, index[i + 1] as number, index[i + 2] as number);
+  }
+  return undefined;
+}
 
 const manifest = (name: string, version: string, extra: object = {}) => ({
   name,
@@ -24,11 +34,25 @@ const doc = {
 };
 const text = JSON.stringify(doc);
 
-describe("pluckVersion", () => {
-  it("finds each version's manifest, equal to the whole parse", () => {
+describe("indexVersions", () => {
+  it("finds each version's manifest, equal to the whole parse, in the document's order", () => {
     for (const version of Object.keys(doc.versions)) {
       expect(pluckVersion(bytes(doc), version)).toEqual(JSON.parse(text).versions[version]);
     }
+    const index = indexVersions(bytes(doc))!;
+    expect(index.filter((_, i) => i % 3 === 0)).toEqual(Object.keys(doc.versions));
+  });
+
+  it("gives up on keys it cannot read as written, or one there twice", () => {
+    // `JSON.parse` would keep the last of two; an escaped key is not the text it spells.
+    const twice = '{"versions":{"1.0.0":{"a":1},"1.0.0":{"a":2}}}';
+    expect(indexVersions(bytes(twice))).toBeUndefined();
+    expect(indexVersions(bytes('{"versions":{"1.0\\u002e0":{}}}'))).toBeUndefined();
+    expect(indexVersions(bytes({ versions: { "1.0.0-ü": {} } }))).toBeUndefined();
+    expect(indexVersions(bytes({ versions: { "1.0.0": {} } }))).toEqual(["1.0.0", 21, 23]);
+    expect(indexVersions(bytes({ name: "foo", versions: {} }))).toEqual([]);
+    // One `versions` at the top is read; a second is skipped by structure, not taken.
+    expect(indexVersions(bytes('{"versions":{},"versions":{"1.0.0":{}}}'))).toEqual([]);
   });
 
   it("is not fooled by the version in strings, in a dependency map or in peer meta", () => {
@@ -76,21 +100,23 @@ describe("pluckVersion", () => {
     expect(pluckTags(bytes(doc, 2))).toEqual(doc["dist-tags"]);
   });
 
-  it("misses a version the document lacks, one that is not an object, or one it cannot search for", () => {
+  it("misses a version the document lacks, and indexes no document with one that is not an object", () => {
     expect(pluckVersion(bytes(doc), "9.9.9")).toBeUndefined();
-    expect(pluckVersion(bytes({ versions: { "1.0.0": "gone" } }), "1.0.0")).toBeUndefined();
-    expect(pluckVersion(bytes({ versions: [] }), "0")).toBeUndefined();
+    expect(indexVersions(bytes({ versions: { "1.0.0": {}, "2.0.0": "gone" } }))).toBeUndefined();
+    expect(indexVersions(bytes({ versions: [] }))).toBeUndefined();
+    expect(indexVersions(bytes({ name: "foo" }))).toBeUndefined();
     expect(pluckVersion(bytes(doc), '1.0.0"')).toBeUndefined();
     expect(pluckVersion(bytes(doc), "")).toBeUndefined();
   });
 
   it("gives up on bytes that are not JSON", () => {
     expect(
-      pluckVersion(bytes('{"versions":{"1.0.0":{"name":"foo","version":"1.0.0"'), "1.0.0"),
+      indexVersions(bytes('{"versions":{"1.0.0":{"name":"foo","version":"1.0.0"')),
     ).toBeUndefined();
     expect(pluckVersion(bytes('{"versions":{"1.0.0":{oops}}}'), "1.0.0")).toBeUndefined();
-    expect(pluckVersion(bytes('{"versions":{"1.0.0":{"a":"unterminated'), "1.0.0")).toBeUndefined();
-    expect(pluckVersion(bytes("<html>"), "1.0.0")).toBeUndefined();
+    expect(indexVersions(bytes('{"versions":{"1.0.0":{"a":"unterminated'))).toBeUndefined();
+    expect(indexVersions(bytes('{"versions":{"1.0.0":{}} trailing'))).toBeUndefined();
+    expect(indexVersions(bytes("<html>"))).toBeUndefined();
   });
 
   it("reads past escaped quotes and non-ASCII text before the key", () => {

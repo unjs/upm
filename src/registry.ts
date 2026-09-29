@@ -1,9 +1,10 @@
 // Read-only npm registry client: packuments and single manifests, memoized per request.
 import { fetching } from "./dns.ts";
 import { createAdaptiveLimiter, isThrottle, retryAfter } from "./limit.ts";
-import { asOf, pickManifest, viewOf as parsedView } from "./pick.ts";
+import { pickManifest, viewAsOf } from "./pick.ts";
 import type { PackumentView, PickOptions } from "./pick.ts";
-import { pluckModified, pluckTags, pluckTimes, pluckVersion } from "./pluck.ts";
+import { indexVersions, OPEN, parseSlice, pluckModified, pluckTags, pluckTimes } from "./pluck.ts";
+import type { VersionIndex } from "./pluck.ts";
 import { concat, sleep } from "./runtime.ts";
 import { escapeName } from "./spec.ts";
 import type { Spec } from "./spec.ts";
@@ -96,6 +97,8 @@ export interface Kept {
   at: number;
   /** Seconds it stays fresh from `at`, as the registry said. */
   maxAge?: number;
+  /** Where each version sits in `bytes`, when it was kept with one. */
+  index?: VersionIndex;
 }
 
 /**
@@ -105,8 +108,15 @@ export interface Kept {
 export interface DocumentCache {
   mode: CacheMode;
   get(key: string): Kept | undefined;
-  /** `at` as `Kept` has it. */
-  set(key: string, bytes: Uint8Array, at: number, etag?: string, maxAge?: number): void;
+  /** `at` as `Kept` has it; `index` is the abbreviated document's, kept with it. */
+  set(
+    key: string,
+    bytes: Uint8Array,
+    at: number,
+    etag?: string,
+    maxAge?: number,
+    index?: VersionIndex,
+  ): void;
   /** The registry said it has not changed: current as of `at`. */
   touch(key: string, at: number): void;
 }
@@ -250,22 +260,39 @@ export function createRegistry(options: RegistryOptions = {}): Registry {
   const offline = (name: string) =>
     fail(`offline: cannot ask the registry for ${name}`, "EOFFLINE");
 
-  /** Keep what the registry sent, unless it said not to. */
-  function keep(url: string, accept: string, response: Response, bytes: Uint8Array): void {
+  /**
+   * Keep what the registry sent, unless it said not to. An abbreviated document is kept with
+   * where its versions are, which its view then reads too: found once, not on every read.
+   */
+  function keep(url: string, accept: string, response: Response, bytes: Uint8Array): Body {
     const control = response.headers.get("cache-control") ?? "";
-    if (!cache || /no-store/i.test(control)) return;
+    if (!cache || /no-store/i.test(control)) return { bytes };
     const maxAge = /max-age=(\d+)/i.exec(control)?.[1];
     const etag = response.headers.get("etag") ?? undefined;
     const age = maxAge === undefined ? undefined : +maxAge;
-    cache.set(keyOf(url, accept), bytes, currentAt(response), etag, age);
+    const index = accept === CORGI ? indexVersions(bytes) : undefined;
+    cache.set(keyOf(url, accept), bytes, currentAt(response), etag, age, index);
+    return { bytes, index };
+  }
+
+  /**
+   * The registry says a kept document has not changed: current as of now. One kept before
+   * documents had an index is written again with one, once.
+   */
+  function unchanged(url: string, accept: string, response: Response, doc: Kept): Body {
+    const key = keyOf(url, accept);
+    const index = doc.index ?? (accept === CORGI ? indexVersions(doc.bytes) : undefined);
+    if (doc.index || !index) cache!.touch(key, currentAt(response));
+    else cache!.set(key, doc.bytes, currentAt(response), doc.etag, doc.maxAge, index);
+    return { bytes: doc.bytes, index };
   }
 
   /** The response body, retried and validated as `get` says. */
-  async function get(name: string, url: string, accept: string, ask = false): Promise<Uint8Array> {
+  async function get(name: string, url: string, accept: string, ask = false): Promise<Body> {
     const { doc, use } = kept(name, url, accept);
     if (use && !ask) {
       served.add(keyOf(url, accept));
-      return doc!.bytes;
+      return doc!;
     }
     if (cache?.mode === "only") throw offline(name);
     return await limit(async (signal) => {
@@ -292,15 +319,8 @@ export function createRegistry(options: RegistryOptions = {}): Registry {
           );
           continue;
         }
-        if (response.status === 304 && doc) {
-          cache!.touch(keyOf(url, accept), currentAt(response));
-          return doc.bytes;
-        }
-        if (response.ok) {
-          const bytes = await body(response, url);
-          keep(url, accept, response, bytes);
-          return bytes;
-        }
+        if (response.status === 304 && doc) return unchanged(url, accept, response, doc);
+        if (response.ok) return keep(url, accept, response, await body(response, url));
         if (response.status === 404) {
           throw fail(`Package "${name}" not found in registry`, "E404");
         }
@@ -353,7 +373,7 @@ export function createRegistry(options: RegistryOptions = {}): Registry {
     const { doc, use, full } = found ?? kept(name, url, accept);
     const hit = () => {
       if (accept === CORGI && !full) corgiBytes.set(name, doc!.bytes.byteLength);
-      return viewOf(url, doc!.bytes);
+      return viewOf(url, doc!);
     };
     if (use) return hit();
     if (cache?.mode === "only") return undefined;
@@ -373,16 +393,15 @@ export function createRegistry(options: RegistryOptions = {}): Registry {
         clearTimeout(late);
       }
       if (response.status === 304 && doc) {
-        cache!.touch(keyOf(url, accept), currentAt(response));
-        return hit();
+        if (accept === CORGI) corgiBytes.set(name, doc.bytes.byteLength);
+        return viewOf(url, unchanged(url, accept, response, doc));
       }
       if (!response.ok && isThrottle(response.status)) signal.throttled();
       if (!response.ok || !response.body) return undefined;
       const [bytes, size] = await read(response, big);
       if (accept === CORGI) corgiBytes.set(name, size);
       if (bytes === undefined) return undefined;
-      keep(url, accept, response, bytes);
-      return viewOf(url, bytes);
+      return viewOf(url, keep(url, accept, response, bytes));
     });
   }
 
@@ -440,7 +459,9 @@ export function createRegistry(options: RegistryOptions = {}): Registry {
       const found = (await known.catch(() => undefined))?.version(version);
       if (found) return found;
     }
-    const first = routeFirst(name);
+    // A route kept unasked too: a document past the cutoff is never kept, and one that is
+    // not would be asked for, then abandoned for this route.
+    const first = routeFirst(name) || (!!cache && kept(name, `${path(name)}/${version}`, FULL).use);
     if (first) {
       const found = await loadedVersion(name, version);
       if (found) return found;
@@ -465,14 +486,16 @@ export function createRegistry(options: RegistryOptions = {}): Registry {
           (found) => found && resolve(found),
           () => {},
         );
-      peeked(early).then((doc) => resolve(doc?.version(version)), reject);
+      peeked(early)
+        .then((doc) => doc?.version(version))
+        .then(resolve, reject);
     });
   }
 
   async function loadVersion(name: string, version: string): Promise<Manifest | undefined> {
     try {
       const url = `${path(name)}/${version}`;
-      return parseJSON<Manifest>(decode(await get(name, url, FULL)), url);
+      return parseJSON<Manifest>(decode((await get(name, url, FULL)).bytes), url);
     } catch (error) {
       // No such version, or a registry that does not serve the per-version route at all.
       const { code, status } = error as { code?: string; status?: number };
@@ -524,19 +547,18 @@ export function createRegistry(options: RegistryOptions = {}): Registry {
     const doc = await corgi(name);
     if (before === undefined || excluded(name)) return doc;
     if (Date.parse(doc.modified() ?? "") <= before) return doc;
-    const whole = doc.whole();
-    const versions = Object.keys(whole.versions ?? {});
+    const versions = doc.versions() ?? Object.keys(doc.whole().versions ?? {});
     const found = await memo(times, name, () => loadTimes(name, versions));
-    return found ? parsedView(asOf(whole, found, before)) : doc;
+    return found ? viewAsOf(doc, found, before) : doc;
   }
 
   /** Publish dates for `versions`, from the full document. */
   async function loadTimes(
     name: string,
-    versions: string[],
+    versions: readonly string[],
   ): Promise<Record<string, string> | undefined> {
     const url = path(name);
-    const read = (bytes: Uint8Array) =>
+    const read = ({ bytes }: Body) =>
       pluckTimes(bytes) ?? parseJSON<Packument>(decode(bytes), url).time;
     const found = read(await get(name, url, FULL));
     const dated = versions.every((v) => found?.[v]);
@@ -608,22 +630,34 @@ interface Found {
 const keyOf = (url: string, accept: string) => `${accept === CORGI ? "corgi" : "full"} ${url}`;
 
 interface TextView extends PackumentView {
+  versions(): readonly string[] | undefined;
   /** Whether the bytes are a document at all. Parses them whole to say so. */
   usable(): boolean;
   /** When the document last changed: read off its tail where the registry puts it last. */
   modified(): string | undefined;
 }
 
+/** A document's bytes, and where its versions sit when that is known already. */
+interface Body {
+  bytes: Uint8Array;
+  index?: VersionIndex;
+}
+
 /**
- * A document's bytes as a view. A member is plucked out of the bytes; when the pluck finds
- * nothing they are parsed whole, once. On a document a pluck answers as the whole parse
- * would, except that a duplicated key gives the first member where `JSON.parse` gives the
- * last — a registry's own keys, never a publisher's. Bytes that are not a document have no
- * members, and `whole()` says why.
+ * A document's bytes as a view. A member is plucked out of the bytes, and a version is parsed
+ * out of where the index says it sits (the kept one, or one found on first use); without an
+ * index they are parsed whole, once. On a document a pluck answers as the whole parse would,
+ * except that a duplicated key gives the first member where `JSON.parse` gives the last — a
+ * registry's own keys, never a publisher's. Bytes that are not a document have no members, and
+ * `whole()` says why.
  */
-function viewOf(url: string, bytes: Uint8Array): TextView {
+function viewOf(url: string, { bytes, index }: Body): TextView {
   let doc: Packument | undefined;
   let tags: Record<string, string> | undefined;
+  /** The versions in `index`'s order, or null when there is no index to trust. */
+  let keys: string[] | null | undefined;
+  const listed = () =>
+    (keys ??= versionsOf(index) ?? versionsOf((index = indexVersions(bytes))) ?? null);
   const whole = () => (doc ??= parseJSON<Packument>(decode(bytes), url));
   const parsed = () => {
     try {
@@ -632,17 +666,35 @@ function viewOf(url: string, bytes: Uint8Array): TextView {
       return undefined;
     }
   };
+  const own = (version: string): Manifest | undefined => {
+    const i = (listed()?.indexOf(version) ?? -2) * 3;
+    if (i === -3) return undefined;
+    if (i < 0) return parsed()?.versions?.[version];
+    const [start, end] = [index![i + 1] as number, index![i + 2] as number];
+    const fits = bytes[start] === OPEN && bytes[end - 1] === CLOSE && end > start;
+    const manifest = fits ? (parseSlice(bytes, start, end) as Manifest | undefined) : undefined;
+    // One the index has but the bytes do not: the whole parse says what is wrong with them.
+    return manifest ?? whole().versions?.[version];
+  };
   return {
     tags: () =>
       (tags ??= (doc ? doc["dist-tags"] : pluckTags(bytes)) ?? parsed()?.["dist-tags"] ?? {}),
-    version: (version) =>
-      doc
-        ? doc.versions?.[version]
-        : (pluckVersion(bytes, version) ?? parsed()?.versions?.[version]),
+    version: (version) => (doc ? doc.versions?.[version] : own(version)),
+    versions: () => (doc ? undefined : (listed() ?? undefined)),
     whole,
     usable: () => parsed() !== undefined,
     modified: () => (doc ? doc.modified : (pluckModified(bytes) ?? parsed()?.modified)),
   };
+}
+
+const CLOSE = 0x7d;
+
+/** An index's versions, when each entry is a version and two numbers: it says what is missing. */
+function versionsOf(index?: VersionIndex): string[] | undefined {
+  const shaped = index?.every((x, i) => typeof x === (i % 3 ? "number" : "string"));
+  return shaped && index!.length % 3 === 0
+    ? (index!.filter((_, i) => i % 3 === 0) as string[])
+    : undefined;
 }
 
 /** Whether a name matches one of the names or globs: `**` any text, `*` and `?` within a segment. */

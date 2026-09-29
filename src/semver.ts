@@ -282,6 +282,12 @@ export function satisfies(
   return sets.some((set) => testSet(v, set, includePrerelease));
 }
 
+/** `satisfies` for one range and many versions: the range is looked up once. */
+export function inRange(range: string, includePrerelease = false): (version: Version) => boolean {
+  const sets = parseRange(range, includePrerelease);
+  return (v) => !!sets && sets.some((set) => testSet(v, set, includePrerelease));
+}
+
 export function maxSatisfying(
   versions: string[],
   range: string,

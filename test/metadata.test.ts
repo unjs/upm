@@ -8,7 +8,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createDocumentCache, metadataDir, trimPackument } from "../src/metadata.ts";
-import { pluckModified, pluckTimes, pluckVersion } from "../src/pluck.ts";
+import { indexVersions, parseSlice, pluckModified, pluckTimes } from "../src/pluck.ts";
 import type { CacheMode, RegistryOptions } from "../src/registry.ts";
 import { createRegistry } from "../src/registry.ts";
 import { createRegistryPool } from "../src/registry-pool.ts";
@@ -233,13 +233,107 @@ describe("kept registry documents", () => {
     expect(JSON.parse(new TextDecoder().decode(kept.bytes))).toEqual(doc);
     const bytes = await readFile(corgiFile());
     const end = bytes.indexOf(10);
+    const body = bytes.subarray(end + 1);
     expect(JSON.parse(bytes.subarray(0, end).toString())).toEqual({
       at: expect.any(Number),
       key: `corgi ${base()}/foo`,
       etag: expect.any(String),
       maxAge: 0,
+      index: indexVersions(body),
     });
-    expect(JSON.parse(bytes.subarray(end + 1).toString())).toEqual(doc);
+    expect(JSON.parse(body.toString())).toEqual(doc);
+  });
+
+  it("reads only the versions a pick wants, where the head says they are", async () => {
+    doc = packument("1.0.0", "1.1.0", "2.0.0");
+    await pick("revalidate", "foo@^1");
+    // Every other version made unreadable, byte for byte in place: none of them is parsed.
+    const bytes = await readFile(corgiFile());
+    const end = bytes.indexOf(10);
+    const { index } = JSON.parse(bytes.subarray(0, end).toString());
+    for (let i = 0; i < index.length; i += 3) {
+      if (index[i] === "1.1.0") continue;
+      bytes.fill(0x20, end + 1 + index[i + 1] + 1, end + 1 + index[i + 2] - 1);
+      bytes[end + 1 + index[i + 1] + 1] = 0x21;
+    }
+    await writeFile(corgiFile(), bytes);
+    expect(await pick("only", "foo@^1")).toBe("1.1.0");
+    expect(await pick("only", "foo@~1.1")).toBe("1.1.0");
+    // The whole parse, which a range nothing satisfies needs for its error, finds the damage.
+    await expect(pick("only", "foo@^3")).rejects.toMatchObject({ code: "EJSONPARSE" });
+    // A damaged version the pick wants is an error, never the next one down.
+    await expect(pick("only", "foo@^2")).rejects.toMatchObject({ code: "EJSONPARSE" });
+    await expect(pick("only", "foo@*")).rejects.toMatchObject({ code: "EJSONPARSE" });
+    // So is a pin, read off a peek the registry answers with a 304.
+    const pinned = run("revalidate").pick!(parseSpec("foo@2.0.0"), "2.0.0");
+    await expect(pinned).rejects.toMatchObject({ code: "EJSONPARSE" });
+    expect(log.slice(1)).toEqual(["404 /foo/2.0.0", "304 /foo"]);
+  });
+
+  it("reads a document kept before heads had an index, and gives it one on a 304", async () => {
+    doc = packument("1.0.0", "1.1.0");
+    const cache = createDocumentCache({ dir: join(dir, "metadata"), mode: "only" });
+    cache.set(`corgi ${base()}/foo`, encode(doc), Date.now() - DAY, '"x"');
+    const bytes = await readFile(corgiFile());
+    const end = bytes.indexOf(10);
+    const { index: _, ...old } = JSON.parse(bytes.subarray(0, end).toString());
+    await writeFile(corgiFile(), `${JSON.stringify(old)}\n${JSON.stringify(doc)}`);
+    expect(cache.get(`corgi ${base()}/foo`)!.index).toBeUndefined();
+    expect(await pick("only", "foo@^1")).toBe("1.1.0");
+    // The registry says it has not changed: the document is written again, with an index.
+    const etag = `"${JSON.stringify(doc).length}-1.1.0"`;
+    await writeFile(corgiFile(), `${JSON.stringify({ ...old, etag })}\n${JSON.stringify(doc)}`);
+    expect(await pick("revalidate", "foo@^1")).toBe("1.1.0");
+    expect(log).toEqual(["304 /foo"]);
+    const kept = cache.get(`corgi ${base()}/foo`)!;
+    expect(kept.index).toEqual(indexVersions(kept.bytes));
+    expect(Date.now() - kept.at).toBeLessThan(DAY / 2);
+    expect(kept.etag).toBe(etag);
+  });
+
+  it("rewrites the date in place when the head is longer than what it reads", async () => {
+    doc = packument(...Array.from({ length: 300 }, (_, i) => `1.0.${i}`));
+    await pick("revalidate", "foo@^1");
+    const before = await readFile(corgiFile());
+    expect(before.indexOf(10)).toBeGreaterThan(4096);
+    await backdate(corgiFile(), Date.now() - DAY);
+    expect(await pick("revalidate", "foo@^1")).toBe("1.0.299");
+    expect(log).toEqual(["200 /foo", "304 /foo"]);
+    const cache = createDocumentCache({ dir: join(dir, "metadata"), mode: "only" });
+    const kept = cache.get(`corgi ${base()}/foo`)!;
+    expect(Date.now() - kept.at).toBeLessThan(60_000);
+    expect(kept.index).toEqual(indexVersions(kept.bytes));
+    // A head that is not the one `set` writes is left alone.
+    await writeFile(corgiFile(), `{"key":"corgi ${base()}/foo","at":${Date.now() - DAY}}\n{}`);
+    cache.touch(`corgi ${base()}/foo`, Date.now());
+    expect(Date.now() - cache.get(`corgi ${base()}/foo`)!.at).toBeGreaterThan(DAY / 2);
+  });
+
+  it("parses the document whole when its index does not fit it", async () => {
+    doc = packument("1.0.0", "1.1.0");
+    await pick("revalidate", "foo@^1");
+    const bytes = await readFile(corgiFile());
+    const end = bytes.indexOf(10);
+    const head = JSON.parse(bytes.subarray(0, end).toString());
+    for (const index of [[0, 1, 2], ["1.1.0", 0, 5, "1.0.0", 3, 9], ["1.1.0", "x", null], "no"]) {
+      const body = bytes.subarray(end + 1);
+      await writeFile(
+        corgiFile(),
+        Buffer.concat([Buffer.from(JSON.stringify({ ...head, index }) + "\n"), body]),
+      );
+      expect(await pick("only", "foo@^1")).toBe("1.1.0");
+      expect(await pick("only", "foo@1.0.0")).toBe("1.0.0");
+    }
+  });
+
+  it("answers a pinned version from its kept route, asking nothing", async () => {
+    // A scoped document past the peek's cutoff is never kept; the version's route is.
+    const cache = createDocumentCache({ dir: join(dir, "metadata"), mode: "only" });
+    const scoped = { ...manifest("1.0.0"), name: "@s/foo" };
+    cache.set(`full ${base()}/@s%2ffoo/1.0.0`, encode(scoped), Date.now());
+    const found = await run("prefer").pick!(parseSpec("@s/foo@1.0.0"), "1.0.0");
+    expect(found).toEqual(scoped);
+    expect(log).toEqual([]);
   });
 
   it("keeps a url it cannot spell as a path under its hash", async () => {
@@ -333,7 +427,9 @@ describe("trimPackument", () => {
     }
     const kept = trimPackument(bytes(full))!;
     expect(pluckModified(kept)).toBe(full.modified);
-    expect(pluckVersion(kept, "1.0.0")).toEqual(expected.versions["1.0.0"]);
+    const [version, start, end] = indexVersions(kept)!;
+    expect(version).toBe("1.0.0");
+    expect(parseSlice(kept, start as number, end as number)).toEqual(expected.versions["1.0.0"]);
     expect(pluckTimes(kept)).toEqual(full.time);
   });
 

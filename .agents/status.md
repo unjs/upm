@@ -199,10 +199,18 @@ Unranked: take a fresh profile before choosing one. Use [perf.md](perf.md) for e
   over kept documents took 297 ms, against 326 ms with zstd level 1, for 60 MB on disk
   against 19 MB. Full packuments are trimmed by structure (`trimPackument`) to a
   fifth to a half, at about the cost of one `JSON.parse` of them, with a cold `nuxt` or `next`
-  install unchanged; a trim of the abbreviated documents cost a cold resolve 18% and is not
-  done. The release-age window made `upm lock` over documents past their `max-age` 299 ms
-  where revalidating them took 993 ms (`next`: 214 against 624). Writing documents after the
-  walk, where nothing waits on them, is untried.
+  install unchanged; the same trim of the abbreviated documents keeps 85% of their bytes (the
+  `dist` signatures stay) at 1.5 times the cost of the index scan, and is not done. The
+  release-age window made `upm lock` over documents past their `max-age` 299 ms where
+  revalidating them took 993 ms (`next`: 214 against 624). Writing documents after the walk,
+  where nothing waits on them, is untried.
+- A kept document's head says where each version sits (`indexVersions`), so a warm pick
+  parses only the manifests it reads, but the whole file is still read. Reading the head and
+  then only those slices, as pnpm 12 does, would save the rest of the read, its buffer and the
+  collection after it: about a sixth of a registry thread's busy time on the vlt `babylon`
+  fixture, and nothing on the smaller ones, where the threads already wait on the walk. It
+  needs a file handle kept per view, or a reopen that can find the file replaced since.
+  Start at `get` in `src/metadata.ts` and `viewOf` in `src/registry.ts`.
 - For large archives, check both many-file and few-file shapes. Helper startup and retained
   buffers can cost more than parallel writes save. Include peak memory in the result.
 - For warm installs, profile planning, messages and index work before adding more threads.

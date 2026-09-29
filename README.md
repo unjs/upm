@@ -297,7 +297,8 @@ packages still need to be downloaded, so this is not an offline mode.
 Registry documents that upm reads while resolving are kept in the store's `metadata`
 directory, under paths named after the registry and package
 (`metadata/registry.npmjs.org/@scope/name/`), so deleting a directory forgets those
-documents. A full document is kept cut down to the fields upm reads. A kept document is used
+documents. A full document is kept cut down to the fields upm reads, and each notes where its
+versions are, so a pick parses only the versions it looks at. A kept document is used
 without a request within the `max-age` the registry sent (five minutes on npmjs), and, while
 `min-release-age` is on, for as long as it was fetched after the cutoff: any version it lacks
 is too new to pick. After that, upm asks with its ETag and reuses it on a `304`. A tag

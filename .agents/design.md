@@ -112,7 +112,9 @@ prove concurrent deletion safe.
 
 Metadata parsing shortcuts must select the real registry member, never a lookalike
 nested in publisher-controlled data. Use full parsing when the shortcut is unsure.
-Test hostile documents as well as normal registry output.
+Test hostile documents as well as normal registry output. A kept document's index is
+believed about a version it lacks, not only where one sits, so it is only ever written by the
+structural scan of the same bytes, in the same file.
 
 Threads are an optional execution strategy, not a different resolver or installer.
 Keep local and pooled results equivalent, including failure and shutdown behavior.

@@ -3,15 +3,17 @@
 //
 // One file per url and media type, at a path read off both: `registry.npmjs.org/@scope/name/
 // _corgi`, `_full` beside it, and `name/1.0.0/_full` for a version's route; a name or version
-// never starts with `_`. A line of JSON says what the file is and when the registry's copy was
-// current (not the file's mtime, which copying a store resets), then the body: as the registry
-// sent it, but a full packument cut to what the resolver reads (`trimPackument`). Not
+// never starts with `_`. A line of JSON says what the file is, when the registry's copy was
+// current (not the file's mtime, which copying a store resets) and where each version sits in
+// the body (`indexVersions`), so a read parses only the versions it wants. Then the body: as the
+// registry sent it, but a full packument cut to what the resolver reads (`trimPackument`). Not
 // compressed: zstd would take a third of the disk but make a warm resolve 10% slower. Reads and
 // writes are synchronous, because a registry thread is terminated when the walk ends and the
 // bin exits once its output is out: a write still pending then would be lost. A write goes to a
 // temp file and is renamed in, so a reader never sees half of one.
 import { builtin } from "./builtin.ts";
-import { at as written, CLASS, COLON, objectEnd, OPEN, QUOTE, space, stringEnd } from "./pluck.ts";
+import { at as written, indexVersions, members, OPEN, valueEnd } from "./pluck.ts";
+import type { VersionIndex } from "./pluck.ts";
 import type { CacheMode, DocumentCache, Kept } from "./registry.ts";
 import { concat } from "./runtime.ts";
 
@@ -28,12 +30,17 @@ interface Head {
   etag?: string;
   /** Seconds the registry said the document stays fresh from `at`. */
   maxAge?: number;
+  /** Where each version sits in the body. A file from before it had none, and still reads. */
+  index?: VersionIndex;
 }
 
 const NEWLINE = 10;
 /** Where `at`'s digits start in a head: after `{"at":`. */
 const AT = 6;
-/** Longer heads are not rewritten in place; a url and an ETag take a few hundred bytes. */
+/**
+ * What of a head `touch` reads: `{"at":`, the digits and the key. A url takes a few hundred
+ * bytes; a longer key is not rewritten in place.
+ */
 const HEAD_MAX = 4096;
 /**
  * What a path segment may hold: a name, a version or a host, never `.` or `..`. A name Windows
@@ -113,22 +120,32 @@ export function createDocumentCache(options: MetadataOptions): DocumentCache {
     const head = parseHead(bytes, key);
     if (!head) return undefined;
     const { at, etag, maxAge, end } = head;
-    return { bytes: bytes.subarray(end + 1), etag, at, maxAge };
+    const index = Array.isArray(head.index) ? head.index : undefined;
+    return { bytes: bytes.subarray(end + 1), etag, at, maxAge, index };
   }
 
-  function set(key: string, bytes: Uint8Array, at: number, etag?: string, maxAge?: number): void {
+  function set(
+    key: string,
+    bytes: Uint8Array,
+    at: number,
+    etag?: string,
+    maxAge?: number,
+    index?: VersionIndex,
+  ): void {
     if (!document(bytes)) return; // a portal's page, say, is never kept
-    const body = (key.startsWith("full ") && trimPackument(bytes)) || bytes;
+    const trimmed = key.startsWith("full ") ? trimPackument(bytes) : undefined;
+    const body = trimmed ?? bytes;
+    if (trimmed) index = indexVersions(trimmed);
     const file = fileOf(key);
     const parent = path.dirname(file);
     const temp = `${file}.${globalThis.process.pid}-${globalThis.crypto.randomUUID()}.tmp`;
     try {
       if (!made.has(parent)) fs.mkdirSync(parent, { recursive: true, mode: 0o700 });
       made.add(parent);
-      const head = encoder.encode(`${JSON.stringify({ at: stamp(at), key, etag, maxAge })}\n`);
+      const head = { at: stamp(at), key, etag, maxAge, index } satisfies Head;
       const fd = fs.openSync(temp, "w", 0o600);
       try {
-        fs.writeSync(fd, head);
+        fs.writeSync(fd, encoder.encode(`${JSON.stringify(head)}\n`));
         fs.writeSync(fd, body);
       } finally {
         fs.closeSync(fd);
@@ -140,15 +157,26 @@ export function createDocumentCache(options: MetadataOptions): DocumentCache {
     }
   }
 
-  /** A new `at`, written over the old digits: one small write, not the document again. */
+  /**
+   * A new `at`, written over the old digits: one small write, not the document again. The head
+   * is the one `set` wrote when it starts `{"at":<13 digits>,"key":<key>`: the index after it
+   * may be far longer than what is read here.
+   */
   function touch(key: string, at: number): void {
     let fd: number | undefined;
     try {
       fd = fs.openSync(fileOf(key), "r+");
       const bytes = new Uint8Array(HEAD_MAX);
       const read = fs.readSync(fd, bytes, 0, HEAD_MAX, 0);
-      const head = parseHead(bytes.subarray(0, read), key);
-      if (!head || !at13(head.at) || !at13(stamp(at))) return;
+      const named = encoder.encode(`,"key":${JSON.stringify(key)}`);
+      const after = AT + 13 + named.length;
+      const ours =
+        written(bytes, 0, encoder.encode('{"at":')) &&
+        /^\d{13}$/.test(new TextDecoder().decode(bytes.subarray(AT, AT + 13))) &&
+        written(bytes, AT + 13, named) &&
+        after < read &&
+        (bytes[after] === COMMA || bytes[after] === CLOSE);
+      if (!ours || !at13(stamp(at))) return;
       fs.writeSync(fd, encoder.encode(`${stamp(at)}`), 0, 13, AT);
     } catch {
       // As with `set`.
@@ -164,51 +192,11 @@ const encoder = new TextEncoder();
 const COMMA = 0x2c;
 const CLOSE = 0x7d;
 
-/** The index after the value starting at `i`, or -1. */
-function valueEnd(bytes: Uint8Array, i: number): number {
-  const k = CLASS[bytes[i]!];
-  if (k === 1) return stringEnd(bytes, i);
-  if (k === 2) return objectEnd(bytes, i);
-  // A number, `true`, `false` or `null`: up to what follows it.
-  const from = i;
-  while (i < bytes.length && bytes[i] !== COMMA && CLASS[bytes[i]!]! < 3) i++;
-  return i > from ? i : -1;
-}
-
-/**
- * Each member of the object opening at `from`, as its key's bounds and its value's; false
- * when it is not a well-formed object.
- */
-function members(
-  bytes: Uint8Array,
-  from: number,
-  each: (start: number, keyEnd: number, value: number, end: number) => void,
-): boolean {
-  let i = space(bytes, from);
-  if (bytes[i] !== OPEN) return false;
-  i = space(bytes, i + 1);
-  if (bytes[i] === CLOSE) return true;
-  for (;;) {
-    if (bytes[i] !== QUOTE) return false;
-    const keyEnd = stringEnd(bytes, i);
-    if (keyEnd < 0) return false;
-    let value = space(bytes, keyEnd);
-    if (bytes[value] !== COLON) return false;
-    value = space(bytes, value + 1);
-    const end = valueEnd(bytes, value);
-    if (end < 0) return false;
-    each(i, keyEnd, value, end);
-    i = space(bytes, end);
-    if (bytes[i] === CLOSE) return true;
-    if (bytes[i] !== COMMA) return false;
-    i = space(bytes, i + 1);
-  }
-}
-
 /** What a full packument keeps: `modified` last, where `pluckModified` reads it. */
 const ROOT = ["name", "dist-tags", "time", "versions", "modified"].map((key) =>
   encoder.encode(`"${key}"`),
 );
+const VERSIONS = 3;
 const DIST = [encoder.encode('"dist"')];
 /** The abbreviated document's fields, `devDependencies` aside, and `libc`, which it drops. */
 const VERSION = [
@@ -247,45 +235,51 @@ function which(bytes: Uint8Array, start: number, end: number, keys: Uint8Array[]
 /**
  * A full packument cut to what the resolver reads of it, as deno keeps one: readmes,
  * maintainers, scripts and the like go, a fifth to a half is left. Members are copied as
- * written, found by structure the way `member` finds one, so nothing is parsed. Undefined
- * for anything that is not a packument, which is then kept whole.
+ * written, found by structure the way `member` finds one, in one pass, so nothing is parsed.
+ * Undefined for anything that is not a packument, which is then kept whole.
  */
 export function trimPackument(bytes: Uint8Array): Uint8Array | undefined {
-  const root: ([number, number, number] | undefined)[] = [];
+  const root: Uint8Array[][] = [];
   let manifest = false;
-  const whole = members(bytes, 0, (start, keyEnd, value, end) => {
+  const whole = members(bytes, 0, (start, keyEnd, value) => {
     const k = which(bytes, start, keyEnd, ROOT);
-    if (k >= 0) root[k] ??= [start, value, end];
-    else manifest ||= which(bytes, start, keyEnd, DIST) === 0;
+    if (k < 0 || root[k]) {
+      manifest ||= which(bytes, start, keyEnd, DIST) === 0;
+      return valueEnd(bytes, value);
+    }
+    if (k !== VERSIONS) {
+      const end = valueEnd(bytes, value);
+      root[k] = [bytes.subarray(start, end)];
+      return end;
+    }
+    // A version's own route has a `dist`, and may have a field called `versions` too.
+    if (bytes[value] !== OPEN) return -1;
+    const parts: Uint8Array[] = (root[k] = [VERSIONS_TEXT]);
+    let count = 0;
+    const end = members(bytes, value, (from, _, entry) => {
+      if (count++ > 0) parts.push(COMMA_TEXT);
+      parts.push(bytes.subarray(from, entry), OPEN_TEXT); // `"1.0.0":{`
+      let fields = 0;
+      const to = members(bytes, entry, (field, fieldEnd, at) => {
+        const after = valueEnd(bytes, at);
+        if (after < 0 || which(bytes, field, fieldEnd, VERSION) < 0) return after;
+        if (fields++ > 0) parts.push(COMMA_TEXT);
+        parts.push(bytes.subarray(field, after));
+        return after;
+      });
+      parts.push(CLOSE_TEXT);
+      return to;
+    });
+    parts.push(CLOSE_TEXT);
+    return end;
   });
-  // A version's own route has a `dist`, and may have a field called `versions` too.
-  const versions = root[3];
-  if (!whole || manifest || !root[1] || !versions || bytes[versions[1]] !== OPEN) return undefined;
+  if (whole < 0 || manifest || !root[1] || !root[VERSIONS]) return undefined;
   const parts: Uint8Array[] = [OPEN_TEXT];
-  let ok = true;
   for (const found of root) {
     if (!found) continue;
     if (parts.length > 1) parts.push(COMMA_TEXT);
-    if (found !== versions) {
-      parts.push(bytes.subarray(found[0], found[2]));
-      continue;
-    }
-    parts.push(VERSIONS_TEXT);
-    let count = 0;
-    ok &&= members(bytes, found[1], (start, _, value) => {
-      if (count++ > 0) parts.push(COMMA_TEXT);
-      parts.push(bytes.subarray(start, value), OPEN_TEXT); // `"1.0.0":{`
-      let fields = 0;
-      ok &&= members(bytes, value, (from, keyEnd, _value, to) => {
-        if (which(bytes, from, keyEnd, VERSION) < 0) return;
-        if (fields++ > 0) parts.push(COMMA_TEXT);
-        parts.push(bytes.subarray(from, to));
-      });
-      parts.push(CLOSE_TEXT);
-    });
-    parts.push(CLOSE_TEXT);
+    for (const part of found) parts.push(part);
   }
-  if (!ok) return undefined;
   parts.push(CLOSE_TEXT);
   return concat(parts);
 }
