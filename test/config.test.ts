@@ -23,6 +23,7 @@ const DEFAULTS = {
   releaseAgeExclude: [],
   offline: false,
   preferOffline: false,
+  hoist: true,
 };
 
 describe("parseNpmrc", () => {
@@ -242,6 +243,12 @@ describe("toConfig", () => {
     expect(toConfig([{ offline: "true" }, { offline: "false" }]).offline).toBe(false);
     expect(toConfig([{ "prefer-offline": "true" }]).preferOffline).toBe(true);
   });
+
+  it("reads hoist, on unless false", () => {
+    expect(toConfig([]).hoist).toBe(true);
+    expect(toConfig([{ hoist: "false" }]).hoist).toBe(false);
+    expect(toConfig([{ hoist: "false" }, { hoist: "true" }]).hoist).toBe(true);
+  });
 });
 
 describe("authFor", () => {
@@ -312,6 +319,7 @@ describe("readConfig", () => {
       releaseAgeExclude: [],
       offline: false,
       preferOffline: false,
+      hoist: true,
     });
     process.env.npm_config_registry = "https://env.test";
     expect(readConfig(dir).registry).toBe("https://env.test");

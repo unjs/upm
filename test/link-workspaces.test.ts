@@ -123,6 +123,18 @@ describe("linkTree with workspaces", () => {
     expect(await exists(join(project, "node_modules", ".upm", "b@1.0.0"))).toBe(false);
   });
 
+  it("hoists a workspace's registry deps into .upm/node_modules, never a workspace", async () => {
+    const { store, resolution } = await seed([NANOID], [A, B], { a: "link:packages/a" });
+    await linkTree(resolution, { dir: project, store });
+    const keys = await storeKeys(resolution.packages);
+    expect(await readdir(join(project, "node_modules", ".upm", "node_modules"))).toEqual([
+      "nanoid",
+    ]);
+    expect(await linkOf(join(project, "node_modules", ".upm", "node_modules", "nanoid"))).toBe(
+      `../${keys["nanoid@1.0.0"]}/node_modules/nanoid`,
+    );
+  });
+
   it("links a workspace at the root only when the root declares it", async () => {
     const { store, resolution } = await seed([NANOID], [A, B], { a: "link:packages/a" });
     await linkTree(resolution, { dir: project, store });

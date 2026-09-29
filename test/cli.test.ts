@@ -1173,11 +1173,12 @@ describe("startup budget", () => {
     // 144,476 with a warm link that skips the fill and links tops side by side (43/44 and
     // 115/112 ms); 145,049 with each workspace's links in the state (43/42 and 107/107 ms);
     // 147,156 with tarballs fetched through the agent's callbacks (41/42 and 108/108 ms);
-    // 147,684 with the progress hooks and `--no-progress`, the bar itself lazy; 147,803 with --verbose.
+    // 147,684 with the progress hooks and `--no-progress`, the bar itself lazy; 147,803 with --verbose;
+    // 149,006 with `.upm/node_modules` (42/43 and 111/112 ms).
     const modules = await reachable();
     const bytes = [...modules.values()].reduce((total, size) => total + size, 0);
     expect(modules.size).toBeLessThanOrEqual(27); // `upm.ts` is the bin, `cli.ts` the program
-    expect(bytes).toBeLessThanOrEqual(147_850);
+    expect(bytes).toBeLessThanOrEqual(149_050);
     // Found through `import()` by the commands that read a project, like the pools: each holds
     // its worker's whole code in the build.
     const lazy = [

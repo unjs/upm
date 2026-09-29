@@ -1,5 +1,5 @@
 // Walk a root package.json into a flat, deterministic set of `name@version` packages.
-// No hoisting and no placement: the stage 5 `.upm` layout makes both unnecessary.
+// No placement: the stage 5 `.upm` layout makes it unnecessary.
 import { normalizeBin } from "./normalize-bin.ts";
 import { builtin } from "./builtin.ts";
 import { compare, maxSatisfying, parse, satisfies, validRange } from "./semver.ts";

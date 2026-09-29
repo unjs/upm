@@ -31,6 +31,8 @@ export interface Config {
   offline: boolean;
   /** `prefer-offline`: pick from a kept registry document without asking whether it changed. */
   preferOffline: boolean;
+  /** `hoist`, pnpm's key: `false` leaves out `.upm/node_modules`, see `linkHoisted`. */
+  hoist: boolean;
 }
 
 const NPMRC = ".npmrc";
@@ -146,6 +148,7 @@ export function toConfig(layers: Record<string, string>[], registry?: string): C
     ].filter(Boolean),
     offline: merged.offline === "true",
     preferOffline: merged["prefer-offline"] === "true",
+    hoist: merged.hoist !== "false",
   };
 }
 

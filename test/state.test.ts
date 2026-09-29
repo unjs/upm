@@ -73,6 +73,13 @@ describe("stateHash", () => {
     expect(await stateHash(flipped, FLAGS)).not.toBe(await stateHash(tree(), FLAGS));
   });
 
+  it("changes when hoisting is turned off, and on is the default", async () => {
+    expect(await stateHash(tree(), { ...FLAGS, hoist: false })).not.toBe(
+      await stateHash(tree(), FLAGS),
+    );
+    expect(await stateHash(tree(), { ...FLAGS, hoist: true })).toBe(await stateHash(tree(), FLAGS));
+  });
+
   it("changes when the store moves", async () => {
     expect(await stateHash(tree(), { ...FLAGS, store: "/tmp/other" })).not.toBe(
       await stateHash(tree(), FLAGS),
@@ -162,6 +169,7 @@ describe("readState", () => {
       manifest: {},
       production: false,
       store: STORE,
+      hoist: true,
       hosts: [],
       platform: [],
     };

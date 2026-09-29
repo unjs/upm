@@ -19,6 +19,8 @@ export interface LinkOptions {
   concurrency?: number;
   /** Skip packages only devDependencies reach. */
   production?: boolean;
+  /** False leaves out `.upm/node_modules`, the names a package may reach undeclared. */
+  hoist?: boolean;
   /** Ignore the recorded state and check every entry on disk. */
   verify?: boolean;
   /**
@@ -183,7 +185,9 @@ export async function linkTree(resolution: Resolution, options: LinkOptions): Pr
   const limit = createLimiter(options.concurrency ?? 16);
   const storeDir = join(options.dir, "node_modules", ".upm");
   const production = options.production === true;
-  const hash = options.hash ?? (await stateHash(resolution, { production, store: store.dir }));
+  const hoist = options.hoist !== false;
+  const hash =
+    options.hash ?? (await stateHash(resolution, { production, store: store.dir, hoist }));
   const result: LinkResult = {
     entries: 0,
     linked: 0,
@@ -228,7 +232,7 @@ export async function linkTree(resolution: Resolution, options: LinkOptions): Pr
       workspaces: options.workspaces,
     }) satisfies InstallState;
   if (!options.verify && state?.hash === hash && state.complete) {
-    const read = await standing(options.dir, storeDir, tops, resolution, state, production);
+    const read = await standing(options.dir, storeDir, tops, resolution, state, production, hoist);
     if (read) {
       // The same tree from other inputs — a lockfile rewritten in the same words — or with a
       // local tarball touched but holding the same bytes, or the workspace set proven anew:
@@ -374,13 +378,14 @@ export async function linkTree(resolution: Resolution, options: LinkOptions): Pr
   // Only here, after the fast path: a no-op install never pays a realpath per top.
   const realRoot = await realpath(options.dir);
   // Each top is its own `node_modules`, so they are linked side by side.
-  await settle(
-    tops.map(async (top, i) => {
+  await settle([
+    ...tops.map(async (top, i) => {
       await inside(dirname(top.nm));
       await inside(top.nm);
       await linkTop(top, i === 0 && rootNew);
     }),
-  );
+    linkHoisted(),
+  ]);
   trace("link:tops");
   await sweepTemp();
   trace("link:swept");
@@ -902,6 +907,75 @@ export async function linkTree(resolution: Resolution, options: LinkOptions): Pr
   }
 
   /**
+   * `.upm/node_modules`: one link per name, for what a package imports without declaring it.
+   * Node's lookup from an entry climbs into it after the entry's own `node_modules` and before
+   * the root's, so it only answers a name the package did not declare. pnpm's rule, so a tree
+   * that works there works here: the root's direct names stay out, since this folder would hide
+   * the root's own version; each workspace's direct deps come first; then the rest by depth,
+   * parents in id order, and the first to claim a name keeps it. A workspace is never hoisted:
+   * no `.upm` entry reaches one.
+   */
+  async function linkHoisted(): Promise<void> {
+    const nm = join(storeDir, "node_modules");
+    await inside(nm);
+    if (!hoist) return await rm(nm, { recursive: true, force: true });
+    const fresh = (await mkdir(nm, { recursive: true })) !== undefined;
+    const taken = new Set<string>();
+    const hoisted: [string, Entry][] = [];
+    const claim = (name: string, id: string) => {
+      const entry = wanted.get(id);
+      if (!entry || taken.has(name)) return;
+      taken.add(name);
+      hoisted.push([name, entry]);
+    };
+    const linked = (id: string) => wanted.has(id) || resolution.packages[id]?.local !== undefined;
+    for (const [name, version] of Object.entries(tops[0]!.dependencies)) {
+      if (linked(`${name}@${version}`)) taken.add(name);
+    }
+    const seen = new Set<string>();
+    let level: string[] = [];
+    for (const [i, { dependencies }] of tops.entries()) {
+      for (const [name, version] of Object.entries(dependencies)) {
+        const id = `${name}@${version}`;
+        if (i > 0) claim(name, id);
+        if (wanted.has(id) && !seen.has(id)) {
+          seen.add(id);
+          level.push(id);
+        }
+      }
+    }
+    while (level.length > 0) {
+      const next: string[] = [];
+      for (const id of level.sort()) {
+        for (const [name, version] of Object.entries(allDeps(wanted.get(id)!.pkg))) {
+          const child = `${name}@${version}`;
+          claim(name, child);
+          if (wanted.has(child) && !seen.has(child)) {
+            seen.add(child);
+            next.push(child);
+          }
+        }
+      }
+      level = next;
+    }
+    const scopes = new Set<string>();
+    for (const [name] of hoisted) {
+      if (name.includes("/")) scopes.add(join(nm, name.slice(0, name.indexOf("/"))));
+    }
+    for (const scope of scopes) {
+      await inside(scope);
+      await mkdir(scope, { recursive: true });
+    }
+    // From `.upm/node_modules` an entry is `../<home>`, one `..` more from under a scope dir.
+    const target = (name: string, entry: Entry) =>
+      `${up}${name.includes("/") ? up : ""}${entry.home}`;
+    await settle(
+      hoisted.map(([name, entry]) => linkAt(target(name, entry), join(nm, name), nm, fresh)),
+    );
+    if (!fresh) await sweep(nm, new Set(hoisted.map(([name]) => name)));
+  }
+
+  /**
    * Converge one `node_modules` (or `.bin`) to what we just linked: every symlink `keep` does
    * not name goes. Only symlinks — a real directory is someone else's, and `.upm`, `.tmp-*`
    * and any other dot name are not ours to judge. Runs after the links are in place, so a
@@ -946,7 +1020,7 @@ function topsOf(dir: string, resolution: Resolution): Top[] {
 /**
  * Is the tree the state file describes still on disk? Its shape only: every top's direct
  * dependency linked into an entry of its own or to its workspace, every bin placed, every
- * recorded entry a real directory. Damage inside an entry, and content that changed without
+ * recorded entry a real directory, `.upm/node_modules` too when hoisting. Damage inside an entry, and content that changed without
  * changing size, need `--verify`.
  */
 async function standing(
@@ -956,6 +1030,7 @@ async function standing(
   resolution: Resolution,
   state: InstallState,
   production: boolean,
+  hoist: boolean,
 ): Promise<Linked | undefined> {
   const read: Linked = Object.create(null);
   for (const top of tops) {
@@ -969,6 +1044,7 @@ async function standing(
       .filter((found) => found.isDirectory())
       .map((found) => found.name),
   );
+  if (hoist && !entries.has("node_modules")) return undefined;
   return state.entries.every((key) => entries.has(key)) ? read : undefined;
 }
 
@@ -979,10 +1055,10 @@ type Linked = Record<string, TopLinks>;
  * Is the tree a state file with `root` describes still on disk? The same shape `standing`
  * checks, read off the state alone: every recorded link of the root and of each workspace
  * pointing where it was made to, every recorded bin placed, every recorded entry a directory
- * under `.upm`. For the install whose inputs have not changed, which has no graph to check
+ * under `.upm`, and `.upm/node_modules` there unless `hoist` is off. For the install whose inputs have not changed, which has no graph to check
  * against.
  */
-export function treeStanding(dir: string, state: InstallState): boolean {
+export function treeStanding(dir: string, state: InstallState, hoist = true): boolean {
   // Sync, like the other reads of the no-op path: a few directory reads, and no
   // `fs/promises` to load for them. See readState.
   const { join } = builtin.path;
@@ -1011,6 +1087,7 @@ export function treeStanding(dir: string, state: InstallState): boolean {
     return false;
   }
   const entries = new Set(found.filter((entry) => entry.isDirectory()).map((entry) => entry.name));
+  if (hoist && !entries.has("node_modules")) return false;
   return state.entries.every((key) => entries.has(key));
 }
 

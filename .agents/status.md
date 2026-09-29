@@ -121,14 +121,14 @@ These need a scope decision, not just a patch:
   `bun.lockb` and `npm-shrinkwrap.json` are not looked for, so such a project still resolves
   and writes `upm.lock`: decide whether to refuse there too. Start at `src/foreign-lock.ts`.
 - Workspaces are direct-only and whole-tree. Left out on purpose: `install -w` and any other
-  filtered install (one state file describes one tree), hoisting, a workspace capturing a
+  filtered install (one state file describes one tree), hoisting to the root, a workspace capturing a
   registry package's transitive edge (npm links one; here a `.upm` entry never points at a
   workspace, which keeps the store portable), `workspace:<other>@<range>` installed under a
   different name, `workspace:./path`, `catalog:`, injected packages, `init -w` and
   `--no-workspaces`. Publishing a manifest with a `workspace:` range is another manager's
   job: `upm publish` is npm's, which keeps it.
 - `.npmrc` is read for the registry, `@scope:registry`, the credential keys, `save-exact`,
-  `min-release-age`, `before`, `min-release-age-exclude`, `offline` and `prefer-offline`, from the project,
+  `min-release-age`, `before`, `min-release-age-exclude`, `offline`, `prefer-offline` and `hoist`, from the project,
   user and global files and `npm_config_*`. Not npm's own built-in npmrc, and no `proxy`, `strict-ssl`,
   `cafile` or `always-auth`: those need an HTTP layer upm does not have. `upm login` and
   `upm config set` are npm's, run through exec. A credential is sent under its
@@ -142,9 +142,14 @@ These need a scope decision, not just a patch:
   a full-document read for its `time`; a registry that leaves `modified` out of that document
   costs one per fresh pick. Exclude globs know `*`, `**` and `?`, not minimatch's classes and
   braces. Start at `loadAged` in `src/registry.ts`.
-- No hoisting or separate copies of a consumer for different peer environments. Different
+- No separate copies of a consumer for different peer environments. Different
   consumers can have different peer versions, but an own dependency can still conflict
   with that consumer's peer range. `--verify` reports such conflicts; it cannot fix them.
+- Undeclared imports resolve only through `.upm/node_modules`, pnpm's `hoist-pattern=*`
+  with its version rule (`linkHoisted` in `src/link.ts`). `hoist=false` turns it off. No
+  `hoist-pattern`, `public-hoist-pattern` or `shamefully-hoist`, and no `.bin` there, since
+  no dependency script runs. A workspace is never hoisted (pnpm hoists them), and the
+  project's own code and each workspace's still see only what they declare.
 - Consumers missing the same peer in one settling round share a version only when one they
   would each pick alone fits all their ranges, so `^1 || ^3` and `^1 || ^2` still get a copy
   each. One found in a later round, behind a fetched peer, settles against what is already

@@ -38,8 +38,10 @@ export async function sweepEntries(dir: string, keep: Set<string>): Promise<Entr
   // npm's `#cleanOrphanedStoreEntries` there is no `@scope` level to descend into.
   for (const found of await list(storeDir)) {
     const { name } = found;
-    // `.tmp-*` is where a concurrent install stages its next entry. Nothing dotted is ours.
-    if (!found.isDirectory() || name.startsWith(".") || keep.has(name)) continue;
+    // `.tmp-*` is where a concurrent install stages its next entry. Nothing dotted is ours,
+    // and `node_modules` is the hoisted names, never an entry: a key always holds an `@`.
+    if (!found.isDirectory() || name.startsWith(".") || name === "node_modules") continue;
+    if (keep.has(name)) continue;
     const at = builtin.path.join(storeDir, name);
     const made = await builtin.fsp.stat(at).then(
       (found) => found.mtimeMs,

@@ -13,7 +13,7 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join, relative } from "node:path";
+import { dirname, join, relative, sep } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { hashOf } from "./hash.ts";
 import { binOf, linkOf, readBin } from "./link.ts";
@@ -359,7 +359,10 @@ describe("linkTree", () => {
     expect(result.entries).toBe(1);
     expect(await exists(join(nm, "a"))).toBe(true);
     expect(await exists(join(nm, "tool"))).toBe(false);
-    expect(await readdir(join(nm, ".upm"))).toHaveLength(1);
+    expect((await readdir(join(nm, ".upm"))).sort()).toEqual([
+      expect.stringMatching(/^a@/),
+      "node_modules",
+    ]);
   });
 
   it("links a cycle without hanging", async () => {
@@ -911,7 +914,7 @@ describe("linkTree concurrency", () => {
       relative(nmDir, join(await entryNm(resolution, "b@1.0.0"), "b")),
     );
     expect((await readdir(join(project, "node_modules", ".upm"))).sort()).toEqual(
-      Object.values(await storeKeys(resolution.packages)).sort(),
+      [...Object.values(await storeKeys(resolution.packages)), "node_modules"].sort(),
     );
   });
 
@@ -1059,6 +1062,92 @@ describe("linkTree repair", () => {
     const index = (await store.index(integrityOf(resolution, "a@1.0.0")))!;
     const content = index.files.find((entry: FileEntry) => entry.path === "index.js")!;
     expect((await stat(file)).ino).toBe((await stat(store.blobPath(content))).ino);
+  });
+});
+
+describe("linkTree hoist", () => {
+  const hoistNm = () => join(project, "node_modules", ".upm", "node_modules");
+
+  it("lets a package reach what it never declared, through .upm/node_modules", async () => {
+    const { store, resolution } = await seed([
+      {
+        name: "a",
+        files: { "index.js": "module.exports = require('@s/c')" },
+        deps: { b: "1.0.0" },
+      },
+      { name: "b", files: { "index.js": "" }, deps: { "@s/c": "1.0.0" } },
+      { name: "@s/c", files: { "index.js": "module.exports = 'c'" } },
+    ]);
+    await linkTree(resolution, { dir: project, store });
+
+    // The root's own names stay out: the folder is searched before them.
+    expect((await readdir(hoistNm())).sort()).toEqual(["@s", "b"]);
+    expect(await readLink(join(hoistNm(), "@s", "c"))).toBe(
+      relative(join(hoistNm(), "@s"), join(await entryNm(resolution, "@s/c@1.0.0"), "@s", "c")),
+    );
+    const a = join(project, "node_modules", "a", "index.js");
+    expect(createRequire(a)("./index.js")).toBe("c");
+  });
+
+  it("picks pnpm's version: nearest the root, then the first parent by id", async () => {
+    const { store, resolution } = await seed(
+      [
+        { name: "d2", deps: { ms: "2.0.0" } },
+        { name: "d4", deps: { ms: "2.1.2" } },
+        { name: "send", deps: { debug: "1.0.0", mime: "2.0.0" } },
+        { name: "debug", deps: { mime: "1.0.0" } },
+        { name: "ms", version: "2.0.0" },
+        { name: "ms", version: "2.1.2" },
+        { name: "mime", version: "1.0.0" },
+        { name: "mime", version: "2.0.0" },
+      ],
+      { d2: "1.0.0", d4: "1.0.0", send: "1.0.0" },
+    );
+    await linkTree(resolution, { dir: project, store });
+
+    // Same depth: `d2` sorts first, though `d4`'s is higher. `mime@2` is a level nearer.
+    expect(await readLink(join(hoistNm(), "ms"))).toContain(`${sep}ms@2.0.0-`);
+    expect(await readLink(join(hoistNm(), "mime"))).toContain(`${sep}mime@2.0.0-`);
+  });
+
+  it("converges as the tree changes, and leaves the folder out with hoist off", async () => {
+    const { store, resolution } = await seed([
+      { name: "a", deps: { b: "1.0.0", c: "1.0.0" } },
+      { name: "b" },
+      { name: "c" },
+    ]);
+    await linkTree(resolution, { dir: project, store });
+    expect((await readdir(hoistNm())).sort()).toEqual(["b", "c"]);
+
+    delete resolution.packages["a@1.0.0"]!.dependencies.c;
+    delete resolution.packages["c@1.0.0"];
+    const second = await linkTree(resolution, { dir: project, store });
+    expect(await readdir(hoistNm())).toEqual(["b"]);
+    expect(second.removed).toBe(1);
+
+    // The same tree with the folder gone is not the tree the state recorded.
+    await rm(hoistNm(), { recursive: true });
+    expect((await linkTree(resolution, { dir: project, store })).upToDate).toBe(false);
+    expect(await readdir(hoistNm())).toEqual(["b"]);
+
+    const off = await linkTree(resolution, { dir: project, store, hoist: false });
+    expect(off.upToDate).toBe(false);
+    expect(await exists(hoistNm())).toBe(false);
+    expect((await linkTree(resolution, { dir: project, store, hoist: false })).upToDate).toBe(true);
+  });
+
+  it("leaves out what production drops", async () => {
+    const { store, resolution } = await seed(
+      [
+        { name: "a", deps: { b: "1.0.0" } },
+        { name: "b" },
+        { name: "tool", deps: { t: "1.0.0" }, dev: true },
+        { name: "t", dev: true },
+      ],
+      { a: "1.0.0", tool: "1.0.0" },
+    );
+    await linkTree(resolution, { dir: project, store, production: true });
+    expect(await readdir(hoistNm())).toEqual(["b"]);
   });
 });
 

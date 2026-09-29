@@ -590,6 +590,7 @@ setting has no form there.
 | `min-release-age-exclude`                             | `npm_config_min_release_age_exclude`       | Package names or globs never held back by [release age](#release-age). A `key[]=` list or a comma-separated value. |
 | `offline`                                             | `npm_config_offline`                       | `true` never uses the network, as `--offline`.                                                                     |
 | `prefer-offline`                                      | `npm_config_prefer_offline`                | `true` picks from kept registry documents without revalidating them, as `--prefer-offline`.                        |
+| `hoist`                                               | `npm_config_hoist`                         | `false` leaves out `node_modules/.upm/node_modules`, so packages see only what they declare.                       |
 |                                                       | `npm_config_userconfig`                    | Path of the user config file, instead of `~/.npmrc`.                                                               |
 | `globalconfig` (user config only)                     | `npm_config_globalconfig`                  | Path of the global config file.                                                                                    |
 | `prefix` (user config only)                           | `npm_config_prefix`, `PREFIX`              | The global config file is `<prefix>/etc/npmrc`.                                                                    |
@@ -651,9 +652,12 @@ There is no `upm login` or `upm config set`.
 upm shares cached files between projects instead of downloading and copying them
 again. When nothing has changed, a repeat install does very little work.
 
-Each package sees only the dependencies it declares. Nothing is hoisted, so there
-is no `shamefully-hoist` or hoist pattern to tune, and a missing dependency fails
-right away instead of working by accident.
+Your project sees only the dependencies it declares, so a missing one fails right
+away instead of working by accident. Packages get one fallback, as they do with pnpm
+and bun: `node_modules/.upm/node_modules` holds one link per package name, so a
+package that imports something it forgot to declare still finds it. When a name has
+several versions, the one nearest the root wins. Set `hoist=false` in `.npmrc` to
+turn this off.
 
 The shared file cache lives at `~/.upm/store`. Change it with `UPM_STORE` or
 `--store <path>`; the command-line option takes priority.

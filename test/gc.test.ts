@@ -59,6 +59,16 @@ describe("sweepEntries", () => {
     expect(await entries()).toEqual([".tmp-1234-0"]);
   });
 
+  it("never removes the hoisted names in .upm/node_modules", async () => {
+    await entry("node_modules", { "index.js": "hoisted" });
+    await entry("orphan@2.0.0-bbb", { "index.js": "go" });
+
+    const result = await sweepEntries(project, new Set());
+
+    expect(result.removed).toBe(1);
+    expect(await entries()).toEqual(["node_modules"]);
+  });
+
   it("is a no-op when the project has no .upm yet", async () => {
     expect(await sweepEntries(project, new Set())).toEqual({ removed: 0, bytes: 0 });
   });

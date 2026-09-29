@@ -545,7 +545,8 @@ async function installed(ctx: Context, edit?: Edit, loaded?: Project): Promise<I
     }
     trace("inputs");
     const files = state.tarballs;
-    if (matched && files && sameFiles(dir, files) && treeStanding(dir, state)) {
+    const hoist = settings(ctx).hoist;
+    if (matched && files && sameFiles(dir, files) && treeStanding(dir, state, hoist)) {
       // Read and hashed, or folders read again, this time: recorded so the next install need not.
       if (!stamped || project.learned) {
         await writeState(dir, { ...state, stamps, workspaces: project.proof });
@@ -608,9 +609,11 @@ async function installed(ctx: Context, edit?: Edit, loaded?: Project): Promise<I
   }
 
   // Filling the store stats every file, so skip it when the tree already matches the graph.
+  const { hoist } = settings(ctx);
   const hash = await stateHash(resolution, {
     production: options.production === true,
     store: store.dir,
+    hoist,
   });
   const settled = state?.hash === hash;
   trace("hash");
@@ -673,6 +676,7 @@ async function installed(ctx: Context, edit?: Edit, loaded?: Project): Promise<I
     dir,
     store,
     production: options.production,
+    hoist,
     verify: options.verify,
     hash,
     pool: pool?.ask,
@@ -850,9 +854,10 @@ function inputsOf(ctx: Context, project: Project, lock: string): Inputs {
 
 /** The inputs that are not files. */
 function settingsIn(ctx: Context): Omit<Inputs, "lock" | "manifest" | "workspaces"> {
-  const { registry, scopes } = settings(ctx);
+  const { registry, scopes, hoist } = settings(ctx);
   return {
     production: ctx.options.production === true,
+    hoist,
     // The store the install uses, defaults included: `inputsHash` resolves it, and a default
     // resolved from "" would be the cwd.
     store: storeDir(ctx.options.store),

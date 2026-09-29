@@ -85,6 +85,8 @@ export function sameStamp(a: Stamp | undefined, b: Stamp | undefined): boolean {
 export interface StateFlags {
   production: boolean;
   store: string;
+  /** `.upm/node_modules` is linked unless this is false. */
+  hoist?: boolean;
 }
 
 /** Everything the resolution and the linked tree are a function of, besides the store's content. */
@@ -97,6 +99,7 @@ export interface Inputs {
   workspaces?: [string, unknown][];
   production: boolean;
   store: string;
+  hoist: boolean;
   /** The registry and scope registries the `.npmrc` gives, as `hosts` reads them. */
   hosts: unknown;
   /** `currentPlatform()`. */
@@ -117,8 +120,8 @@ export function inputsHash(inputs: Inputs): Promise<string> {
 
 /** The inputs that are not the two files, as one string. */
 export function settingsOf(inputs: Omit<Inputs, "lock" | "manifest" | "workspaces">): string {
-  const { production, store, hosts, platform } = inputs;
-  return JSON.stringify([production, builtin.path.resolve(store), hosts, platform]);
+  const { production, store, hoist, hosts, platform } = inputs;
+  return JSON.stringify([production, builtin.path.resolve(store), hoist, hosts, platform]);
 }
 
 /**
@@ -132,6 +135,7 @@ export async function stateHash(resolution: Resolution, flags: StateFlags): Prom
     "upm-state-1",
     await graphHash(resolution),
     `production:${flags.production ? 1 : 0}`,
+    `hoist:${flags.hoist === false ? 0 : 1}`,
     `store:${builtin.path.resolve(flags.store)}`,
   ];
   for (const id of Object.keys(resolution.packages).sort()) {
