@@ -147,7 +147,8 @@ These need a scope decision, not just a patch:
   with that consumer's peer range. `--verify` reports such conflicts; it cannot fix them.
 - An alias does not supply a peer under the package's real name.
 - `dedupe` prefers versions already locked; it is not an upgrade strategy. A fresh resolve
-  requires removing the lockfile (`upm update` is the url tarball gap above).
+  requires removing the lockfile and `node_modules`, whose copy of the lockfile an install
+  takes back (`upm update` is the url tarball gap above).
 - The tarball spool is Node-only (it runs in the unpack worker); the portable tar reader
   still buffers whole files.
 - Off Node, version picking has no target Node version for `engines.node`. Add an explicit

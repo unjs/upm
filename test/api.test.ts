@@ -303,6 +303,146 @@ describe("api", () => {
     await expect(upm.install({ ...base, frozen: true })).rejects.toMatchObject({ code: "ELOCK" });
   });
 
+  describe("with no lockfile beside the tree", () => {
+    const lockFile = () => join(dir, "upm.lock");
+    const copy = () => join(dir, "node_modules", ".upm.lock");
+    let requests: string[];
+    beforeEach(() => {
+      requests = [];
+      server.on("request", (request) => void requests.push(request.url ?? ""));
+    });
+    /** The install resolved: the lockfile was written from a walk, not taken from the tree. */
+    const resolved = () => lines.some((line) => line.startsWith(`wrote ${lockFile()} — `));
+
+    it("takes the tree's lockfile back, with no store and no registry, while package.json matches", async () => {
+      await writeFile(join(dir, "package.json"), '{"name":"demo","dependencies":{"nanoid":"^5"}}');
+      await upm.install(base);
+      const text = await readFile(lockFile(), "utf8");
+      expect(await readFile(copy(), "utf8")).toBe(text);
+
+      // As a benchmark leaves it: the tree, and no lockfile, store or kept documents.
+      await rm(lockFile());
+      await rm(base.store!, { recursive: true });
+      requests.length = 0;
+      expect(await upm.install(base)).toMatchObject({ packages: 1, upToDate: true });
+      expect(requests).toEqual([]);
+      expect(await readFile(lockFile(), "utf8")).toBe(text);
+      expect(lines).toContain(`wrote ${lockFile()} from the tree in node_modules`);
+      // Written back, it is the lockfile again: the next install is the ordinary no-op.
+      expect((await upm.install(base)).upToDate).toBe(true);
+
+      // Other settings than the tree's: the copy is read and checked, not taken off the state.
+      await rm(lockFile());
+      expect(await upm.install({ ...base, verify: true })).toMatchObject({ packages: 1 });
+      expect(requests).toEqual(["/nanoid/-/nanoid-5.0.0.tgz"]); // for the store, not the lock
+      expect(await readFile(lockFile(), "utf8")).toBe(text);
+
+      // A link gone: the copy still comes back, and the tree is linked again from it.
+      await rm(lockFile());
+      await rm(join(dir, "node_modules", "nanoid"));
+      lines.length = 0;
+      expect(await upm.install(base)).toMatchObject({ upToDate: false });
+      expect(resolved()).toBe(false);
+      expect(await readFile(lockFile(), "utf8")).toBe(text);
+      expect(await readFile(join(dir, "node_modules", "nanoid", "index.js"), "utf8")).toContain(
+        "nanoid",
+      );
+
+      // Never under frozen: no lockfile is what it reports.
+      await rm(lockFile());
+      await expect(upm.install({ ...base, frozen: true })).rejects.toMatchObject({ code: "ELOCK" });
+      await expect(stat(lockFile())).rejects.toThrow();
+    });
+
+    it("resolves afresh once package.json has moved, or the copy cannot be read", async () => {
+      await writeFile(join(dir, "package.json"), '{"name":"demo","dependencies":{"nanoid":"^5"}}');
+      await upm.install(base);
+      const text = await readFile(lockFile(), "utf8");
+
+      // A range the copy was not made from: resolved, as with no tree, and the copy follows.
+      await writeFile(join(dir, "package.json"), '{"name":"demo","dependencies":{"nanoid":"5"}}');
+      await rm(lockFile());
+      lines.length = 0;
+      await upm.install(base);
+      expect(resolved()).toBe(true);
+      const moved = await readFile(lockFile(), "utf8");
+      expect(moved).not.toBe(text);
+      expect(await readFile(copy(), "utf8")).toBe(moved);
+
+      await writeFile(copy(), "{ torn");
+      await rm(lockFile());
+      lines.length = 0;
+      await upm.install(base);
+      expect(resolved()).toBe(true);
+      expect(await readFile(lockFile(), "utf8")).toBe(moved);
+
+      // An edit is a package.json the copy was not made from.
+      await rm(lockFile());
+      lines.length = 0;
+      await upm.add(["nanoid@^5.0.0"], base);
+      expect(resolved()).toBe(true);
+      expect(await readFile(copy(), "utf8")).toContain('"nanoid": "^5.0.0"');
+    });
+
+    it("keeps no copy for a tree another manager's lockfile changed", async () => {
+      const manifest = { name: "demo", devDependencies: { nanoid: "^5" } };
+      await writeFile(join(dir, "package.json"), JSON.stringify(manifest));
+      await upm.install(base);
+      await rm(lockFile());
+      const nanoid = {
+        version: "5.0.0",
+        resolved: `${registry()}/nanoid/-/nanoid-5.0.0.tgz`,
+        integrity: hashOf(tarball),
+        dev: true,
+      };
+      const packages = { "": manifest, "node_modules/nanoid": nanoid };
+      await writeFile(
+        join(dir, "package-lock.json"),
+        JSON.stringify({ lockfileVersion: 3, packages }),
+      );
+      // The same tree: its copy still says what it holds.
+      expect((await upm.install(base)).upToDate).toBe(true);
+      expect(await readFile(copy(), "utf8")).toContain("nanoid@5.0.0");
+      // Another tree: no copy, so none comes back once that file goes.
+      expect((await upm.install({ ...base, production: true })).upToDate).toBe(false);
+      await expect(stat(copy())).rejects.toThrow();
+      await rm(join(dir, "package-lock.json"));
+      lines.length = 0;
+      await upm.install(base);
+      expect(resolved()).toBe(true);
+    });
+
+    it("takes back a workspace tree's lockfile", async () => {
+      await mkdir(join(dir, "packages", "a"), { recursive: true });
+      await writeFile(
+        join(dir, "package.json"),
+        JSON.stringify({ name: "root", workspaces: ["packages/*"], dependencies: { a: "*" } }),
+      );
+      await writeFile(
+        join(dir, "packages", "a", "package.json"),
+        JSON.stringify({ name: "a", version: "1.0.0", dependencies: { nanoid: "^5" } }),
+      );
+      await upm.install(base);
+      const text = await readFile(lockFile(), "utf8");
+      await rm(lockFile());
+      await rm(base.store!, { recursive: true });
+      requests.length = 0;
+      expect(await upm.install(base)).toMatchObject({ workspaces: 1, upToDate: true });
+      expect(requests).toEqual([]);
+      expect(await readFile(lockFile(), "utf8")).toBe(text);
+
+      // A workspace's own range moved: resolved again.
+      await writeFile(
+        join(dir, "packages", "a", "package.json"),
+        JSON.stringify({ name: "a", version: "1.0.0", dependencies: { nanoid: "5" } }),
+      );
+      await rm(lockFile());
+      lines.length = 0;
+      await upm.install(base);
+      expect(resolved()).toBe(true);
+    });
+  });
+
   it("refuses options a command cannot take, before reading anything", async () => {
     const nowhere = { dir: join(dir, "missing") };
     const bad = [

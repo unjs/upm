@@ -14,6 +14,7 @@ import {
   fromCheckedLockfile,
   fromLockfile,
   LOCKFILE,
+  parseLockfile,
   readLockfile,
   sameTree,
   toLockfile,
@@ -53,11 +54,14 @@ import type { Spec } from "./spec.ts";
 import {
   inputsHash,
   readState,
+  readTreeLock,
   sameStamp,
   settingsOf,
   stampOf,
   stateHash,
+  treeLockPath,
   writeState,
+  writeTreeLock,
 } from "./state.ts";
 import type { InstallState, Inputs, Stamp } from "./state.ts";
 import { createStore, storeDir } from "./store.ts";
@@ -392,6 +396,8 @@ interface Context {
   config?: Config;
   /** Which lockfile the project installs from, once `lockSource` has looked. */
   source?: LockSource;
+  /** The lockfile `restoreLock` read and wrote back, so `plan` need not read it again. */
+  restored?: Lockfile;
   /** Keys of packages whose bins another manager's lockfile left out. */
   binless?: string[];
   /** Another manager's lockfile as read, stamped first: a rewrite after is a new install's. */
@@ -469,7 +475,7 @@ export async function install(options: InstallOptions = {}): Promise<InstallResu
 
 /**
  * Resolve every range again, preferring the versions the lockfile already has, then install.
- * Deleting the lockfile is how to resolve everything afresh.
+ * Deleting the lockfile and node_modules is how to resolve everything afresh.
  */
 export async function dedupe(options: DedupeOptions = {}): Promise<InstallResult> {
   return await installTree(await open({ ...options, frozen: false }, true));
@@ -483,6 +489,7 @@ async function installTree(ctx: Context, edit?: Edit, loaded?: Project): Promise
   // Before the lockfile: the pool wants to know now whether there is a tree to compare.
   const state = options.verify ? undefined : await readState(dir);
   trace("state");
+  if (!options.frozen) await restoreLock(ctx, project, state);
   // The state names the inputs it was made from: the same bytes and settings again, with the
   // tree still standing, is a no-op install that never reads the graph. The two files'
   // stamps say "same bytes" without a read or a hash; failing that, the hash decides. A local
@@ -568,6 +575,10 @@ async function installTree(ctx: Context, edit?: Edit, loaded?: Project): Promise
   });
   const settled = state?.hash === hash;
   trace("hash");
+  // Before the tree changes, so a failed link cannot leave the old copy behind it.
+  if (!settled && lockSource(ctx, dir).foreign) {
+    await builtin.fsp.rm(treeLockPath(dir), { force: true });
+  }
 
   const fill = async (into: Store): Promise<void> => {
     await Promise.all(
@@ -640,6 +651,7 @@ async function installTree(ctx: Context, edit?: Edit, loaded?: Project): Promise
   });
   await filling;
   await store.flush();
+  await keepTreeLock(ctx, dir, linked.upToDate, inputs);
   trace("linked");
   const { entries, linked: links, copied, reused, repaired, pooled, bins, removed } = linked;
   return {
@@ -662,6 +674,57 @@ const NOTHING = {
   bins: 0,
   removed: 0,
 };
+
+/**
+ * No lockfile, but the tree in node_modules keeps a copy of the one it was linked from: when
+ * that still describes package.json, it is written back and the install goes on from it, as
+ * npm and pnpm take theirs from the tree. Otherwise the install resolves as without a tree:
+ * the copy never outlives a change to package.json. Never under `frozen`, where no lockfile
+ * is an error.
+ */
+async function restoreLock(ctx: Context, project: Project, state?: InstallState): Promise<void> {
+  const { dir, manifest, workspaces } = project;
+  const source = lockSource(ctx, dir);
+  if (!source.missing) return;
+  const text = readTreeLock(dir);
+  if (text === undefined) return;
+  // The state's inputs are these bytes with this package.json: that install's lockfile described
+  // it, so there is nothing to read. Else the copy is read and checked, as a lockfile is.
+  const { inputs } = state ?? {};
+  const same = inputs !== undefined && inputs === (await inputsHash(inputsOf(ctx, project, text)));
+  if (!same) {
+    try {
+      ctx.restored = parseLockfile(text);
+    } catch {
+      return; // torn, or another version's: resolve
+    }
+    if (!sameTree(ctx.restored, manifest, workspaces)) {
+      ctx.restored = undefined;
+      return;
+    }
+  }
+  await writeLockfile(dir, text);
+  ctx.source = { path: source.path };
+  ctx.log(`wrote ${source.path} from the tree in node_modules`, "info");
+}
+
+/**
+ * The tree's copy of the lockfile it was just linked from, for `restoreLock`. Only `upm.lock`'s:
+ * a tree another manager's lockfile changed has had its copy removed before the link.
+ */
+async function keepTreeLock(
+  ctx: Context,
+  dir: string,
+  upToDate: boolean,
+  text?: string,
+): Promise<void> {
+  if (lockSource(ctx, dir).foreign) return;
+  text ??= await lockText(ctx, dir);
+  // An up-to-date tree may still have a new lockfile: the same versions, other ranges.
+  if (text !== undefined && !(upToDate && readTreeLock(dir) === text)) {
+    await writeTreeLock(dir, text);
+  }
+}
 
 /** The lockfile's bytes, or nothing when there is none. */
 async function lockText(ctx: Context, dir: string): Promise<string | undefined> {
@@ -1245,7 +1308,9 @@ async function plan(
     if (ctx.dedupe) throw (await import("./foreign-lock.ts")).beside(foreign, "dedupe");
     return await foreignLock(ctx, project, foreign);
   }
-  const existing = frozen ? await readLockfile(dir) : await currentLock(ctx, dir);
+  const existing = frozen
+    ? await readLockfile(dir)
+    : (ctx.restored ?? (await currentLock(ctx, dir)));
   trace("lockread");
   // A local tarball is read like package.json: other bytes in the file make the lockfile stale.
   const moved = existing ? await movedIn(ctx, dir, existing, walk.tarball, recorded) : [];
@@ -1528,8 +1593,8 @@ async function saveManifest({ file, raw, manifest }: Edit): Promise<void> {
 
 /**
  * What a stale lockfile still has to say: every package whose range did not move stays where
- * it is, so an edit to package.json resolves only what it changed. Deleting the lockfile is
- * how to resolve everything afresh.
+ * it is, so an edit to package.json resolves only what it changed. Deleting the lockfile and
+ * node_modules is how to resolve everything afresh.
  */
 function keep(
   existing: Lockfile | undefined,
@@ -1577,6 +1642,8 @@ interface LockSource {
   path: string;
   /** Set when the file is another manager's, which upm reads and never writes. */
   foreign?: ForeignFile;
+  /** Set when there is no lockfile at all: `path` is where `upm.lock` would be. */
+  missing?: true;
 }
 
 function lockSource(ctx: Context, dir: string): LockSource {
@@ -1591,7 +1658,9 @@ function lockSource(ctx: Context, dir: string): LockSource {
     throw fail(`${found.join(" and ")} both lock ${dir}: delete all but one`, "ELOCK");
   }
   const foreign = found[0];
-  return (ctx.source = foreign ? { path: join(dir, foreign), foreign } : { path: ours });
+  return (ctx.source = foreign
+    ? { path: join(dir, foreign), foreign }
+    : { path: ours, missing: true });
 }
 
 /** Another manager's lockfile as upm's, when it still describes package.json. */

@@ -94,7 +94,9 @@ Notes
   lock saves all platforms and dev packages; install selects this platform.
   add (also install <spec>...) and remove edit package.json, then install, keeping other locks.
   add moves groups; remove clears all groups. Explicit ranges stay; names, * and tags
-  save ^version unless --exact. dedupe favors locked versions; delete ${LOCKFILE} for a fresh resolve.
+  save ^version unless --exact. dedupe favors locked versions; delete ${LOCKFILE} and
+  node_modules for a fresh resolve: install takes back the lockfile node_modules was installed
+  from while it matches package.json.
   A url or a path to a .tgz is a tarball dependency, locked by where it is. add reads a
   path from the current directory; alone, it names the tarball by its package.json.
   With no ${LOCKFILE}, install reads package-lock.json, pnpm-lock.yaml or bun.lock and writes

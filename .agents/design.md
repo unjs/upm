@@ -87,6 +87,13 @@ the `.upm` entry names — without reading the graph. Both trust the state's `en
 what a resolution is a function of (a new `.npmrc` key that changes hosts, say) must be added
 to the inputs (`inputsOf` in `src/api.ts`), or the short check lies.
 
+The tree also keeps a copy of the lockfile it was last linked from (`node_modules/.upm.lock`).
+With no lockfile, an install writes it back only when it still describes package.json, as
+`sameTree` decides for any lockfile; a copy that does not is ignored, never used to keep
+versions, so a changed package.json still resolves as if there were no tree. The copy is a
+lockfile, not proof of the tree: the state still decides what is on disk. A frozen install
+never reads it, and a tree another manager's lockfile changed keeps none.
+
 Shared hardlinks make writes affect other projects. Treat installed content as
 immutable. Integrity must pass before untrusted archive content is written to the
 shared store, and an index must not expose an unfinished package. Content becomes

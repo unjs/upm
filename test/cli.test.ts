@@ -866,7 +866,13 @@ describe("exec", () => {
       expect(requests.some((url) => url.startsWith("/lib"))).toBe(false);
       const [project] = await readdir(join(dir, "home", ".upm", "exec"));
       const installed = join(dir, "home", ".upm", "exec", project!, "node_modules");
-      expect((await readdir(installed)).sort()).toEqual([".bin", ".upm", ".upm.json", "hi"]);
+      expect((await readdir(installed)).sort()).toEqual([
+        ".bin",
+        ".upm",
+        ".upm.json",
+        ".upm.lock",
+        "hi",
+      ]);
       expect(await readdir(work)).not.toContain("node_modules");
 
       // The same versions from another registry are another project, and that registry is asked.

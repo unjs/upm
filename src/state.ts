@@ -9,6 +9,7 @@ import { replaceFile } from "./util.ts";
 import type { Resolution } from "./resolve.ts";
 
 export const STATE_FILE = ".upm.json";
+export const TREE_LOCK = ".upm.lock";
 
 export interface InstallState {
   version: 1;
@@ -157,12 +158,37 @@ export async function readState(dir: string): Promise<InstallState | undefined> 
 }
 
 export async function writeState(dir: string, state: InstallState): Promise<void> {
-  const file = statePath(dir);
+  await writeInside(statePath(dir), `${JSON.stringify(state, undefined, 2)}\n`);
+}
+
+/**
+ * A copy of the lockfile the tree was last linked from, as npm and pnpm keep one in
+ * `node_modules`: an install that finds no lockfile takes this one back while it still
+ * describes package.json. It says which versions to install, never that they are installed.
+ */
+export function treeLockPath(dir: string): string {
+  return builtin.path.join(dir, "node_modules", TREE_LOCK);
+}
+
+/** The copy's text, or nothing. */
+export function readTreeLock(dir: string): string | undefined {
+  try {
+    return builtin.fs.readFileSync(treeLockPath(dir), "utf8");
+  } catch {
+    return undefined;
+  }
+}
+
+export async function writeTreeLock(dir: string, text: string): Promise<void> {
+  await writeInside(treeLockPath(dir), text);
+}
+
+async function writeInside(file: string, text: string): Promise<void> {
   const temp = `${file}.${pid}-${globalThis.crypto.randomUUID()}.tmp`;
   try {
-    await builtin.fsp.mkdir(builtin.path.join(dir, "node_modules"), { recursive: true });
-    await builtin.fsp.writeFile(temp, `${JSON.stringify(state, undefined, 2)}\n`);
-    await replaceFile(temp, file); // atomic, so a reader never sees a half-written state
+    await builtin.fsp.mkdir(builtin.path.dirname(file), { recursive: true });
+    await builtin.fsp.writeFile(temp, text);
+    await replaceFile(temp, file); // atomic, so a reader never sees a half-written file
   } catch (error) {
     await builtin.fsp.rm(temp, { force: true });
     throw fail(`cannot write ${file}: ${(error as Error).message}`);

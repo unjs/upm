@@ -241,11 +241,12 @@ export async function readLockfile(dir: string): Promise<Lockfile | undefined> {
   return parseLockfile(text);
 }
 
-export async function writeLockfile(dir: string, lock: Lockfile): Promise<void> {
+/** The lockfile, or text already in its format. */
+export async function writeLockfile(dir: string, lock: Lockfile | string): Promise<void> {
   const file = builtin.path.join(dir, LOCKFILE);
   const temp = `${file}.${pid}-${globalThis.crypto.randomUUID()}.tmp`;
   try {
-    await builtin.fsp.writeFile(temp, formatLockfile(lock));
+    await builtin.fsp.writeFile(temp, typeof lock === "string" ? lock : formatLockfile(lock));
     await replaceFile(temp, file); // atomic, so a reader never sees a half-written lockfile
   } catch (error) {
     await builtin.fsp.rm(temp, { force: true });

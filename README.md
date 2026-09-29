@@ -122,8 +122,8 @@ upm remove nanoid
 
 There is no `update` command yet. Use `add` with a new version or range to change a
 package. `dedupe` is not an update command: it prefers already-locked versions.
-To choose fresh versions for the whole project, remove `upm.lock` and install
-again. This can change any version allowed by `package.json`.
+To choose fresh versions for the whole project, remove `upm.lock` and `node_modules`,
+then install again. This can change any version allowed by `package.json`.
 
 ### Install from a tarball
 
@@ -293,6 +293,13 @@ upm ci --omit=dev                    # the same, in npm's words
 `--frozen-lockfile` fails if `upm.lock` is missing, invalid, or out of date with the
 project. It does not select versions or rewrite the lockfile. Missing cached
 packages still need to be downloaded, so this is not an offline mode.
+
+An install that links `node_modules` from `upm.lock` leaves a copy of it in
+`node_modules/.upm.lock`, as npm and pnpm keep one. When `upm.lock` is missing and that
+copy still matches `package.json`, `upm install` (and `dedupe`) writes it back and goes on
+from it: a tree that is already installed is then up to date without the store or the
+network. If `package.json` has changed, the copy is ignored and the install resolves as if
+there were no `node_modules`. `upm lock` and `--frozen-lockfile` never read the copy.
 
 Registry documents that upm reads while resolving are kept in the store's `metadata`
 directory, under paths named after the registry and package
