@@ -39,7 +39,7 @@ const NPM_COMMANDS = `  access, config, create, deprecate, dist-tag, info, init,
   unpublish, version, view, whoami`;
 const NPM = new Set(NPM_COMMANDS.trim().split(/,\s+/));
 
-const USAGE = `upm — a minimal npm-compatible package manager
+const USAGE = `upm ${pkg.version} — a minimal npm-compatible package manager
 
 Usage
   upm install [--production] [--frozen-lockfile] [--verify]    (also i; ci is frozen)

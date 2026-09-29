@@ -564,7 +564,7 @@ describe("colors", () => {
       vi.unstubAllGlobals();
     }
     expect(lines).toHaveLength(1);
-    expect(lines[0]).toMatch(/^upm — a minimal[\s\S]*\nUsage\n/);
+    expect(lines[0]).toMatch(/^upm \d+\.\d+\.\d+\S* — a minimal[\s\S]*\nUsage\n/);
     expect(lines[0]).toContain("\nOptions\n");
     expect(lines[0]).toContain("\nExamples\n");
   });
@@ -1188,11 +1188,11 @@ describe("startup budget", () => {
     // 115/112 ms); 145,049 with each workspace's links in the state (43/42 and 107/107 ms);
     // 147,156 with tarballs fetched through the agent's callbacks (41/42 and 108/108 ms);
     // 147,684 with the progress hooks and `--no-progress`, the bar itself lazy; 147,803 with --verbose;
-    // 147,986 with --version.
+    // 147,999 with --version and the version in the usage.
     const modules = await reachable();
     const bytes = [...modules.values()].reduce((total, size) => total + size, 0);
     expect(modules.size).toBeLessThanOrEqual(27); // `upm.ts` is the bin, `cli.ts` the program
-    expect(bytes).toBeLessThanOrEqual(147_986);
+    expect(bytes).toBeLessThanOrEqual(147_999);
     // Found through `import()` by the commands that read a project, like the pools: each holds
     // its worker's whole code in the build.
     const lazy = [
