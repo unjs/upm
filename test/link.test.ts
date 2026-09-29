@@ -837,7 +837,9 @@ describe("linkTree concurrency", () => {
     ]);
     const nm = join(project, "node_modules");
     const realSymlink = builtin.fsp.symlink;
-    const taken = new Set([join(nm, "a"), join(nm, ".bin", "a")]);
+    // On Windows a bin is a shim, written as a file rather than linked.
+    const bins = process.platform === "win32" ? [] : [join(nm, ".bin", "a")];
+    const taken = new Set([join(nm, "a"), ...bins]);
     vi.spyOn(builtin.fsp, "symlink").mockImplementation(async (target, path, type) => {
       if (taken.delete(String(path))) await realSymlink("elsewhere", path, type);
       return await realSymlink(target, path, type);

@@ -217,10 +217,10 @@ describe("linkTree with workspaces", () => {
     const again = await linkTree(resolution, { dir: project, store, verify: true });
     expect(again.removed).toBe(2);
     expect(await Promise.all(nms.map((nm) => tree(join(project, nm))))).toEqual(fresh);
-    expect(fresh[1]).toMatchObject({
-      "@s/b": "-> ../../../b",
-      ".bin/nanoid": "-> ../nanoid/bin.js",
-    });
+    // The link as the tree spells it; the bin through `binOf`, since on Windows it is a shim.
+    expect(fresh[1]).toMatchObject({ "@s/b": "-> ../../../b" });
+    const bin = join(project, "packages", "a", "node_modules", ".bin", "nanoid");
+    expect(await binOf(bin)).toBe("../nanoid/bin.js");
   });
 
   it("repairs a workspace link that points elsewhere", async () => {
