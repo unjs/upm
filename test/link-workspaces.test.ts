@@ -4,6 +4,7 @@ import {
   lstat,
   mkdir,
   readFile,
+  readdir,
   realpath,
   rename,
   rm,
@@ -196,6 +197,30 @@ describe("linkTree with workspaces", () => {
     );
     // The workspace's own files are untouched: only links were removed.
     expect(await read(join(project, "packages", "b", "cli.js"))).toBe("b");
+  });
+
+  it("gives new tops the links it converges old ones to", async () => {
+    const scoped: WorkspaceFixture = { ...B, name: "@s/b" };
+    const a = { ...A, deps: { nanoid: "1.0.0", "@s/b": "link:packages/b" } };
+    const rootDeps = { a: "link:packages/a", "@s/b": "link:packages/b", nanoid: "1.0.0" };
+    const { store, resolution } = await seed([NANOID], [a, scoped], rootDeps);
+    const nms = ["node_modules", "packages/a/node_modules", "packages/b/node_modules"];
+    await linkTree(resolution, { dir: project, store });
+    const fresh = await Promise.all(nms.map((nm) => tree(join(project, nm))));
+
+    // Stale links and a wrong one in the tops that are now there: the same install converges.
+    await symlink("../nowhere", join(project, "node_modules", "stale"));
+    await symlink("../nowhere", join(project, "packages", "a", "node_modules", "@s", "stale"));
+    const wrong = join(project, "packages", "a", "node_modules", "nanoid");
+    await rm(wrong);
+    await symlink("../../b", wrong);
+    const again = await linkTree(resolution, { dir: project, store, verify: true });
+    expect(again.removed).toBe(2);
+    expect(await Promise.all(nms.map((nm) => tree(join(project, nm))))).toEqual(fresh);
+    expect(fresh[1]).toMatchObject({
+      "@s/b": "-> ../../../b",
+      ".bin/nanoid": "-> ../nanoid/bin.js",
+    });
   });
 
   it("repairs a workspace link that points elsewhere", async () => {
@@ -405,6 +430,20 @@ function stubFetch(bodies: Record<string, Uint8Array>): typeof fetch {
     if (!bytes) return new Response("missing", { status: 404 });
     return new Response(bytes as unknown as BodyInit);
   }) as typeof fetch;
+}
+
+/** A top's links and directories, `.upm` left out. */
+async function tree(nm: string, prefix = ""): Promise<Record<string, string>> {
+  const out: Record<string, string> = {};
+  for (const name of (await readdir(join(nm, prefix)).catch(() => [])).sort()) {
+    const rel = prefix + name;
+    if (rel === ".upm" || rel.startsWith(".upm.")) continue;
+    const info = await lstat(join(nm, rel));
+    if (info.isSymbolicLink()) out[rel] = `-> ${await linkOf(join(nm, rel))}`;
+    else if (info.isDirectory()) Object.assign(out, { [rel]: "dir" }, await tree(nm, `${rel}/`));
+    else out[rel] = "file";
+  }
+  return out;
 }
 
 async function read(path: string): Promise<string> {

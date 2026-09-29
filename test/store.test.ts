@@ -57,6 +57,21 @@ describe("createStore", () => {
     expect(await store.index(hashOf(tarball))).toEqual(index);
   });
 
+  it("remembers an index size it found, and asks the disk again after a miss", async () => {
+    const tarball = makeTarball([{ path: "a.js", data: "alpha" }]);
+    const store = createStore({ dir, fetch: stubFetch(tarball) });
+    const integrity = hashOf(tarball);
+
+    expect(store.indexSize(integrity)).toBe(0);
+    await store.add("https://reg/p.tgz", integrity);
+    const size = store.indexSize(integrity);
+    expect(size).toBe((await stat(store.indexPath(integrity))).size);
+    // Found once, it is not asked of the disk again, as a read index is not read again.
+    await rm(store.indexPath(integrity));
+    expect(store.indexSize(integrity)).toBe(size);
+    expect(createStore({ dir }).indexSize(integrity)).toBe(0);
+  });
+
   it("holds tarballs against the ceiling, not against the size of the tree", async () => {
     // A tarball counts against the ceiling from the moment its bytes start arriving until it
     // has been written out as content. Downloading past that point would queue whole tarballs
