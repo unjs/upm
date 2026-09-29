@@ -174,6 +174,7 @@ export function createStore(options: StoreOptions = {}): Store {
   const loaded = new Map<string, PackageIndex>();
   // And asks where each is three or four times: the spelling costs a regex and a normalize.
   const paths = new Map<string, string>();
+  const sizes = new Map<string, number>();
   const indexPath = (integrity: string): string => {
     let path = paths.get(integrity);
     if (path === undefined) paths.set(integrity, (path = writer.indexPath(integrity)));
@@ -509,17 +510,21 @@ export function createStore(options: StoreOptions = {}): Store {
     index: readIndex,
     pending: (integrity) => pending.get(integrity),
     indexPath,
-    // An integrity the store cannot spell has no index; `add` is where it is reported.
+    // An integrity the store cannot spell has no index; `add` is where it is reported. One found
+    // is remembered: a warm install asks for each up to three times. A miss is asked again.
     indexSize(integrity) {
+      let size = sizes.get(integrity);
+      if (size !== undefined) return size;
       try {
-        return Math.max(0, sizeOfSync(indexPath(integrity)));
+        size = Math.max(0, sizeOfSync(indexPath(integrity)));
       } catch {
         return 0;
       }
+      if (size > 0) sizes.set(integrity, size);
+      return size;
     },
     async ensure(tarball, integrity) {
-      if (!verify && loaded.has(integrity)) return;
-      if (!verify && sizeOfSync(indexPath(integrity)) > 0) return;
+      if (!verify && (loaded.has(integrity) || store.indexSize(integrity) > 0)) return;
       await store.add(tarball, integrity);
     },
     async add(tarball, integrity) {

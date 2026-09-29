@@ -607,12 +607,15 @@ async function installTree(ctx: Context, edit?: Edit, loaded?: Project): Promise
   // The link runs under the fill: each entry is built as its tarball lands, so the last
   // tarballs' tail hides the link instead of preceding it. A failed download is what the
   // caller hears, not the missing entry the link sees: the catch waits for the fill first.
-  const filling = settled
-    ? undefined
-    : fill(store).finally(() => {
-        trace("fill");
-        if (tracing) trace("filled", take()); // the main thread's memory at that point
-      });
+  // A store that holds every index already has nothing to fill: the linker then reads no index
+  // for a count as each "lands", and builds from the start. 64 ms of `large`'s link.
+  const filling =
+    settled || (!options.verify && wanted.every((pkg) => store.indexSize(pkg.integrity) > 0))
+      ? undefined
+      : fill(store).finally(() => {
+          trace("fill");
+          if (tracing) trace("filled", take()); // the main thread's memory at that point
+        });
   filling?.catch(() => {});
   // The inputs, for the state file, read back off disk: `plan` may just have written them.
   const inputs = project.workspaces.length === 0 ? await lockText(ctx, dir) : undefined;
