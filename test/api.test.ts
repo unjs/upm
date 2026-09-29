@@ -963,3 +963,34 @@ describe("tarball dependencies", () => {
     });
   });
 });
+
+describe("the order a store is filled in", () => {
+  const pkg = (name: string, dependencies: Record<string, string> = {}, local?: string) => ({
+    name,
+    version: local ? `link:${local}` : "1.0.0",
+    resolved: "",
+    integrity: "",
+    dependencies,
+    optional: false,
+    dev: false,
+    bin: {},
+    ...(local && { local }),
+  });
+
+  it("asks for what the tops depend on first, then breadth first, and drops nothing", async () => {
+    const { nearestFirst } = await import("../src/api.ts");
+    const packages = {
+      "a-leaf@1.0.0": pkg("a-leaf"),
+      "b-mid@1.0.0": pkg("b-mid", { "a-leaf": "1.0.0" }),
+      "z-top@1.0.0": pkg("z-top", { "b-mid": "1.0.0" }),
+      "y-ws-dep@1.0.0": pkg("y-ws-dep"),
+      "stray@1.0.0": pkg("stray"),
+      "ws@link:packages/ws": pkg("ws", { "y-ws-dep": "1.0.0" }, "packages/ws"),
+    };
+    const resolution = { root: { dependencies: { "z-top": "1.0.0" } }, packages, warnings: [] };
+    const wanted = Object.values(packages).filter((each) => !("local" in each));
+    const order = nearestFirst(resolution, wanted).map((each) => each.name);
+    // Key order would have been a-leaf, b-mid, stray, y-ws-dep, z-top.
+    expect(order).toEqual(["z-top", "y-ws-dep", "b-mid", "a-leaf", "stray"]);
+  });
+});

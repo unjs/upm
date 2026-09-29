@@ -28,6 +28,7 @@ import { pickManifest } from "./pick.ts";
 import { createRegistry, hosts } from "./registry.ts";
 import type { BaseFor, Registry } from "./registry.ts";
 import {
+  allDeps,
   currentPlatform,
   declaredWorkspaces,
   filterPlatform,
@@ -38,7 +39,7 @@ import {
   runsOn,
   unmetPeers,
 } from "./resolve.ts";
-import type { ResolveOptions, Resolution, RootManifest } from "./resolve.ts";
+import type { ResolvedPackage, ResolveOptions, Resolution, RootManifest } from "./resolve.ts";
 import {
   binDirs,
   quote,
@@ -605,7 +606,7 @@ async function installed(ctx: Context, edit?: Edit, loaded?: Project): Promise<I
 
   const fill = async (into: Store): Promise<void> => {
     await Promise.all(
-      wanted.map(async (pkg) => {
+      nearestFirst(resolution, wanted).map(async (pkg) => {
         try {
           await into.ensure(tarballOf(dir, pkg.resolved, pkg.source), pkg.integrity);
         } catch (error) {
@@ -834,6 +835,34 @@ function settingsIn(ctx: Context): Omit<Inputs, "lock" | "manifest" | "workspace
     hosts: [registry, scopes],
     platform: currentPlatform(),
   };
+}
+
+/**
+ * `wanted` in the order the tops reach it, their own dependencies first. The fill asks for
+ * every tarball at once and the download gate serves them in that order; in key order `next`
+ * and `typescript` waited behind hundreds of small tarballs and were the install's last. A
+ * top's own dependencies are where the big ones tend to be, as the walk has it with no lockfile.
+ */
+export function nearestFirst(
+  resolution: Resolution,
+  wanted: ResolvedPackage[],
+): ResolvedPackage[] {
+  const { packages } = resolution;
+  const order = new Set<ResolvedPackage>();
+  const reach = (deps: Record<string, string>) => {
+    for (const [name, version] of Object.entries(deps)) {
+      const pkg = packages[`${name}@${version}`];
+      if (pkg) order.add(pkg);
+    }
+  };
+  reach(resolution.root.dependencies);
+  for (const pkg of Object.values(packages)) if (pkg.local !== undefined) reach(allDeps(pkg));
+  // Breadth first: a Set's iteration visits what is added to it while it runs.
+  for (const pkg of order) reach(allDeps(pkg));
+  const kept = new Set(wanted);
+  const first = [...order].filter((pkg) => kept.has(pkg));
+  // Nothing should be out of reach of a top; if something is, it still comes, last.
+  return first.length === wanted.length ? first : [...new Set([...first, ...wanted])];
 }
 
 /**
