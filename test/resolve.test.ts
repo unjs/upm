@@ -1046,8 +1046,52 @@ describe("peer dependencies", () => {
       expect(Object.keys(out.packages)).toEqual(["capped@1.0.0", "open@1.0.0", "ts@6.0.3"]);
       expect(out.packages["open@1.0.0"]?.dependencies).toEqual({ ts: "6.0.3" });
       expect(out.packages["capped@1.0.0"]?.dependencies).toEqual({ ts: "6.0.3" });
-      expect(count("ts")).toBe(1);
+      // One pick per range, as a copy each took: the fake keeps no packument between them.
+      expect(count("ts")).toBe(2);
       expect(unmetPeers(out)).toEqual([]);
+    });
+
+    it("get a version each when no published version meets both", async () => {
+      // The ranges overlap on paper (>=5.9.5 <6), but nothing is published there.
+      const gap: Fixture = {
+        a: { "1.0.0": { peerDependencies: { ts: ">=5.0.0 <6.0.0" } } },
+        b: { "1.0.0": { peerDependencies: { ts: ">=5.9.5" } } },
+        ts: { "5.9.0": {}, "6.0.3": {} },
+      };
+      const root = { dependencies: { a: "^1", b: "^1" } };
+      const { result, count } = run(gap, root);
+      const out = await result;
+      expect(out.packages["a@1.0.0"]?.dependencies).toEqual({ ts: "5.9.0" });
+      expect(out.packages["b@1.0.0"]?.dependencies).toEqual({ ts: "6.0.3" });
+      expect(count("ts")).toBe(2);
+
+      // Locked that way, a later resolve asks the registry nothing about it.
+      const again = run(gap, root, { locked: out });
+      expect(Object.keys((await again.result).packages)).toEqual(Object.keys(out.packages));
+      expect(again.calls).toEqual([]);
+    });
+
+    it("never let a dev-only consumer narrow what a shipped one gets", async () => {
+      const out = await resolve(fixture, {
+        dependencies: { open: "^1" },
+        devDependencies: { capped: "^1" },
+      });
+      expect(out.packages["open@1.0.0"]?.dependencies).toEqual({ ts: "7.0.2" });
+      expect(out.packages["capped@1.0.0"]?.dependencies).toEqual({ ts: "6.0.3" });
+      expect(production(out)).toEqual(["open@1.0.0", "ts@7.0.2"]);
+    });
+
+    it("share even when a third asks through an alias", async () => {
+      const out = await resolve(
+        {
+          ...fixture,
+          aliased: { "1.0.0": { peerDependencies: { ts: "npm:ts@>=4.8.4" } } },
+        },
+        { dependencies: { open: "^1", capped: "^1", aliased: "^1" } },
+      );
+      expect(out.packages["open@1.0.0"]?.dependencies).toEqual({ ts: "6.0.3" });
+      expect(out.packages["capped@1.0.0"]?.dependencies).toEqual({ ts: "6.0.3" });
+      expect(out.packages["aliased@1.0.0"]?.dependencies).toEqual({ ts: "7.0.2" });
     });
 
     it("heal a lock that gave them a copy each", async () => {

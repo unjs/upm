@@ -282,40 +282,6 @@ export function satisfies(
   return sets.some((set) => testSet(v, set, includePrerelease));
 }
 
-/**
- * One range that holds where all of `list` hold, or nothing when one cannot be read or they
- * share no version. Branches that exclude each other are dropped as the `||` product grows.
- */
-export function intersect(list: string[]): string | undefined {
-  let out = [""];
-  for (const range of new Set(list)) {
-    if (!validRange(range)) return undefined;
-    const branches = range.split("||").map((b) => b.trim());
-    out = out.flatMap((a) => branches.map((b) => `${a} ${b}`.trim())).filter(open);
-    if (out.length === 0 || out.length > 64) return undefined;
-  }
-  return out.join(" || ");
-}
-
-/** Whether a version could sit between a set's tightest bounds. Prerelease rules aside. */
-function open(branch: string): boolean {
-  let lo: Comparator | undefined;
-  let hi: Comparator | undefined;
-  for (const c of parseSet(branch, false) ?? []) {
-    if (c.op !== "<" && c.op !== "<=") {
-      const r = lo && compare(c.v, lo.v);
-      if (!lo || r! > 0 || (r === 0 && c.op === ">")) lo = c;
-    }
-    if (c.op !== ">" && c.op !== ">=") {
-      const r = hi && compare(c.v, hi.v);
-      if (!hi || r! < 0 || (r === 0 && c.op === "<")) hi = c;
-    }
-  }
-  if (!lo || !hi) return true;
-  const r = compare(lo.v, hi.v);
-  return r < 0 || (r === 0 && lo.op !== ">" && hi.op !== "<");
-}
-
 /** `satisfies` for one range and many versions: the range is looked up once. */
 export function inRange(range: string, includePrerelease = false): (version: Version) => boolean {
   const sets = parseRange(range, includePrerelease);
