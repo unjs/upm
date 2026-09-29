@@ -173,8 +173,8 @@ export interface Experimental {
 
 export interface LinkPoolConfig {
   /**
-   * Most workers, 0 to 64; 0 never starts them. A pool starts four, or one per 4,000 files when
-   * it knows them, up to this. Default: up to 8, leaving the main thread a core.
+   * Workers, 0 to 64; 0 never starts them. Default: four, or one per 4,000 files when the pool
+   * knows them, up to 8 and leaving the main thread a core.
    */
   size: number;
   /** Start them from this many packages in the lockfile. Default 200. */
@@ -366,9 +366,10 @@ export interface RunResult {
  * least two. One worker measured 15–19% slower than linking here (`nuxt`, `next` on two
  * cores) and two a wash; three won. `--experimental-link-pool=1` can still ask for one.
  *
- * A pool starts four, or one per 4,000 files when it knows more, up to this. On a warm link
- * over sixteen cores, eight beat four by 12% on 40,000 files and 15% on 117,000, twelve did
- * no better, and on `nuxt`'s 13,575 files eight were a wash for 40% more CPU and 58 MB.
+ * Without a size asked for, a pool starts four, or one per 4,000 files when it knows more, up
+ * to this. On a warm link over sixteen cores, eight beat four by 12% on 40,000 files and 15% on
+ * 117,000, twelve did no better, and on `nuxt`'s 13,575 files eight were a wash for 40% more
+ * CPU and 58 MB.
  */
 export function defaultPoolSize(cores: number): number {
   const spare = Math.min(8, cores - 1);
@@ -393,6 +394,8 @@ interface Context {
   dedupe: boolean;
   resolvePool?: number;
   linkPool: LinkPoolConfig;
+  /** The pool's size was asked for: it starts that many, whatever the files. */
+  sized: boolean;
   /** The project root `projectDir` found: `dir`, else the walk up from cwd. */
   root?: string;
   /** What `findRoot` read of the root, so `loadProject` does not glob and parse it again. */
@@ -445,7 +448,7 @@ function context(options: Context["options"], dedupe = false): Context {
     if (!alone) log("worker threads unavailable; running on one thread", "warn");
     alone = true;
   };
-  return { options, log, dedupe, resolvePool, linkPool: pool, noThreads };
+  return { options, log, dedupe, resolvePool, linkPool: pool, sized: !!linkPool?.size, noThreads };
 }
 
 function count(value: unknown, max = Number.MAX_SAFE_INTEGER): boolean {
@@ -623,6 +626,8 @@ async function installTree(ctx: Context, edit?: Edit, loaded?: Project): Promise
           if (tracing) trace("filled", take()); // the main thread's memory at that point
         });
   filling?.catch(() => {});
+  // Closed by the fill otherwise: the walk's prefetch may have started unpack threads.
+  if (!filling) store.close();
   // The inputs, for the state file, read back off disk: `plan` may just have written them.
   const inputs = project.workspaces.length === 0 ? await lockText(ctx, dir) : undefined;
   // The linker is handed the hash rather than computing it again: 3.7 ms on `nuxt`.
@@ -905,13 +910,13 @@ function linkPool(ctx: Context, fresh: boolean): PoolPlan | undefined {
   const load = () => (loading ??= import("./link-pool.ts").then((m) => (loaded = m)));
   const begin = (m: typeof import("./link-pool.ts")) =>
     m.startLinkPool(
-      Math.min(config.size, Math.max(4, Math.ceil(files / 4000))),
+      ctx.sized ? config.size : Math.min(config.size, Math.max(4, Math.ceil(files / 4000))),
       undefined,
       undefined,
       ctx.noThreads,
     );
-  // Started now when the module is in: from a `then`, the threads would wait for this thread's
-  // next await, after the lockfile is converted and hashed — 14 ms on `next`, 33 on `large`.
+  // Started now when the module is in, not at this thread's next await, which comes only once
+  // the lockfile is converted and hashed: 14 ms on `next`, 33 on `large`.
   // A runtime that cannot load the pool builds every entry here, as without one.
   const start = () =>
     (pool ??= loaded
