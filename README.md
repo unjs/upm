@@ -236,7 +236,8 @@ import {
 ```
 
 Functions return data and do not print their own messages. Use `log` for progress,
-warnings, and debug messages. `run` and `exec` still share the child's
+warnings, and debug messages, and `onProgress` (install, add, remove, dedupe, lock) for
+counts to draw a progress bar from. `run` and `exec` still share the child's
 terminal input and output.
 
 Errors have a `code` you can handle. The exported `ErrorCode` type lists common
@@ -458,8 +459,10 @@ Most npm install and run lines work as they are:
   `--prefix <dir>` and `-C <dir>` are `--dir`.
 - `-s`, `--silent`, `-q`, `--quiet` and `--loglevel` set to `silent`, `error` or `warn`
   hide progress, the script banner and the install summary. Warnings and errors stay.
+- `--no-progress` hides the progress bar. It is drawn on stderr only on a terminal,
+  never when `CI` is set, and only once a command runs past a second.
 - These are accepted and do nothing, since upm already works this way: `-S`, `--save`,
-  `-P`, `--save-prod`, `--ignore-scripts`, `--no-audit`, `--no-fund`, `--no-progress`,
+  `-P`, `--save-prod`, `--ignore-scripts`, `--no-audit`, `--no-fund`,
   `--legacy-peer-deps` and `--force`.
 
 Flags still go before the script name: `npm run build --if-present` hands

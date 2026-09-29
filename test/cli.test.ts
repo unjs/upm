@@ -226,7 +226,7 @@ describe("npm's spellings", () => {
   });
 
   it("accepts npm's flags for what upm already does, and nothing else", () => {
-    const noops = ["--ignore-scripts", "--no-audit", "--no-fund", "--no-progress"];
+    const noops = ["--ignore-scripts", "--no-audit", "--no-fund"];
     noops.push("--legacy-peer-deps", "--force", "-S", "--save", "-P");
     noops.push("--save-prod");
     expect(parseArgv(["add", "x", ...noops])).toEqual({
@@ -236,6 +236,7 @@ describe("npm's spellings", () => {
       help: false,
     });
     expect(parseArgv(["ci", "--no-save"]).error).toBe('unknown flag "--no-save"');
+    expect(parseArgv(["ci", "--no-progress"]).noProgress).toBe(true);
   });
 
   it("turns one field on for each switch, spelled exactly", () => {
@@ -1037,11 +1038,12 @@ describe("startup budget", () => {
     // Re-measure startup before raising this budget. Pools should load only when used.
     // 138,791 minified bytes over 27 modules when the count moved from source bytes (437,989);
     // 141,619 with the registry's version index and the lockfile kept in node_modules,
-    // `--help` unchanged cached and uncached (40/41 and 106/106 ms).
+    // `--help` unchanged cached and uncached (40/41 and 106/106 ms); 142,306 with the progress
+    // hooks and `--no-progress`, the bar itself lazy, `--help` unchanged (50/47 and 122/121 ms).
     const modules = await reachable();
     const bytes = [...modules.values()].reduce((total, size) => total + size, 0);
     expect(modules.size).toBeLessThanOrEqual(27); // `upm.ts` is the bin, `cli.ts` the program
-    expect(bytes).toBeLessThanOrEqual(142_000);
+    expect(bytes).toBeLessThanOrEqual(142_500);
     // Found through `import()` by the commands that read a project, like the pools: each holds
     // its worker's whole code in the build.
     const lazy = [
@@ -1052,6 +1054,7 @@ describe("startup budget", () => {
       "link-pool.ts",
       "registry-pool.ts",
       "unpack-pool.ts",
+      "progress.ts",
     ];
     for (const name of lazy) {
       expect(modules.has(name)).toBe(false);

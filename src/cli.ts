@@ -21,12 +21,14 @@ import type {
   InstallResult,
   LinkPoolConfig,
   LogLevel,
+  Progress,
   PruneResult,
   RunOptions,
   RunResult,
 } from "./api.ts";
 import { builtin } from "./builtin.ts";
 import { formatLockfile, LOCKFILE } from "./lock.ts";
+import type { Bar } from "./progress.ts";
 import type { Manifest } from "./types.ts";
 import { describe, trace, tracing } from "./util.ts";
 
@@ -71,6 +73,7 @@ Options
                        run --workspaces: run the root first
   --json               print JSON
   --lock               fetch: use ${LOCKFILE}
+  --no-progress        no progress bar (drawn on a terminal, not in CI, after a second)
   --offline            never use the network; fail if the registry or a download is needed
   --prefer-offline     pick from kept registry documents without checking for newer ones
   -O, --optional       add: save to optionalDependencies
@@ -121,7 +124,7 @@ Notes
   npm's spellings work too: --save-dev, --save-optional, --save-exact, --omit=dev
   (--production; --include=dev undoes it), --prefix and -C (--dir). Accepted and ignored,
   as upm already behaves so: -S, --save, -P, --save-prod, --ignore-scripts, --no-audit,
-  --no-fund, --no-progress, --legacy-peer-deps and --force.
+  --no-fund, --legacy-peer-deps and --force.
 
   Workspaces use package.json patterns. install/lock/dedupe/prune use the root and its .npmrc.
   add/remove target the current workspace or -w. Bare workspace names save ^version;
@@ -188,6 +191,8 @@ export interface Cli {
   minReleaseAgeExclude?: string[];
   /** `-s`, `-q` or a low `--loglevel`: no progress notes, run banner or install summary. */
   quiet?: boolean;
+  /** `--no-progress`: no progress bar, even on a terminal. */
+  noProgress?: boolean;
   /** `--offline`: never ask the registry or download a tarball. */
   offline?: boolean;
   /** `--prefer-offline`: pick from kept registry documents without revalidating them. */
@@ -235,13 +240,12 @@ const VALUE_FLAGS = {
 } as const;
 /**
  * npm's flags for what upm already does, or never does: no dependency lifecycle scripts, no
- * audit or funding notes, no progress bar, no peer conflicts that fail an install.
+ * audit or funding notes, no peer conflicts that fail an install.
  */
 const NPM_NOOPS = new Set([
   "--ignore-scripts",
   "--no-audit",
   "--no-fund",
-  "--no-progress",
   "--legacy-peer-deps",
   "--force",
   "-S",
@@ -255,6 +259,7 @@ const SWITCHES = {
   "--silent": "quiet",
   "-q": "quiet",
   "--quiet": "quiet",
+  "--no-progress": "noProgress",
   "-y": "yes",
   "--yes": "yes",
   "--workspaces": "workspaces",
@@ -532,7 +537,10 @@ export async function main(argv: string[]): Promise<number> {
     // The script's exit code is the answer, so this one does not go through `dispatch`.
     if (cli.command === "run") return await runCommand(cli);
     if (cli.command === "exec") return await execCommand(cli);
-    const out = await dispatch(cli, fromProject);
+    const out = await dispatch(cli, fromProject).finally(() => {
+      bar?.stop();
+      bar = undefined;
+    });
     trace("formatted");
     // Quiet drops an install's summary, not what a command is asked to print.
     const summary = !cli.json && (installs || cli.command === "prune" || cli.command === "fetch");
@@ -557,10 +565,13 @@ async function dispatch(cli: Cli, fromProject: boolean): Promise<string> {
   };
   const store = { ...base, store: cli.store };
   const resolvePool = cli.resolvePool === RESOLVE_POOL_DEFAULT ? undefined : cli.resolvePool;
+  const onProgress =
+    INSTALLS.has(cli.command!) || cli.command === "lock" ? await progress(cli) : undefined;
   const installs = {
     ...store,
     production: cli.production,
     verify: cli.verify,
+    onProgress,
     experimental: { resolvePool, linkPool: cli.linkPool },
   };
   const workspaces = cli.workspaces ? ("all" as const) : cli.workspace;
@@ -580,7 +591,8 @@ async function dispatch(cli: Cli, fromProject: boolean): Promise<string> {
     return installed(cli, result, started, { manifest: { removed } });
   }
   if (cli.command === "lock") {
-    const locked = await lock({ ...store, write: !cli.json, experimental: { resolvePool } });
+    const options = { ...store, write: !cli.json, onProgress, experimental: { resolvePool } };
+    const locked = await lock(options);
     return cli.json ? formatLockfile(locked).trimEnd() : "";
   }
   if (cli.command === "prune") return pruned(cli, await prune(store));
@@ -822,8 +834,22 @@ function help(to: Output): string {
 type Style = Parameters<typeof import("node:util").styleText>[0];
 type Output = "stdout" | "stderr";
 
+/** The progress line on stderr, while a command draws one. */
+let bar: Bar | undefined;
+
+/** `onProgress` for a progress line on a terminal, unless `--silent` or `--no-progress`. */
+async function progress(cli: Cli): Promise<((progress: Progress) => void) | undefined> {
+  const stderr = globalThis.process?.stderr;
+  if (quiet || cli.noProgress || !stderr?.isTTY) return;
+  const { startBar } = await import("./progress.ts");
+  bar = startBar(stderr, (text) => paint("gray", text));
+  return bar?.hear;
+}
+
 /** Where there is no `process`, as in a browser, the console stands in for both streams. */
 function write(to: Output, text: string): void {
+  // Cleared first, so a note is not written over it; the next tick draws it under the note.
+  bar?.clear();
   const stream = globalThis.process?.[to];
   if (stream) stream.write(text);
   else (to === "stdout" ? console.log : console.error)(text.replace(/\n$/, ""));

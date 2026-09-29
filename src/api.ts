@@ -80,6 +80,16 @@ export type { Added, Group };
 export type LogLevel = "info" | "warn" | "debug";
 
 /**
+ * How far a command has come, called once per package. `resolve` counts picks with no total
+ * yet; `fetch` counts tarballs in the store, `link` entries in `.upm`. The two overlap.
+ */
+export interface Progress {
+  phase: "resolve" | "fetch" | "link";
+  done: number;
+  total?: number;
+}
+
+/**
  * The `code` on an error a command rejects with, where a caller can act on it. A filesystem's
  * or a worker's own code can still come through; match on codes, never on messages.
  */
@@ -185,6 +195,8 @@ export interface DedupeOptions extends ProjectOptions, RegistryAccess, StoreAcce
   production?: boolean;
   /** Check the tree on disk instead of trusting its state (its shape, not its bytes). */
   verify?: boolean;
+  /** Counts to draw a progress bar from, as the command goes. */
+  onProgress?: (progress: Progress) => void;
   experimental?: Experimental;
 }
 
@@ -215,6 +227,8 @@ export interface RemoveOptions extends DedupeOptions, WorkspaceOptions {}
 export interface LockOptions extends ProjectOptions, RegistryAccess, StoreAccess {
   /** Write the lockfile. Default true; false only returns it. */
   write?: boolean;
+  /** Only `resolve`: a lock fetches and links nothing. */
+  onProgress?: (progress: Progress) => void;
   experimental?: Pick<Experimental, "resolvePool">;
 }
 
@@ -528,8 +542,9 @@ async function installTree(ctx: Context, edit?: Edit, loaded?: Project): Promise
   const pool = linkPool(ctx, state === undefined);
   const store = openStore(ctx, options.verify);
   trace("store");
+  const progress = options.onProgress;
   const walk = {
-    onPick: prefetch(ctx, dir, store, pool?.picked),
+    onPick: counted(prefetch(ctx, dir, store, pool?.picked), progress),
     tarball: tarballReader(ctx, dir, store),
   };
   const lock = await plan(ctx, project, walk, edit?.registry, state?.tarballs);
@@ -581,10 +596,12 @@ async function installTree(ctx: Context, edit?: Edit, loaded?: Project): Promise
   }
 
   const fill = async (into: Store): Promise<void> => {
+    let fetched = 0;
     await Promise.all(
       wanted.map(async (pkg) => {
         try {
           await into.ensure(tarballOf(dir, pkg.resolved, pkg.source), pkg.integrity);
+          progress?.({ phase: "fetch", done: ++fetched, total: wanted.length });
         } catch (error) {
           // A failure inside an optional subtree must never fail the install.
           if (!pkg.optional && pkg.source !== undefined) {
@@ -625,6 +642,7 @@ async function installTree(ctx: Context, edit?: Edit, loaded?: Project): Promise
     hash,
     pool: pool?.ask,
     awaiting: filling && store.pending,
+    onProgress: progress,
     inputs:
       inputs === undefined
         ? undefined
@@ -842,6 +860,19 @@ function prefetch(
         return false;
       })(),
     );
+  };
+}
+
+/** `onPick`, counting each pick for `onProgress` too. */
+function counted(
+  onPick: ResolveOptions["onPick"],
+  progress?: (progress: Progress) => void,
+): ResolveOptions["onPick"] {
+  if (!progress) return onPick;
+  let done = 0;
+  return (pkg, from, libc) => {
+    progress({ phase: "resolve", done: ++done });
+    onPick?.(pkg, from, libc);
   };
 }
 
@@ -1406,6 +1437,7 @@ export async function lock(options: LockOptions = {}): Promise<Lockfile> {
     locked: keep(existing, registry.baseFor, moved),
     workspaces: tops(project),
     tarball,
+    onPick: counted(undefined, options.onProgress),
   }).finally(() => {
     registry.close();
     store.close();
