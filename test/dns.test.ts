@@ -146,7 +146,7 @@ describe("cacheLookups", () => {
     const spy = vi.fn(async () => new Response(""));
     vi.stubGlobal("fetch", spy);
     await fetching()("https://example.test/", { headers: { a: "b" } });
-    const [, init] = spy.mock.calls[0] as unknown as [
+    const [, init] = spy.mock.calls.at(-1) as unknown as [
       string,
       RequestInit & { dispatcher?: object },
     ];
@@ -194,10 +194,25 @@ describe("cacheLookups", () => {
     expect(await dispatcherOf(again.fetching)).toBeUndefined();
   });
 
-  it("is plain fetch until an agent is made", async () => {
+  it("makes its agent before its first request, and not before", async () => {
     global[DISPATCHER] = undefined;
-    const { fetching } = await fresh();
-    expect(await dispatcherOf(fetching)).toBeUndefined();
+    const { cacheLookups, fetching } = await fresh();
+    const request = fetching();
+    expect(global[DISPATCHER]).toBeUndefined(); // nothing loaded for a run that asks nothing
+    // The probe makes undici's default agent, as a first `fetch` does; nothing goes out.
+    const spy = vi.fn(async (input: string | URL | Request, _init?: RequestInit) => {
+      if (String(input).startsWith("data:")) global[DISPATCHER] ??= new Agent({});
+      return new Response("");
+    });
+    vi.stubGlobal("fetch", spy);
+    await request("https://example.test/");
+    expect(spy.mock.calls.map(([input]) => String(input))).toEqual([
+      "data:,",
+      "https://example.test/",
+    ]);
+    const [, init] = spy.mock.calls[1] as [string, RequestInit & { dispatcher?: object }];
+    expect(init.dispatcher?.constructor.name).toBe("Agent");
+    expect(cacheLookups()).toBeUndefined();
   });
 
   it("leaves things as they are when the dispatcher is not where undici keeps it", async () => {

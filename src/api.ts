@@ -60,7 +60,6 @@ import {
   writeState,
 } from "./state.ts";
 import type { InstallState, Inputs, Stamp } from "./state.ts";
-import { cacheLookups } from "./dns.ts";
 import { createStore, storeDir } from "./store.ts";
 import type { Store, Tarball } from "./store.ts";
 import type { StoreBackend } from "./store-backend.ts";
@@ -1661,11 +1660,6 @@ async function openRegistry(ctx: Context, size = ctx.resolvePool): Promise<OpenR
         }),
         close() {},
       };
-  // Before the first question: `fetch` takes the dispatcher of the moment it is called, so a
-  // request made while the swap is in flight opens its socket on the agent about to be dropped
-  // and the next request connects again (+20 ms on a one-package install). The wait is the
-  // fetch machinery loading (~25 ms), which the first question pays for either way.
-  await cacheLookups();
   return pool;
 }
 

@@ -3,7 +3,6 @@
 // packument are off the thread that walks the tree. Only the manifest crosses the port: a whole
 // document cloned back can cost the receiver as much as parsing it. See .agents/perf.md.
 import { builtin } from "./builtin.ts";
-import { cacheLookups } from "./dns.ts";
 import { createDocumentCache } from "./metadata.ts";
 import { createRegistry } from "./registry.ts";
 import type { Registry } from "./registry.ts";
@@ -35,10 +34,8 @@ if (port) {
       },
     );
   });
-  // The first `fetch()` in a fresh isolate costs ~40 ms more than the second: the web fetch
-  // machinery loads on first use. Setting up the dispatcher loads the half of it that can be
-  // loaded without a request, so the first question is not the one that pays (~25 ms).
-  void (cacheLookups() ?? Promise.resolve()).then(() =>
-    port.postMessage({ id: -1 } satisfies Answer),
-  );
+  // Hello at once. The fetch machinery (~25 ms) loads before this thread's first request
+  // (`fetching`): on a cold walk that is its first question, and a walk over kept documents
+  // never pays it.
+  port.postMessage({ id: -1 } satisfies Answer);
 }

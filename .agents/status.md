@@ -177,7 +177,8 @@ Unranked: take a fresh profile before choosing one. Use [perf.md](perf.md) for e
   Start at `split` and `writePart` in `src/unpack.ts`.
 - Registry threads at pool creation are a wash on a big tree and cost a one-package install
   most of its time ([thread start results][start]); what would make that start free is a
-  cheaper thread boot, most of which is the worker's first load of the fetch machinery.
+  cheaper thread boot and first request, most of which is the thread's first load of the
+  fetch machinery (at its first request, so a walk over kept documents never pays it).
   Measure `tiny` cold and `nuxt` cold together. Start at `START_AT` in `src/registry-pool.ts`
   and `src/registry-worker.ts`.
 - Fewer threads (unpack, registry) save CPU at a small wall cost on a many-core machine and are

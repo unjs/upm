@@ -270,7 +270,7 @@ export function createStore(options: StoreOptions = {}): Store {
     behind++;
     trace("miss", { i: integrity, behind });
     try {
-      // The address cache, in place before the first request; usually already, by the walk.
+      // The address cache, in place before a download slot is taken; already, on a cold walk.
       const lookups = cacheLookups();
       if (lookups) await lookups;
       const index = await net((signal) => {
