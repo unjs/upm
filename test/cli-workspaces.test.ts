@@ -162,7 +162,7 @@ describe("install", () => {
 
   it("counts the workspaces in lock's summary", async () => {
     const result = await upm("", "lock");
-    expect(result.stderr).toContain("2 pkgs · 0 opt · 1 dev · 2 ws");
+    expect(result.stderr).toContain("2 pkgs · 1 dev · 2 ws");
   });
 
   it("is stale under --frozen-lockfile when a workspace's ranges or the set of workspaces move", async () => {

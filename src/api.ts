@@ -723,7 +723,7 @@ async function restoreLock(ctx: Context, project: Project, state?: InstallState)
   }
   await writeLockfile(dir, text);
   ctx.source = { path: source.path };
-  ctx.log(`✎ ${source.path} ← node_modules`, "info");
+  ctx.log(`✎ ${LOCKFILE} ← node_modules`, "info");
 }
 
 /**
@@ -1403,7 +1403,7 @@ async function resolveLock(
     if (dropped > 0) log(`dropped ${dropped} packages`, "info");
   }
   await writeLockfile(dir, lock);
-  log(`✎ ${builtin.path.join(dir, LOCKFILE)} · ${counts(lock)}`, "info");
+  log(`✎ ${LOCKFILE} · ${counts(lock)}`, "info");
   return lock;
 }
 
@@ -1450,7 +1450,7 @@ export async function lock(options: LockOptions = {}): Promise<Lockfile> {
     return lock;
   }
   await writeLockfile(dir, lock);
-  ctx.log(`✎ ${builtin.path.join(dir, LOCKFILE)} · ${counts(lock)}`, "info");
+  ctx.log(`✎ ${LOCKFILE} · ${counts(lock)}`, "info");
   return lock;
 }
 
@@ -1712,11 +1712,15 @@ async function foreignLock(ctx: Context, project: Project, file: ForeignFile): P
 function counts(lock: Lockfile): string {
   // Through `fromLockfile`, so `dev` is the derived flag an install would see, not a stored one.
   const all = Object.values(fromLockfile(lock).packages).filter((pkg) => pkg.local === undefined);
-  const of = (flag: "optional" | "dev") => all.filter((pkg) => pkg[flag]).length;
-  const n = Object.keys(lock.workspaces ?? {}).length;
-  const workspaces = n > 0 ? ` · ${n} ws` : "";
+  const optional = all.filter((pkg) => pkg.optional).length;
+  const dev = all.filter((pkg) => pkg.dev).length;
+  const workspaces = Object.keys(lock.workspaces ?? {}).length;
   // Every platform's packages, so this is larger than what any one install materializes.
-  return `${all.length} pkgs · ${of("optional")} opt · ${of("dev")} dev${workspaces}`;
+  const parts = [`${all.length} pkgs`];
+  if (optional > 0) parts.push(`${optional} opt`);
+  if (dev > 0) parts.push(`${dev} dev`);
+  if (workspaces > 0) parts.push(`${workspaces} ws`);
+  return parts.join(" · ");
 }
 
 /** A registry with threads to stop once the resolving is done. */
