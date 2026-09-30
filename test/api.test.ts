@@ -674,6 +674,29 @@ describe("api", () => {
     expect(await nanoid()).toContain("nanoid 4");
   });
 
+  it("overrides a workspace's own dependency, and installs frozen from that lock", async () => {
+    const four = makeTarball([{ path: "index.js", data: 'module.exports = "nanoid 4";\n' }]);
+    serve("nanoid", { "4.0.0": four, "5.0.0": tarball });
+    const root = { workspaces: ["packages/*"], overrides: { nanoid: "5.0.0" } };
+    await writeFile(join(dir, "package.json"), JSON.stringify(root));
+    const at = join(dir, "packages", "a");
+    await mkdir(at, { recursive: true });
+    const ws = { name: "a", version: "1.0.0", dependencies: { nanoid: "^4" } };
+    await writeFile(join(at, "package.json"), JSON.stringify(ws));
+    await upm.install(base);
+    const lockFile = join(dir, "upm.lock");
+    expect((await readJson(lockFile)).workspaces["packages/a"].dependencies).toEqual({
+      nanoid: "5.0.0",
+    });
+    const installed = join(at, "node_modules", "nanoid", "index.js");
+    expect(await readFile(installed, "utf8")).not.toContain("nanoid 4");
+    // A pin outside the workspace's own range is the override's, not a stale lock.
+    await rm(join(dir, "node_modules"), { recursive: true });
+    await rm(join(at, "node_modules"), { recursive: true });
+    await upm.install({ ...base, frozen: true });
+    expect(await readFile(installed, "utf8")).not.toContain("nanoid 4");
+  });
+
   it("keeps no lockfile from an install whose tarball failed its integrity", async () => {
     const other = makeTarball([{ path: "index.js", data: "other\n" }]);
     serve("bad", { "1.0.0": tarball }, () => hashOf(other));

@@ -3027,13 +3027,23 @@ describe("overrides", () => {
     });
   });
 
-  it("leaves what the root and a workspace declare to them", async () => {
+  it("overrides what the root and each workspace declare, as npm does a workspace's", async () => {
     const root = { dependencies: { a: "^1", b: "^1" }, resolutions: { b: "2.0.0" } };
-    const ws = { path: "w", manifest: { name: "w", dependencies: { b: "1.2.0" } } };
-    const out = await resolve(fixture, root, { workspaces: [ws] });
-    expect(out.root.dependencies).toEqual({ a: "1.0.0", b: "1.9.0" });
-    expect(out.packages["w@link:w"]!.dependencies).toEqual({ b: "1.2.0" });
+    const ws = (name: string) => ({ path: name, manifest: { name, dependencies: { b: "1.2.0" } } });
+    const out = await resolve(fixture, root, { workspaces: [ws("v"), ws("w")] });
+    expect(out.root.dependencies).toEqual({ a: "1.0.0", b: "2.0.0" });
+    expect(out.packages["w@link:w"]!.dependencies).toEqual({ b: "2.0.0" });
     expect(edgesOf(out, "a@1.0.0")).toEqual({ b: "2.0.0" });
+    expect(Object.keys(out.packages)).toEqual(["a@1.0.0", "b@2.0.0", "v@link:v", "w@link:w"]);
+    // Scoped to one workspace by its name, and to its version: `w` is 0.0.0.
+    const scoped = { dependencies: { a: "^1" }, pnpm: { overrides: { "w>b": "1.0.0" } } };
+    const one = await resolve(fixture, scoped, { workspaces: [ws("v"), ws("w")] });
+    expect(one.packages["v@link:v"]!.dependencies).toEqual({ b: "1.2.0" });
+    expect(one.packages["w@link:w"]!.dependencies).toEqual({ b: "1.0.0" });
+    expect(edgesOf(one, "a@1.0.0")).toEqual({ b: "1.9.0" });
+    const other = { ...scoped, pnpm: { overrides: { "w@1>b": "1.0.0" } } };
+    const none = await resolve(fixture, other, { workspaces: [ws("w")] });
+    expect(none.packages["w@link:w"]!.dependencies).toEqual({ b: "1.2.0" });
   });
 
   it("scopes a rule to a parent's own edges, and to its version", async () => {
@@ -3152,5 +3162,82 @@ describe("overrides", () => {
       expect(calls.sort()).toEqual(["a", "b"]);
       expect(edgesOf(out, "x@1.0.0")).toEqual({ b: "1.0.0" });
     });
+  });
+});
+
+describe("overrides, review regressions", () => {
+  const fixture: Fixture = {
+    a: { "1.0.0": { dependencies: { b: "^1" } } },
+    b: { "1.0.0": {}, "1.2.0": {} },
+    "@s/a": { "1.0.0": { dependencies: { b: "^1" } } },
+    x: { "1.0.0": {} },
+    p: { "1.0.0": { dependencies: { x: "npm:@s/a@^1" } } },
+    plugin: { "1.0.0": { peerDependencies: { host: "^1" } } },
+  };
+  const bytes = (found: Record<string, Partial<Manifest>>) => {
+    const reads: string[] = [];
+    const tarball = async (source: string): Promise<Manifest> => {
+      reads.push(source);
+      const dist = { tarball: source, integrity: `sha512-${source}` };
+      return { name: "x", version: "1.0.0", ...found[source], dist } as Manifest;
+    };
+    return { tarball, reads };
+  };
+
+  it("walks a package again when the local tarball an override gave it was read anew", async () => {
+    const { tarball } = bytes({ "file:vendor/b.tgz": { name: "b", version: "3.0.0" } });
+    const root = { dependencies: { a: "^1" }, overrides: { b: "file:./vendor/b.tgz" } };
+    const first = await resolve(fixture, root, { tarball });
+    // As `keep` hands over a lock whose tarball moved: without it, its parent's edge dangles.
+    delete first.packages["b@file:vendor/b.tgz"];
+    const out = await resolve(fixture, root, { tarball, locked: first });
+    expect(out.packages["a@1.0.0"]!.dependencies).toEqual({ b: "file:vendor/b.tgz" });
+  });
+
+  it("reads a peer an override sends to a local tarball from the root, and shares it", async () => {
+    const { tarball, reads } = bytes({
+      "file:vendor/host.tgz": { name: "host", version: "1.0.0" },
+    });
+    const root = {
+      dependencies: { host: "file:./vendor/host.tgz", plugin: "^1" },
+      overrides: { host: "$host" },
+    };
+    const out = await resolve(fixture, root, { tarball });
+    expect(reads).toEqual(["file:vendor/host.tgz"]);
+    expect(out.packages["plugin@1.0.0"]!.dependencies).toEqual({ host: "file:vendor/host.tgz" });
+  });
+
+  it("walks a touched alias again by the name in a url with its file under a scope", async () => {
+    // Replayed under a locked parent, the alias is walked again from its url alone.
+    const aliased = { dependencies: { p: "^1" } };
+    const first = await resolve(fixture, aliased);
+    first.packages["x@1.0.0"]!.resolved = "https://r/@s/a/-/@s/a-1.0.0.tgz";
+    const next = { ...aliased, overrides: { b: "1.0.0" } };
+    const out = await resolve(fixture, next, { locked: first });
+    expect(out.packages["x@1.0.0"]).toMatchObject({
+      integrity: "sha512-@s/a1.0.0",
+      dependencies: { b: "1.0.0" },
+    });
+  });
+
+  it("refuses to walk another package in place of an alias its url cannot name", async () => {
+    // Replayed under a locked parent, the alias is walked again from its url alone.
+    const aliased = { dependencies: { p: "^1" } };
+    const first = await resolve(fixture, aliased);
+    first.packages["x@1.0.0"]!.resolved = "https://r/download/@s/a/1.0.0/abc";
+    const next = { ...aliased, overrides: { b: "1.0.0" } };
+    await expect(resolve(fixture, next, { locked: first })).rejects.toMatchObject({
+      code: "ELOCK",
+      message: expect.stringContaining("locked x@1.0.0 is not x@1.0.0 on the registry"),
+    });
+  });
+
+  it("applies the more specific of two rules for one parent", async () => {
+    const root = {
+      dependencies: { a: "^1" },
+      pnpm: { overrides: { "a>b": "1.0.0", "a@1>b": "1.2.0" } },
+    };
+    const out = await resolve(fixture, root);
+    expect(out.packages["a@1.0.0"]!.dependencies).toEqual({ b: "1.2.0" });
   });
 });

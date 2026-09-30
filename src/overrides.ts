@@ -24,10 +24,16 @@ export interface Rule {
   value: string;
 }
 
+/** A package a rule can be scoped to: a registry package, a tarball or a workspace. */
+export interface Parent {
+  name: string;
+  version: string;
+}
+
 /** What `overrider` needs of the resolve it serves. */
 export interface Walk {
-  /** The package at a key, a rule's parent; nothing for a top, whose edges stay as declared. */
-  parent: (from: string) => ResolvedPackage | undefined;
+  /** The package at a key, a rule's parent; nothing for the root, which only unscoped rules reach. */
+  parent: (from: string) => Parent | undefined;
   /** The version a spec takes without the rules. */
   take: (spec: Spec) => Promise<string>;
   /** What the resolve keeps from its lock, of which `touched` names what the rules moved. */
@@ -50,13 +56,10 @@ export function overrider(manifest: object, before: Overrides | undefined, walk:
    * picked first.
    */
   async function edge(from: string, name: string, range: string): Promise<string | undefined> {
-    const list = rules.get(name);
-    const parent = list && walk.parent(from);
-    if (!parent) return range;
+    const parent = walk.parent(from);
     let would: Promise<string | undefined> | undefined;
-    for (const rule of list!) {
-      if (rule.parent !== undefined && rule.parent !== parent.name) continue;
-      if (rule.parentRange && !satisfies(parent.version, rule.parentRange)) continue;
+    for (const rule of rules.get(name) ?? []) {
+      if (!reaches(rule, parent)) continue;
       if (rule.range) {
         const version = await (would ??= wouldTake(name, range));
         if (version === undefined || !satisfies(version, rule.range)) continue;
@@ -105,9 +108,12 @@ export function overrider(manifest: object, before: Overrides | undefined, walk:
    * edge a `-` dropped is in no entry, so taking a `-` away reaches every package.
    */
   function touched(key: string): boolean {
-    if (changed.all) return true;
-    if (changed.names.size === 0) return false;
     const { dependencies, optionalDependencies, peerDependencies } = walk.locked[key]!;
+    const edges = Object.entries({ ...dependencies, ...optionalDependencies });
+    // An edge to what the lock no longer keeps, such as a local tarball an override names that
+    // changed on disk, chooses again.
+    if (changed.all || edges.some(([n, v]) => !walk.locked[`${n}@${v}`])) return true;
+    if (changed.names.size === 0) return false;
     return [dependencies, optionalDependencies, peerDependencies].some(
       (map) => map && Object.keys(map).some((name) => changed.names.has(name)),
     );
@@ -119,7 +125,8 @@ export function overrider(manifest: object, before: Overrides | undefined, walk:
    */
   function specOf({ name, version, resolved }: ResolvedPackage): string {
     if (resolved === tarballUrl(walk.baseFor(name), name, version)) return version;
-    const found = /\/((?:@[^/]+(?:\/|%2f))?[^/]+)\/-\/[^/]+$/i.exec(resolved)?.[1];
+    // `<name>/-/<file>`, the file under its scope on some registries (`/-/@s/a-1.0.0.tgz`).
+    const found = /\/((?:@[^/]+(?:\/|%2f))?[^/]+)\/-\/(?:@[^/]+\/)?[^/]+$/i.exec(resolved)?.[1];
     let real = name;
     try {
       if (found) real = decodeURIComponent(found);
@@ -127,7 +134,30 @@ export function overrider(manifest: object, before: Overrides | undefined, walk:
     return real === name ? version : `npm:${real}@${version}`;
   }
 
-  return { overrides, has: (name: string) => rules.has(name), edge, peers, touched, specOf };
+  const has = (name: string) => rules.has(name);
+  const gives = (name: string, range: string) => !!rules.get(name)?.some((r) => r.value === range);
+  return { overrides, has, gives, edge, peers, touched, specOf };
+}
+
+/**
+ * The values of the rules that can reach a top's edge to `name`: `sameTree` lets a top pin what
+ * one of them gives, where it otherwise holds the pin to the range the top declares.
+ */
+export function valuesFor(
+  overrides: Overrides,
+): (top: Parent | undefined, name: string) => string[] {
+  const rules = compileOverrides(overrides);
+  return (top, name) =>
+    (rules.get(name) ?? [])
+      .filter((rule) => rule.value !== "-" && reaches(rule, top))
+      .map((rule) => rule.value);
+}
+
+/** Whether a rule reaches the edges of `parent`, or of the root when there is none. */
+function reaches(rule: Rule, parent: Parent | undefined): boolean {
+  if (rule.parent === undefined) return true;
+  if (!parent || rule.parent !== parent.name) return false;
+  return !rule.parentRange || satisfies(parent.version, rule.parentRange);
 }
 
 /** The root groups a `$name` value can name, as npm reads them. */
@@ -144,7 +174,9 @@ interface Fields {
  * What the root's package.json overrides, and the entries it holds that upm cannot apply —
  * named by where they are, such as `overrides.a.b.c` — for the caller to say. A package has
  * one set of edges in the tree, so a rule scoped to a parent reaches that parent's own
- * dependencies, not deeper. A value that is not a spec, or two fields that disagree, fail.
+ * dependencies, not deeper; a value upm cannot install, such as git or yarn's `patch:`, is
+ * not a rule either. A value that is not a string, a `$name` the root does not depend on, or
+ * two fields that disagree, fail.
  */
 export function readOverrides(manifest: object): { overrides: Overrides; skipped: string[] } {
   const m = manifest as Fields;
@@ -154,7 +186,8 @@ export function readOverrides(manifest: object): { overrides: Overrides; skipped
     if (selector === undefined) return void skipped.push(from);
     if (typeof value !== "string") throw fail(`${from} must be a string`);
     const [name, rule] = [targetOf(selector), value.trim()];
-    const spec = normalValue(name, rule.startsWith("$") ? reference(m, rule, from) : rule, from);
+    const spec = normalValue(name, rule.startsWith("$") ? reference(m, rule, from) : rule);
+    if (spec === undefined) return void skipped.push(from);
     const other = found.get(selector);
     if (other && other[0] !== spec) throw fail(`${other[1]} and ${from} disagree`);
     found.set(selector, [spec, from]);
@@ -174,25 +207,29 @@ export function readOverrides(manifest: object): { overrides: Overrides; skipped
       const where = `${at}.${child}`;
       if (typeof inner !== "string") skipped.push(where);
       else if (child === ".") put(parent, inner, where);
-      else put(parent && selector(child) && `${parent}>${selector(child)}`, inner, where);
+      else put(parent && under(parent, child), inner, where);
     }
   }
   for (const [key, value] of entries(m.pnpm?.overrides, "pnpm.overrides")) {
-    const parts = key.split(">");
-    const [parent, name] = parts.length === 2 ? parts.map(selector) : [undefined, selector(key)];
-    const scoped = parts.length === 2 ? parent && name && `${parent}>${name}` : name;
-    put(parts.length > 2 ? undefined : scoped, value, `pnpm.overrides[${JSON.stringify(key)}]`);
+    const at = cut(key);
+    const [parent, name] = [key.slice(0, at), key.slice(at + 1)];
+    // One `>` at most: a rule two levels down is not one upm can keep.
+    const found = at < 0 ? selector(key) : cut(name) < 0 ? under(parent, name) : undefined;
+    put(found, value, `pnpm.overrides[${JSON.stringify(key)}]`);
   }
   const overrides: Overrides = {};
   for (const key of [...found.keys()].sort()) overrides[key] = found.get(key)![0];
   return { overrides, skipped };
 }
 
-/** The rules of each name an edge can be to, most specific first: a parent, then a range. */
+/**
+ * The rules of each name an edge can be to, most specific first: a parent, one of a version of
+ * it, then a range of the target.
+ */
 export function compileOverrides(overrides: Overrides): Map<string, Rule[]> {
   const out = new Map<string, Rule[]>();
   for (const [selector, value] of Object.entries(overrides)) {
-    const at = selector.indexOf(">");
+    const at = cut(selector);
     const target = split(selector.slice(at + 1));
     const parent = at < 0 ? undefined : split(selector.slice(0, at));
     const rule: Rule = {
@@ -202,7 +239,7 @@ export function compileOverrides(overrides: Overrides): Map<string, Rule[]> {
     };
     out.set(rule.name, [...(out.get(rule.name) ?? []), rule]);
   }
-  const rank = (r: Rule) => (r.parent ? 0 : 2) + (r.range ? 0 : 1);
+  const rank = (r: Rule) => (r.parent ? 0 : 4) + (r.parentRange ? 0 : 2) + (r.range ? 0 : 1);
   for (const rules of out.values()) rules.sort((a, b) => rank(a) - rank(b));
   return out;
 }
@@ -252,8 +289,13 @@ function yarnSelector(key: string): string | undefined {
   if (parts[0] === "**") parts.shift();
   if (parts.length === 1) return selector(parts[0]!);
   if (parts.length !== 2 || parts.includes("**")) return undefined;
-  const [parent, name] = parts.map(selector);
-  return parent && name && `${parent}>${name}`;
+  return under(parts[0]!, parts[1]!);
+}
+
+/** `name` under `parent`, both as a selector spells them, or nothing when either is not one. */
+function under(parent: string, name: string): string | undefined {
+  const [p, n] = [selector(parent), selector(name)];
+  return p && n && `${p}>${n}`;
 }
 
 /** A selector's name and range, checked. `*` and yarn's `npm:` prefix say nothing more. */
@@ -270,7 +312,16 @@ function split(key: string): { name: string; range?: string } {
 }
 
 function targetOf(selector: string): string {
-  return split(selector.slice(selector.indexOf(">") + 1)).name;
+  return split(selector.slice(cut(selector) + 1)).name;
+}
+
+/**
+ * Where a selector's parent ends, or -1: a `>` after a name or a version, as pnpm finds it, so
+ * the `>` of a range (`semver@>=7 <7.5.2`, `a@^1 || >2`) is never taken for one.
+ */
+function cut(selector: string): number {
+  const at = /[^ |@]>/.exec(selector)?.index;
+  return at === undefined ? -1 : at + 1;
 }
 
 /** npm's `$name`: the range the root declares for `name`. */
@@ -284,17 +335,17 @@ function reference(m: Fields, value: string, from: string): string {
   throw fail(`${from} is ${value}, and the root does not depend on ${name}`);
 }
 
-/** The value as a spec of `name`: a local tarball's path as the root's, a workspace refused. */
-function normalValue(name: string, value: string, from: string): string {
+/**
+ * The value as a spec of `name`, a local tarball's path as the root's; nothing when it is not
+ * one upm installs from an override, which a workspace is not.
+ */
+function normalValue(name: string, value: string): string | undefined {
   if (value === "-") return value;
-  let spec;
   try {
-    spec = parseDep(name, value);
-  } catch (error) {
-    throw fail(`${from}: ${(error as Error).message}`);
-  }
-  if (spec.type === "workspace") throw fail(`${from}: an override cannot name a workspace`);
-  return spec.type === "tarball" ? spec.fetchSpec : value;
+    const spec = parseDep(name, value);
+    if (spec.type !== "workspace") return spec.type === "tarball" ? spec.fetchSpec : value;
+  } catch {}
+  return undefined;
 }
 
 function entries(value: unknown, at: string): [string, unknown][] {

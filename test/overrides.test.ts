@@ -81,13 +81,51 @@ describe("readOverrides", () => {
     });
   });
 
-  it("refuses a value that is not a spec, a workspace, and a field that is not an object", () => {
+  it("refuses a value that is not a string, and a field that is not an object", () => {
     const code = expect.objectContaining({ code: "EMANIFEST" });
     expect(() => read({ overrides: { a: 1 } })).toThrow(code);
-    expect(() => read({ overrides: { a: "git+ssh://x" } })).toThrow(code);
-    expect(() => read({ overrides: { a: "workspace:*" } })).toThrow(code);
     expect(() => read({ resolutions: ["a"] })).toThrow(code);
     expect(() => read({ overrides: { a: { b: 1 } } })).not.toThrow();
+  });
+
+  it("skips a value upm does not install, as yarn's patches and git", () => {
+    const resolutions = { a: "patch:a@npm%3A1.0.0#./a.patch", b: "portal:../b", c: "1.0.0" };
+    const overrides = { d: "git+ssh://x", e: "workspace:*", f: "github:u/f" };
+    expect(read({ resolutions, overrides })).toEqual({
+      overrides: { c: "1.0.0" },
+      skipped: [
+        'resolutions["a"]',
+        'resolutions["b"]',
+        "overrides.d",
+        "overrides.e",
+        "overrides.f",
+      ],
+    });
+  });
+
+  it("never takes the `>` of a range for a parent", () => {
+    const manifest = {
+      overrides: { "semver@>=7.0.0 <7.5.2": "7.5.2", "b@>1.0.0": "1.0.0", "c@>=1": { d: "2" } },
+      pnpm: { overrides: { "e@>=1.0.0": "2", "f@^1 || >2>g@>3": "4", "h>i>j": "1" } },
+    };
+    const { overrides, skipped } = read(manifest);
+    expect(overrides).toEqual({
+      "b@>1.0.0": "1.0.0",
+      "c@>=1>d": "2",
+      "e@>=1.0.0": "2",
+      "f@^1 || >2>g@>3": "4",
+      "semver@>=7.0.0 <7.5.2": "7.5.2",
+    });
+    expect(skipped).toEqual(['pnpm.overrides["h>i>j"]']);
+    const rules = compileOverrides(overrides);
+    expect(rules.get("semver")).toEqual([
+      { name: "semver", range: ">=7.0.0 <7.5.2", value: "7.5.2" },
+    ]);
+    expect(rules.get("b")).toEqual([{ name: "b", range: ">1.0.0", value: "1.0.0" }]);
+    expect(rules.get("g")).toEqual([
+      { name: "g", range: ">3", parent: "f", parentRange: "^1 || >2", value: "4" },
+    ]);
+    expect(changedTargets({}, overrides).names).toEqual(new Set(["b", "d", "e", "g", "semver"]));
   });
 
   it("says nothing of a manifest with no overrides", () => {
@@ -96,6 +134,11 @@ describe("readOverrides", () => {
 });
 
 describe("compileOverrides", () => {
+  it("puts a rule for a version of a parent before one for any of it", () => {
+    const rules = compileOverrides({ "a>b": "1.0.0", "a@1>b": "1.2.0" });
+    expect(rules.get("b")!.map((rule) => rule.value)).toEqual(["1.2.0", "1.0.0"]);
+  });
+
   it("puts a parent's rule first, then one with a range", () => {
     const rules = compileOverrides({ a: "1", "a@^2": "2", "p>a": "3", "p@1>a@^4": "4" });
     expect(rules.get("a")!.map((rule) => rule.value)).toEqual(["4", "3", "2", "1"]);

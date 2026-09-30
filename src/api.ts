@@ -21,8 +21,7 @@ import {
   toLockfile,
   writeLockfile,
 } from "./lock.ts";
-import type { ForeignFile, Lockfile } from "./lock.ts";
-import type { Overrides } from "./overrides.ts";
+import type { ForeignFile, Lockfile, TopOverrides } from "./lock.ts";
 import {
   addDeps,
   formatManifest,
@@ -823,8 +822,7 @@ async function restoreLock(ctx: Context, project: Project, state?: InstallState)
     } catch {
       return; // torn, or another version's: resolve
     }
-    const { overrides } = await overridesOf(manifest);
-    if (!sameTree(ctx.restored, manifest, workspaces, overrides)) {
+    if (!sameTree(ctx.restored, manifest, workspaces, await overridesOf(manifest))) {
       ctx.restored = undefined;
       return;
     }
@@ -1528,8 +1526,8 @@ async function plan(
     if (ctx.dedupe) throw (await import("./foreign-lock.ts")).beside(foreign, "dedupe");
     return await foreignLock(ctx, project, foreign);
   }
-  const { overrides, skipped } = await overridesOf(manifest);
-  warnUnapplied(ctx, manifest, skipped);
+  const overrides = await overridesOf(manifest);
+  warnUnapplied(ctx, manifest, overrides.skipped);
   const existing = frozen
     ? await readLockfile(dir, (text) => (ctx.planned = text))
     : (ctx.restored ?? (await currentLock(ctx, dir)));
@@ -1572,11 +1570,11 @@ function warnUnapplied(ctx: Context, manifest: RootManifest, skipped: string[]):
 }
 
 /** The root's overrides, loading their reader only for a package.json that declares some. */
-async function overridesOf(
-  manifest: RootManifest,
-): Promise<{ overrides: Overrides; skipped: string[] }> {
+async function overridesOf(manifest: RootManifest): Promise<TopOverrides & { skipped: string[] }> {
   if (!declaresOverrides(manifest)) return { overrides: {}, skipped: [] };
-  return (await import("./overrides.ts")).readOverrides(manifest);
+  const { readOverrides, valuesFor } = await import("./overrides.ts");
+  const read = readOverrides(manifest);
+  return { ...read, values: valuesFor(read.overrides) };
 }
 
 /** What an install's walk is given besides the registry: its prefetch and its tarball reader. */
@@ -1641,8 +1639,8 @@ async function lockProject(ctx: Context, options: LockOptions): Promise<Lockfile
     ctx.log(`✓ ${foreign} · ${counts(locked)}`, "info");
     return locked;
   }
-  const { overrides, skipped } = await overridesOf(manifest);
-  warnUnapplied(ctx, manifest, skipped);
+  const overrides = await overridesOf(manifest);
+  warnUnapplied(ctx, manifest, overrides.skipped);
   const existing = await currentLock(ctx, dir);
   const store = openStore(ctx);
   const tarball = tarballReader(ctx, dir, store);

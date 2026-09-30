@@ -165,19 +165,21 @@ Credentials in `.npmrc` are sent to a URL on the same host, as for a registry.
 ```
 
 upm reads npm's `overrides`, yarn's `resolutions` and pnpm's `pnpm.overrides` from the
-root `package.json`, and changes the dependencies of installed packages to match:
+root `package.json`, and changes dependencies across the whole tree to match: those of
+the root, of each workspace and of every installed package.
 
 - `name` replaces every dependency on that package. `name@range` replaces only those
   that would otherwise install a version in the range.
 - A rule scoped to a parent (`"eslint": { "ajv": … }`, `jest/chalk`, `request>form-data`)
-  changes only that parent's own dependencies. A version range can follow the parent's
-  name too (`eslint@^8`).
+  changes only that parent's own dependencies. The parent can be a workspace, by its
+  name. A version range can follow the parent's name too (`eslint@^8`).
 - The value can be a range, a version, a tag, an alias (`npm:other@^1`), a tarball URL
   or a `file:` path from the root. `$name` means the range the root declares for `name`.
   `-` removes the dependency.
-- Peer ranges are overridden too. This lets a plugin share the version the root chose.
-- The root's and workspaces' own dependencies are not changed. Edit their
-  `package.json` instead.
+- Peer ranges of installed packages are overridden too. This lets a plugin share the
+  version the root chose.
+- npm refuses an override that conflicts with one of the root's own dependencies. upm
+  applies it, as pnpm, yarn and bun do.
 
 `upm.lock` records the overrides. When they change, the next install resolves the
 affected dependencies again and keeps the rest of the tree. `--frozen-lockfile` fails

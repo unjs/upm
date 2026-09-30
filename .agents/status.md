@@ -162,8 +162,8 @@ These need a scope decision, not just a patch:
   an excluded name) whose range would have taken an older one. Checking every locked version
   would need its date from the full document, a request per name. Start at `loadAged` in
   `src/registry.ts`.
-- Overrides (`readOverrides` in `src/overrides.ts`) change installed packages' edges and peer
-  ranges, never a top's own. A rule scoped to a parent reaches that parent's own edges only;
+- Overrides (`readOverrides` in `src/overrides.ts`) change every edge, a top's included, and
+  installed packages' peer ranges. A rule scoped to a parent reaches that parent's own edges only;
   deeper nesting is warned about and skipped, since a `name@version` has one set of edges. It
   would need a package keyed by the rules over it, as peer copies would. A rule's range matches
   the version the edge would take without it, where npm asks whether the declared range

@@ -18,6 +18,8 @@ import {
 } from "../src/lock.ts";
 import { hosts, registryBase, tarballUrl } from "../src/registry.ts";
 import type { Lockfile } from "../src/lock.ts";
+import { valuesFor } from "../src/overrides.ts";
+import type { Overrides } from "../src/overrides.ts";
 import { filterPlatform } from "../src/resolve.ts";
 import type { Resolution, ResolvedPackage, RootManifest } from "../src/resolve.ts";
 
@@ -1559,10 +1561,26 @@ describe("workspaces", () => {
     it("sees the overrides move, whatever order they are in", () => {
       const lock = toLockfile(tree());
       lock.root.overrides = { "a>b": "1.0.0", c: "^2" };
-      expect(sameTree(lock, manifest, found(), { c: "^2", "a>b": "1.0.0" })).toBe(true);
-      expect(sameTree(lock, manifest, found(), { c: "^2" })).toBe(false);
+      const over = (overrides: Overrides) => ({ overrides, values: valuesFor(overrides) });
+      expect(sameTree(lock, manifest, found(), over({ c: "^2", "a>b": "1.0.0" }))).toBe(true);
+      expect(sameTree(lock, manifest, found(), over({ c: "^2" }))).toBe(false);
       expect(sameTree(lock, manifest, found())).toBe(false);
-      expect(sameTree(toLockfile(tree()), manifest, found(), { c: "^2" })).toBe(false);
+      expect(sameTree(toLockfile(tree()), manifest, found(), over({ c: "^2" }))).toBe(false);
+    });
+
+    it("takes a top's pin that an override reaching its edge allows, and no other", () => {
+      const pinned = (overrides: Overrides) => {
+        const lock = toLockfile(tree());
+        lock.workspaces!["packages/a"]!.dependencies!.nanoid = "4.0.0";
+        lock.root.overrides = overrides;
+        return sameTree(lock, manifest, found(), { overrides, values: valuesFor(overrides) });
+      };
+      expect(pinned({ nanoid: "^4" })).toBe(true);
+      expect(pinned({ "a@1>nanoid": "4.0.0" })).toBe(true);
+      expect(pinned({ "a@2>nanoid": "4.0.0" })).toBe(false);
+      expect(pinned({ "other>nanoid": "4.0.0" })).toBe(false);
+      expect(pinned({ nanoid: "^3" })).toBe(false);
+      expect(pinned({ nanoid: "-" })).toBe(false);
     });
 
     it("sees the patterns move", () => {

@@ -122,8 +122,8 @@ versions, so a changed package.json still resolves as if there were no tree. The
 lockfile, not proof of the tree: the state still decides what is on disk. A frozen install
 never reads it, and a tree another manager's lockfile changed keeps none.
 
-`sameTree` also holds each top's pins to the ranges it declares, so a lockfile edited to pin
-another version under the same range is stale. An install that resolves writes `upm.lock`
+`sameTree` also holds each top's pins to the ranges it declares, or to the value of an override
+that reaches the edge, so a lockfile edited to pin another version under the same range is stale. An install that resolves writes `upm.lock`
 before the fill, so the link can run under it, and puts back what was there when the install
 fails: its integrities came from metadata, and no tarball proved them. A lockfile another
 install wrote since stays. `lock` writes from metadata alone.

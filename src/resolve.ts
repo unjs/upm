@@ -216,7 +216,7 @@ export async function resolveTree(
   const over =
     declaresOverrides(manifest) || before
       ? (await import("./overrides.ts")).overrider(manifest, before, {
-          parent: (from) => (tops.has(from) ? undefined : records.get(from)),
+          parent: (from) => records.get(from),
           take: async (spec) => kept(spec) ?? (await pick(spec)).version,
           locked,
           baseFor: registry.baseFor,
@@ -346,9 +346,13 @@ export async function resolveTree(
     const pkg = locked[key]!;
     start(key, async () => {
       const { name, source } = pkg;
-      const m = source
-        ? await read(source, pkg.integrity)
-        : await pick(parseDep(name, over!.specOf(pkg)));
+      const spec = source ?? over!.specOf(pkg);
+      const m = source ? await read(source, pkg.integrity) : await pick(parseDep(name, spec));
+      // An alias whose url did not name the package it is: never walk another one in its place.
+      if (integrityOf(m) !== pkg.integrity) {
+        const why = `locked ${key} is not ${name}@${spec} on the registry, by its integrity`;
+        throw fail(`${why}: remove it from the lockfile to resolve it again`, "ELOCK");
+      }
       await walk(from, key, name, m, source);
     });
   }
@@ -507,13 +511,14 @@ export async function resolveTree(
     given = false,
   ): Promise<void> {
     try {
-      // An override is the root's: a local tarball it names is a path from the root.
-      let base = from;
       if (!given && over?.has(name)) {
         const to = await over.edge(from, name, range);
         if (to === undefined) return;
-        if (to !== range) [range, base] = [to, ROOT];
+        range = to;
       }
+      // A range an override gives is the root's, a settled peer's too: a local tarball it names
+      // is a path from the root.
+      const base = over?.gives(name, range) ? ROOT : from;
       const spec = parseDep(name, range);
       if (spec.type === "tarball") {
         const source = sourceOf(spec.fetchSpec, base);
