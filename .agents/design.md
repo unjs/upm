@@ -77,6 +77,11 @@ An unrelated manifest edit should not upgrade the rest of the tree. But a reused
 plugin must see the current host, not a peer binding copied from an older tree.
 Check both version stability and peer rebinding when changing lock reuse.
 
+The overrides a lockfile was made under are in it (`root.overrides`, normalized), so a
+changed rule makes it stale. A locked entry replays exact versions and no ranges, so one with
+an edge to a name whose rule changed is walked again from its manifest at its locked version,
+not replayed; one whose `-` went could have any edge back, so then every entry is.
+
 Do not equate an early resolver pick with a final dependency. Optional failures and
 peer settling can remove it. Prefetch may fill the cache, but must not decide what
 is linked or turn an optional failure into a required one.

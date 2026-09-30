@@ -10,6 +10,7 @@ import type { Registry } from "./registry.ts";
 import { parseDep, tarballSource } from "./spec.ts";
 import type { Spec } from "./spec.ts";
 import { createLimiter } from "./limit.ts";
+import type { Overrides } from "./overrides.ts";
 import type { Manifest } from "./types.ts";
 
 export interface ResolvedPackage {
@@ -80,6 +81,10 @@ export interface RootManifest {
   peerDependenciesMeta?: Record<string, { optional?: boolean }>;
   bin?: unknown;
   workspaces?: string[] | { packages?: string[] };
+  /** npm's, yarn's and pnpm's overrides: the root's apply, as `readOverrides` reads them. */
+  overrides?: Record<string, unknown>;
+  resolutions?: Record<string, string>;
+  pnpm?: { overrides?: Record<string, string> };
 }
 
 /** The root's declared ranges, verbatim. Groups with nothing in them are left out. */
@@ -93,6 +98,8 @@ export interface Resolution {
     dependencies: Record<string, string>;
     /** The workspace patterns as declared, so the lockfile can tell when they move. */
     workspaces?: string[];
+    /** The overrides the tree was resolved under, as `readOverrides` spells them. */
+    overrides?: Overrides;
   };
   packages: Record<string, ResolvedPackage>;
   warnings: string[];
@@ -204,6 +211,17 @@ export async function resolveTree(
     started.add(key);
     records.set(key, found);
   }
+  // Loaded only where there are overrides, now or in the lock, so no other resolve pays for it.
+  const before = options.locked?.root.overrides;
+  const over =
+    declaresOverrides(manifest) || before
+      ? (await import("./overrides.ts")).overrider(manifest, before, {
+          parent: (from) => (tops.has(from) ? undefined : records.get(from)),
+          take: async (spec) => kept(spec) ?? (await pick(spec)).version,
+          locked,
+          baseFor: registry.baseFor,
+        })
+      : undefined;
 
   // Memoized on the fetched name and range, not the dep name: the same range never resolves
   // twice, and two aliases of one package share the pick with each other and with a plain dep.
@@ -265,11 +283,14 @@ export async function resolveTree(
     m: Manifest,
     source?: string,
   ): Promise<void> | undefined {
-    const key = `${name}@${source ?? m.version}`;
+    return start(`${name}@${source ?? m.version}`, (key) => walk(from, key, name, m, source));
+  }
+
+  function start(key: string, run: (key: string) => Promise<void>): Promise<void> | undefined {
     if (started.has(key)) return undefined;
     started.add(key);
     edges.set(key, []);
-    const task = walk(from, key, name, m, source);
+    const task = run(key);
     // A later parent never awaits this walk, so record the failure where everyone can see it.
     task.catch((error: unknown) => dead.set(key, error));
     pending.push(task);
@@ -306,14 +327,30 @@ export async function resolveTree(
     const optional = m.optionalDependencies ?? {};
     const own = m.dependencies ?? {};
     const peers = declaredPeers(m);
-    if (Object.keys(peers).length > 0) found.peers = peers;
     await Promise.all([
       ...Object.entries(own)
         .filter(([n]) => !(n in optional))
         .map(([n, r]) => edge(key, n, r, false)),
       ...Object.entries(optional).map(([n, r]) => edge(key, n, r, true)),
+      over?.peers(key, found, peers),
     ]);
-    settle(key, peers, m.peerDependencies ?? {});
+    if (Object.keys(peers).length > 0) found.peers = peers;
+    settle(key, peers, found.peerDependencies ?? {});
+  }
+
+  /**
+   * A locked package the changed overrides reach, walked again from its manifest at its locked
+   * version: its bytes stay, its edges choose again.
+   */
+  function again(from: string, key: string): void {
+    const pkg = locked[key]!;
+    start(key, async () => {
+      const { name, source } = pkg;
+      const m = source
+        ? await read(source, pkg.integrity)
+        : await pick(parseDep(name, over!.specOf(pkg)));
+      await walk(from, key, name, m, source);
+    });
   }
 
   /**
@@ -361,6 +398,7 @@ export async function resolveTree(
    */
   function visitLocked(from: string, key: string): void {
     if (started.has(key)) return;
+    if (over?.touched(key)) return again(from, key);
     started.add(key);
     const { dependencies, optionalDependencies = {}, ...pkg } = locked[key]!;
     const peers = pkg.peers ?? {};
@@ -457,7 +495,8 @@ export async function resolveTree(
    * `optional` marks an optionalDependencies edge: the boundary that swallows failures.
    * `fresh` skips the lockfile: a new consumer's peer that nothing in the tree satisfies is
    * fetched the way a fresh resolve would, not revived from a lock entry nothing reaches —
-   * or worse, taken from a dev-only one.
+   * or worse, taken from a dev-only one. `given` is a range the overrides already had their say
+   * on, as a settled peer's.
    */
   async function edge(
     from: string,
@@ -465,11 +504,19 @@ export async function resolveTree(
     range: string,
     optional: boolean,
     fresh = false,
+    given = false,
   ): Promise<void> {
     try {
+      // An override is the root's: a local tarball it names is a path from the root.
+      let base = from;
+      if (!given && over?.has(name)) {
+        const to = await over.edge(from, name, range);
+        if (to === undefined) return;
+        if (to !== range) [range, base] = [to, ROOT];
+      }
       const spec = parseDep(name, range);
       if (spec.type === "tarball") {
-        const source = sourceOf(spec.fetchSpec, from);
+        const source = sourceOf(spec.fetchSpec, base);
         // Replayed when locked, as a kept registry version is. Walked again when deduping, so its
         // own ranges choose again, but from the bytes the lock pinned: those never move.
         const pinned = locked[`${spec.name}@${source}`]?.integrity;
@@ -597,7 +644,8 @@ export async function resolveTree(
       group.map(([from], i) => {
         const [spec, fresh] = specs[best >= 0 && answers[i] !== undefined ? best : i]!;
         // prune() decides what an unmet peer costs: an optional ancestor drops, a required one dies.
-        return edge(from, name, spec, false, fresh).catch((e: unknown) => void dead.set(from, e));
+        const settled = edge(from, name, spec, false, fresh, true);
+        return settled.catch((e: unknown) => void dead.set(from, e));
       }),
     );
   }
@@ -688,10 +736,16 @@ export async function resolveTree(
       ...(specs && { specs }),
       dependencies: sorted(direct),
       ...(patterns && { workspaces: patterns }),
+      ...(over && Object.keys(over.overrides).length > 0 && { overrides: over.overrides }),
     },
     packages,
     warnings: [...warnings].sort(),
   };
+}
+
+/** Whether the root names overrides in any field `readOverrides` reads. */
+export function declaresOverrides(manifest: RootManifest): boolean {
+  return !!(manifest.overrides || manifest.resolutions || manifest.pnpm?.overrides);
 }
 
 /** What the resolution was made from, so `lock` can tell whether package.json moved. */

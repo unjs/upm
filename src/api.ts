@@ -22,6 +22,7 @@ import {
   writeLockfile,
 } from "./lock.ts";
 import type { ForeignFile, Lockfile } from "./lock.ts";
+import type { Overrides } from "./overrides.ts";
 import {
   addDeps,
   formatManifest,
@@ -38,6 +39,7 @@ import {
   allDeps,
   currentPlatform,
   declaredWorkspaces,
+  declaresOverrides,
   filterPlatform,
   GROUPS,
   integrityOf,
@@ -821,7 +823,8 @@ async function restoreLock(ctx: Context, project: Project, state?: InstallState)
     } catch {
       return; // torn, or another version's: resolve
     }
-    if (!sameTree(ctx.restored, manifest, workspaces)) {
+    const { overrides } = await overridesOf(manifest);
+    if (!sameTree(ctx.restored, manifest, workspaces, overrides)) {
       ctx.restored = undefined;
       return;
     }
@@ -1525,14 +1528,16 @@ async function plan(
     if (ctx.dedupe) throw (await import("./foreign-lock.ts")).beside(foreign, "dedupe");
     return await foreignLock(ctx, project, foreign);
   }
-  warnUnapplied(ctx, manifest);
+  const { overrides, skipped } = await overridesOf(manifest);
+  warnUnapplied(ctx, manifest, skipped);
   const existing = frozen
     ? await readLockfile(dir, (text) => (ctx.planned = text))
     : (ctx.restored ?? (await currentLock(ctx, dir)));
   trace("lockread");
   // A local tarball is read like package.json: other bytes in the file make the lockfile stale.
   const moved = existing ? await movedIn(ctx, dir, existing, walk.tarball, recorded) : [];
-  if (existing && moved.length === 0 && sameTree(existing, manifest, workspaces) && !ctx.dedupe) {
+  const same = existing && sameTree(existing, manifest, workspaces, overrides);
+  if (same && moved.length === 0 && !ctx.dedupe) {
     opened?.close();
     return existing;
   }
@@ -1557,12 +1562,21 @@ async function plan(
 /**
  * For `upm.lock` only: another manager's lockfile was resolved with these fields applied. Not
  * on a no-op install, since the install that last read package.json said it already.
+ * `skipped` names the overrides upm cannot apply.
  */
-function warnUnapplied(ctx: Context, manifest: RootManifest): void {
-  const fields = unapplied(manifest);
+function warnUnapplied(ctx: Context, manifest: RootManifest, skipped: string[]): void {
+  const fields = [...skipped, ...unapplied(manifest)];
   if (fields.length > 0) {
     ctx.log(`ignoring ${fields.join(", ")} in package.json: upm does not apply them`, "warn");
   }
+}
+
+/** The root's overrides, loading their reader only for a package.json that declares some. */
+async function overridesOf(
+  manifest: RootManifest,
+): Promise<{ overrides: Overrides; skipped: string[] }> {
+  if (!declaresOverrides(manifest)) return { overrides: {}, skipped: [] };
+  return (await import("./overrides.ts")).readOverrides(manifest);
 }
 
 /** What an install's walk is given besides the registry: its prefetch and its tarball reader. */
@@ -1627,12 +1641,13 @@ async function lockProject(ctx: Context, options: LockOptions): Promise<Lockfile
     ctx.log(`✓ ${foreign} · ${counts(locked)}`, "info");
     return locked;
   }
-  warnUnapplied(ctx, manifest);
+  const { overrides, skipped } = await overridesOf(manifest);
+  warnUnapplied(ctx, manifest, skipped);
   const existing = await currentLock(ctx, dir);
   const store = openStore(ctx);
   const tarball = tarballReader(ctx, dir, store);
   const moved = existing ? await movedIn(ctx, dir, existing, tarball) : [];
-  if (existing && moved.length === 0 && sameTree(existing, manifest, workspaces)) {
+  if (existing && moved.length === 0 && sameTree(existing, manifest, workspaces, overrides)) {
     ctx.log(`✓ ${LOCKFILE} · ${counts(existing)}`, "info");
     return existing;
   }

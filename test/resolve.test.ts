@@ -3001,3 +3001,156 @@ describe("tarball dependencies", () => {
     expect(manifests).toEqual([]);
   });
 });
+
+describe("overrides", () => {
+  const fixture: Fixture = {
+    a: { "1.0.0": { dependencies: { b: "^1" } }, "2.0.0": { dependencies: { b: "^1" } } },
+    b: { "1.0.0": {}, "1.2.0": {}, "1.9.0": {}, "2.0.0": {} },
+    c: { "1.0.0": { dependencies: { b: "~1.2.0" } } },
+    d: { "1.0.0": { dependencies: { a: "^1", e: "^1" } } },
+    e: { "1.0.0": { dependencies: { b: "^1" } } },
+  };
+  const edgesOf = (out: Resolution, key: string) => allDeps(out.packages[key]!);
+
+  it("moves every edge of installed packages to the name, and records what it resolved under", async () => {
+    const root = { dependencies: { a: "^1", c: "^1" }, overrides: { b: "2.0.0" } };
+    const out = await resolve(fixture, root);
+    expect(edgesOf(out, "a@1.0.0")).toEqual({ b: "2.0.0" });
+    expect(edgesOf(out, "c@1.0.0")).toEqual({ b: "2.0.0" });
+    expect(Object.keys(out.packages)).toEqual(["a@1.0.0", "b@2.0.0", "c@1.0.0"]);
+    expect(out.root.overrides).toEqual({ b: "2.0.0" });
+    // Through the lockfile, which keeps the rules so a changed one is a changed tree.
+    const lock = toLockfile(out);
+    expect(lock.root.overrides).toEqual({ b: "2.0.0" });
+    expect(fromLockfile(parseLockfile(formatLockfile(lock))).root.overrides).toEqual({
+      b: "2.0.0",
+    });
+  });
+
+  it("leaves what the root and a workspace declare to them", async () => {
+    const root = { dependencies: { a: "^1", b: "^1" }, resolutions: { b: "2.0.0" } };
+    const ws = { path: "w", manifest: { name: "w", dependencies: { b: "1.2.0" } } };
+    const out = await resolve(fixture, root, { workspaces: [ws] });
+    expect(out.root.dependencies).toEqual({ a: "1.0.0", b: "1.9.0" });
+    expect(out.packages["w@link:w"]!.dependencies).toEqual({ b: "1.2.0" });
+    expect(edgesOf(out, "a@1.0.0")).toEqual({ b: "2.0.0" });
+  });
+
+  it("scopes a rule to a parent's own edges, and to its version", async () => {
+    const root = { dependencies: { c: "^1", d: "^1" } };
+    const scoped = await resolve(fixture, { ...root, pnpm: { overrides: { "a>b": "1.0.0" } } });
+    expect(edgesOf(scoped, "a@1.0.0")).toEqual({ b: "1.0.0" });
+    expect(edgesOf(scoped, "e@1.0.0")).toEqual({ b: "1.9.0" });
+    expect(edgesOf(scoped, "c@1.0.0")).toEqual({ b: "1.2.0" });
+    const other = await resolve(fixture, { ...root, overrides: { "a@2": { b: "1.0.0" } } });
+    expect(edgesOf(other, "a@1.0.0")).toEqual({ b: "1.9.0" });
+  });
+
+  it("matches a rule's range against the version the edge would take without it", async () => {
+    const root = { dependencies: { a: "^1", c: "^1" }, overrides: { "b@<1.5": "1.9.0" } };
+    const out = await resolve(fixture, root);
+    // a's ^1 takes 1.9.0 anyway; c's ~1.2.0 would take 1.2.0, which the rule moves.
+    expect(edgesOf(out, "a@1.0.0")).toEqual({ b: "1.9.0" });
+    expect(edgesOf(out, "c@1.0.0")).toEqual({ b: "1.9.0" });
+    expect(Object.keys(out.packages)).toEqual(["a@1.0.0", "b@1.9.0", "c@1.0.0"]);
+  });
+
+  it("drops an edge on `-`, and installs another package under the name on an alias", async () => {
+    const dropped = await resolve(fixture, {
+      dependencies: { d: "^1" },
+      pnpm: { overrides: { "d>e": "-", b: "npm:a@2" } },
+    });
+    expect(edgesOf(dropped, "d@1.0.0")).toEqual({ a: "1.0.0" });
+    expect(edgesOf(dropped, "a@1.0.0")).toEqual({ b: "2.0.0" });
+    // The alias is a@2 installed as b; its own b@^1 is overridden to itself, which ends the walk.
+    expect(dropped.packages["b@2.0.0"]!.resolved).toBe("https://r/a/-/a-2.0.0.tgz");
+  });
+
+  it("overrides a peer range, so a plugin shares the host the root chose", async () => {
+    const peers: Fixture = {
+      host: { "17.0.0": {}, "18.0.0": {} },
+      plugin: { "1.0.0": { peerDependencies: { host: "^17", gone: "^1" } } },
+    };
+    const root = {
+      dependencies: { host: "^18", plugin: "^1" },
+      overrides: { host: "$host", gone: "-" },
+    };
+    const out = await resolve(peers, root);
+    expect(Object.keys(out.packages)).toEqual(["host@18.0.0", "plugin@1.0.0"]);
+    expect(out.packages["plugin@1.0.0"]).toMatchObject({
+      dependencies: { host: "18.0.0" },
+      peerDependencies: { host: "^18" },
+      peers: { host: "required" },
+    });
+    expect(unmetPeers(out)).toEqual([]);
+  });
+
+  it("reads a local tarball an override names from the root", async () => {
+    const reads: string[] = [];
+    const tarball = async (source: string): Promise<Manifest> => {
+      reads.push(source);
+      return { name: "b", version: "3.0.0", dist: { tarball: source, integrity: "sha512-t" } };
+    };
+    const root = { dependencies: { a: "^1" }, overrides: { b: "file:./vendor/b.tgz" } };
+    const out = await resolve(fixture, root, { tarball });
+    expect(reads).toEqual(["file:vendor/b.tgz"]);
+    expect(edgesOf(out, "a@1.0.0")).toEqual({ b: "file:vendor/b.tgz" });
+  });
+
+  describe("against a previous resolution", () => {
+    const root = { dependencies: { c: "^1", d: "^1" } };
+
+    it("keeps the tree while the rules stay, and asks for nothing", async () => {
+      const manifest = { ...root, overrides: { b: "1.0.0" } };
+      const first = await resolve(fixture, manifest);
+      const { result, calls } = run(fixture, manifest, { locked: first });
+      expect(await result).toEqual(first);
+      expect(calls).toEqual([]);
+    });
+
+    it("walks again only the packages with an edge to a name whose rule moved", async () => {
+      const first = await resolve(fixture, { ...root, overrides: { b: "1.0.0" } });
+      const next = { ...root, overrides: { b: "1.2.0" } };
+      const { result, calls } = run(fixture, next, { locked: first });
+      const out = await result;
+      expect(calls.sort()).toEqual(["a", "b", "c", "e"]);
+      for (const key of ["a@1.0.0", "c@1.0.0", "e@1.0.0"]) {
+        expect(edgesOf(out, key)).toEqual({ b: "1.2.0" });
+      }
+      expect(edgesOf(out, "d@1.0.0")).toEqual({ a: "1.0.0", e: "1.0.0" });
+      expect(Object.keys(out.packages)).toEqual([
+        "a@1.0.0",
+        "b@1.2.0",
+        "c@1.0.0",
+        "d@1.0.0",
+        "e@1.0.0",
+      ]);
+      // With the rule gone, each edge's own range picks again.
+      const bare = await resolve(fixture, root, { locked: out });
+      expect(edgesOf(bare, "a@1.0.0")).toEqual({ b: "1.2.0" });
+      expect(edgesOf(bare, "c@1.0.0")).toEqual({ b: "1.2.0" });
+    });
+
+    it("brings back an edge a `-` dropped once the `-` goes", async () => {
+      const first = await resolve(fixture, { ...root, pnpm: { overrides: { "d>e": "-" } } });
+      expect(edgesOf(first, "d@1.0.0")).toEqual({ a: "1.0.0" });
+      const out = await resolve(fixture, root, { locked: first });
+      expect(edgesOf(out, "d@1.0.0")).toEqual({ a: "1.0.0", e: "1.0.0" });
+    });
+
+    it("walks a touched alias again as the package it names", async () => {
+      const aliased = { dependencies: { x: "npm:a@^1" } };
+      const first = await resolve(fixture, aliased);
+      const { result, calls } = run(
+        fixture,
+        { ...aliased, overrides: { b: "1.0.0" } },
+        {
+          locked: first,
+        },
+      );
+      const out = await result;
+      expect(calls.sort()).toEqual(["a", "b"]);
+      expect(edgesOf(out, "x@1.0.0")).toEqual({ b: "1.0.0" });
+    });
+  });
+});

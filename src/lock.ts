@@ -2,6 +2,7 @@
 // `.upm` symlink layout has no stable equivalent of; ours is keyed by identity.
 import { builtin } from "./builtin.ts";
 import { normalizeBin } from "./normalize-bin.ts";
+import type { Overrides } from "./overrides.ts";
 import { registryBase, tarballUrl } from "./registry.ts";
 import type { BaseFor } from "./registry.ts";
 import { pid } from "./runtime.ts";
@@ -90,6 +91,11 @@ export interface Lockfile {
     dependencies: Record<string, string>;
     /** The workspace patterns as declared, so a changed set is found without the glob. */
     workspaces?: string[];
+    /**
+     * The overrides the tree was resolved under, one `[parent>]name[@range]` selector each, so
+     * `lock` can tell when package.json changed them.
+     */
+    overrides?: Overrides;
   };
   /** By root-relative path. */
   workspaces?: Record<string, WorkspaceEntry>;
@@ -279,16 +285,20 @@ export function formatLockfile(lock: Lockfile): string {
  * Whether the lockfile was made from this tree: the same workspace patterns, the same
  * workspaces at the same paths, names and versions, and in the root and in every workspace
  * the same declared ranges, each pinned to a version it allows — plus, in a workspace, the
- * same bins and peers, which its entry carries too. Anything else means a resolve; nothing
- * here needs the network.
+ * same bins and peers, which its entry carries too, and the same `overrides`, as
+ * `readOverrides` reads the root's. Anything else means a resolve; nothing here needs the
+ * network.
  */
 export function sameTree(
   lock: Lockfile,
   manifest: RootManifest,
   workspaces: { path: string; name: string; version: string; manifest: RootManifest }[],
+  overrides: Overrides = {},
 ): boolean {
   const patterns = JSON.stringify(declaredWorkspaces(manifest) ?? []);
   if (patterns !== JSON.stringify(lock.root.workspaces ?? [])) return false;
+  const same = JSON.stringify(sorted(overrides)) === JSON.stringify(sorted(lock.root.overrides));
+  if (!same) return false;
   if (!sameSpecs(declaredSpecs(manifest), lock.root.specs)) return false;
   if (!pinsFit(lock, lock.root.specs, lock.root.dependencies)) return false;
   const locked = lock.workspaces ?? {};
@@ -450,12 +460,14 @@ function canonical(from: LockEntry): LockEntry {
 
 function root(from: Lockfile["root"]): Lockfile["root"] {
   const specs = canonicalSpecs(from.specs);
+  const overrides = sorted(from.overrides);
   return {
     ...(from.name !== undefined && { name: from.name }),
     ...(from.version !== undefined && { version: from.version }),
     ...(specs && { specs }),
     dependencies: sorted(from.dependencies) ?? {},
     ...(from.workspaces?.length && { workspaces: from.workspaces }),
+    ...(overrides && { overrides }),
   };
 }
 
@@ -542,6 +554,7 @@ function validate(value: unknown): Lockfile {
   links(lock.root.dependencies, "root.dependencies", known, true);
   checkTop(lock.root.specs, lock.root.dependencies, "root");
   stringList(lock.root.workspaces, "root.workspaces");
+  stringMap(lock.root.overrides, "root.overrides");
   return lock;
 }
 

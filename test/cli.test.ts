@@ -1227,6 +1227,7 @@ describe("startup budget", () => {
     // index's aliases written back once read, `--help` within noise (41/41 and 110/108 ms).
     // 161,302 with a downloaded tarball's last-modified held to the release cutoff, `--help`
     // within noise (46/42 and 116/114 ms).
+    // overrides: their rules loaded only where package.json or the lock has some.
     const modules = await reachable();
     const bytes = [...modules.values()].reduce((total, size) => total + size, 0);
     expect(modules.size).toBeLessThanOrEqual(27); // `upm.ts` is the bin, `cli.ts` the program
@@ -1247,6 +1248,7 @@ describe("startup budget", () => {
       "vouch.ts",
       "index-upgrade.ts",
       "newer.ts",
+      "overrides.ts",
     ];
     for (const name of lazy) {
       expect(modules.has(name)).toBe(false);

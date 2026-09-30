@@ -1,0 +1,310 @@
+// The root's overrides: npm's `overrides`, yarn's `resolutions` and `pnpm.overrides`, read into
+// one map the resolver applies to the edges of installed packages. Portable: no Node here.
+import { tarballUrl } from "./registry.ts";
+import type { BaseFor } from "./registry.ts";
+import type { PeerKind, ResolvedPackage } from "./resolve.ts";
+import { parse, satisfies, validRange } from "./semver.ts";
+import { parseDep } from "./spec.ts";
+import type { Spec } from "./spec.ts";
+
+/**
+ * Selector -> what a matching edge takes instead: a spec, or `-` to drop the edge (pnpm's).
+ * A selector is pnpm's `[parent[@range]>]name[@range]`, whatever field it was written in,
+ * and a `$name` value is already the root's own range for that name.
+ */
+export type Overrides = Record<string, string>;
+
+export interface Rule {
+  name: string;
+  /** Matches when the version the edge would take without the rule is in this range. */
+  range?: string;
+  /** Only an edge of a package of this name, whose version is in `parentRange` when given. */
+  parent?: string;
+  parentRange?: string;
+  value: string;
+}
+
+/** What `overrider` needs of the resolve it serves. */
+export interface Walk {
+  /** The package at a key, a rule's parent; nothing for a top, whose edges stay as declared. */
+  parent: (from: string) => ResolvedPackage | undefined;
+  /** The version a spec takes without the rules. */
+  take: (spec: Spec) => Promise<string>;
+  /** What the resolve keeps from its lock, of which `touched` names what the rules moved. */
+  locked: Record<string, ResolvedPackage>;
+  baseFor: BaseFor;
+}
+
+/**
+ * The root's overrides applied over one resolve, `before` being those its lock was made under.
+ * Kept apart from the resolver so a project without overrides never loads this.
+ */
+export function overrider(manifest: object, before: Overrides | undefined, walk: Walk) {
+  const { overrides } = readOverrides(manifest);
+  const rules = compileOverrides(overrides);
+  const changed = changedTargets(before, overrides);
+
+  /**
+   * What the rules make of an edge of `from`: the spec it takes, or nothing when a `-` drops it.
+   * A rule with a range matches by the version the edge would take without it, so that is
+   * picked first.
+   */
+  async function edge(from: string, name: string, range: string): Promise<string | undefined> {
+    const list = rules.get(name);
+    const parent = list && walk.parent(from);
+    if (!parent) return range;
+    let would: Promise<string | undefined> | undefined;
+    for (const rule of list!) {
+      if (rule.parent !== undefined && rule.parent !== parent.name) continue;
+      if (rule.parentRange && !satisfies(parent.version, rule.parentRange)) continue;
+      if (rule.range) {
+        const version = await (would ??= wouldTake(name, range));
+        if (version === undefined || !satisfies(version, rule.range)) continue;
+      }
+      return rule.value === "-" ? undefined : rule.value;
+    }
+    return range;
+  }
+
+  /** The version an edge would take, as far as the lock or the registry says; nothing on failure. */
+  async function wouldTake(name: string, range: string): Promise<string | undefined> {
+    try {
+      const spec = parseDep(name, range);
+      if (spec.type === "version") return parse(spec.fetchSpec)?.version;
+      if (spec.type !== "range" && spec.type !== "tag") return undefined;
+      return await walk.take(spec);
+    } catch {
+      return undefined;
+    }
+  }
+
+  /**
+   * The rules over a package's peer ranges, written into its record: the tree settles its peers
+   * against them, and `unmetPeers` checks them. A `-` takes the peer away.
+   */
+  async function peers(
+    key: string,
+    found: ResolvedPackage,
+    kinds: Record<string, PeerKind>,
+  ): Promise<void> {
+    const declared = found.peerDependencies;
+    if (!declared) return;
+    await Promise.all(
+      Object.entries(declared).map(async ([name, range]) => {
+        const to = await edge(key, name, range);
+        if (to !== undefined) return void (declared[name] = to);
+        delete declared[name];
+        delete kinds[name];
+      }),
+    );
+    if (Object.keys(declared).length === 0) delete found.peerDependencies;
+  }
+
+  /**
+   * Whether a locked package has an edge the changed rules may move, so it is walked again. An
+   * edge a `-` dropped is in no entry, so taking a `-` away reaches every package.
+   */
+  function touched(key: string): boolean {
+    if (changed.all) return true;
+    if (changed.names.size === 0) return false;
+    const { dependencies, optionalDependencies, peerDependencies } = walk.locked[key]!;
+    return [dependencies, optionalDependencies, peerDependencies].some(
+      (map) => map && Object.keys(map).some((name) => changed.names.has(name)),
+    );
+  }
+
+  /**
+   * The spec a locked registry package is fetched again by. An alias's name is only in its
+   * tarball url, which is written down since it is not the one its own name derives.
+   */
+  function specOf({ name, version, resolved }: ResolvedPackage): string {
+    if (resolved === tarballUrl(walk.baseFor(name), name, version)) return version;
+    const found = /\/((?:@[^/]+(?:\/|%2f))?[^/]+)\/-\/[^/]+$/i.exec(resolved)?.[1];
+    let real = name;
+    try {
+      if (found) real = decodeURIComponent(found);
+    } catch {}
+    return real === name ? version : `npm:${real}@${version}`;
+  }
+
+  return { overrides, has: (name: string) => rules.has(name), edge, peers, touched, specOf };
+}
+
+/** The root groups a `$name` value can name, as npm reads them. */
+const GROUPS = ["dependencies", "devDependencies", "optionalDependencies", "peerDependencies"];
+
+interface Fields {
+  overrides?: unknown;
+  resolutions?: unknown;
+  pnpm?: { overrides?: unknown };
+  [group: string]: unknown;
+}
+
+/**
+ * What the root's package.json overrides, and the entries it holds that upm cannot apply —
+ * named by where they are, such as `overrides.a.b.c` — for the caller to say. A package has
+ * one set of edges in the tree, so a rule scoped to a parent reaches that parent's own
+ * dependencies, not deeper. A value that is not a spec, or two fields that disagree, fail.
+ */
+export function readOverrides(manifest: object): { overrides: Overrides; skipped: string[] } {
+  const m = manifest as Fields;
+  const found = new Map<string, [value: string, from: string]>();
+  const skipped: string[] = [];
+  const put = (selector: string | undefined, value: unknown, from: string) => {
+    if (selector === undefined) return void skipped.push(from);
+    if (typeof value !== "string") throw fail(`${from} must be a string`);
+    const [name, rule] = [targetOf(selector), value.trim()];
+    const spec = normalValue(name, rule.startsWith("$") ? reference(m, rule, from) : rule, from);
+    const other = found.get(selector);
+    if (other && other[0] !== spec) throw fail(`${other[1]} and ${from} disagree`);
+    found.set(selector, [spec, from]);
+  };
+  for (const [key, value] of entries(m.resolutions, "resolutions")) {
+    put(yarnSelector(key), value, `resolutions[${JSON.stringify(key)}]`);
+  }
+  for (const [key, value] of entries(m.overrides, "overrides")) {
+    const at = `overrides.${key}`;
+    if (typeof value === "string") {
+      put(selector(key), value, at);
+      continue;
+    }
+    // A nested object: `.` is the parent's own override, the rest its dependencies'.
+    const parent = selector(key);
+    for (const [child, inner] of entries(value, at)) {
+      const where = `${at}.${child}`;
+      if (typeof inner !== "string") skipped.push(where);
+      else if (child === ".") put(parent, inner, where);
+      else put(parent && selector(child) && `${parent}>${selector(child)}`, inner, where);
+    }
+  }
+  for (const [key, value] of entries(m.pnpm?.overrides, "pnpm.overrides")) {
+    const parts = key.split(">");
+    const [parent, name] = parts.length === 2 ? parts.map(selector) : [undefined, selector(key)];
+    const scoped = parts.length === 2 ? parent && name && `${parent}>${name}` : name;
+    put(parts.length > 2 ? undefined : scoped, value, `pnpm.overrides[${JSON.stringify(key)}]`);
+  }
+  const overrides: Overrides = {};
+  for (const key of [...found.keys()].sort()) overrides[key] = found.get(key)![0];
+  return { overrides, skipped };
+}
+
+/** The rules of each name an edge can be to, most specific first: a parent, then a range. */
+export function compileOverrides(overrides: Overrides): Map<string, Rule[]> {
+  const out = new Map<string, Rule[]>();
+  for (const [selector, value] of Object.entries(overrides)) {
+    const at = selector.indexOf(">");
+    const target = split(selector.slice(at + 1));
+    const parent = at < 0 ? undefined : split(selector.slice(0, at));
+    const rule: Rule = {
+      ...target,
+      ...(parent && { parent: parent.name, parentRange: parent.range }),
+      value,
+    };
+    out.set(rule.name, [...(out.get(rule.name) ?? []), rule]);
+  }
+  const rank = (r: Rule) => (r.parent ? 0 : 2) + (r.range ? 0 : 1);
+  for (const rules of out.values()) rules.sort((a, b) => rank(a) - rank(b));
+  return out;
+}
+
+/**
+ * The names whose rules differ between two maps: edges to them are the ones to walk again.
+ * `all` when a `-` went, since the edge it dropped is not there to find.
+ */
+export function changedTargets(
+  before: Overrides = {},
+  after: Overrides = {},
+): { names: Set<string>; all: boolean } {
+  const names = new Set<string>();
+  let all = false;
+  for (const key of new Set([...Object.keys(before), ...Object.keys(after)])) {
+    const was = Object.hasOwn(before, key) ? before[key] : undefined;
+    const now = Object.hasOwn(after, key) ? after[key] : undefined;
+    if (was === now) continue;
+    names.add(targetOf(key));
+    if (was === "-") all = true;
+  }
+  return { names, all };
+}
+
+/** `name` or `name@range`, as a selector spells it, or nothing when it is not one. */
+function selector(key: string): string | undefined {
+  try {
+    const { name, range } = split(key.trim());
+    return range ? `${name}@${range}` : name;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * yarn's key, a path of names. A name alone, or after `**`, is a rule for every edge to it;
+ * `parent/name` is one for any `parent`'s own edge, as yarn's berry reads it. A longer path is
+ * not a rule here.
+ */
+function yarnSelector(key: string): string | undefined {
+  const parts: string[] = [];
+  for (const part of key.trim().split("/")) {
+    const last = parts.at(-1);
+    if (last?.startsWith("@") && !last.includes("/")) parts[parts.length - 1] = `${last}/${part}`;
+    else parts.push(part);
+  }
+  if (parts[0] === "**") parts.shift();
+  if (parts.length === 1) return selector(parts[0]!);
+  if (parts.length !== 2 || parts.includes("**")) return undefined;
+  const [parent, name] = parts.map(selector);
+  return parent && name && `${parent}>${name}`;
+}
+
+/** A selector's name and range, checked. `*` and yarn's `npm:` prefix say nothing more. */
+function split(key: string): { name: string; range?: string } {
+  const at = key.indexOf("@", 1);
+  const name = at < 0 ? key : key.slice(0, at);
+  let range = at < 0 ? undefined : key.slice(at + 1).replace(/^npm:/, "");
+  parseDep(name, "*"); // a valid name
+  if (range === "*" || range === "") range = undefined;
+  if (range !== undefined && !validRange(range) && !parse(range)) {
+    throw fail(`override ${key} has a range upm cannot read`);
+  }
+  return { name, ...(range && { range }) };
+}
+
+function targetOf(selector: string): string {
+  return split(selector.slice(selector.indexOf(">") + 1)).name;
+}
+
+/** npm's `$name`: the range the root declares for `name`. */
+function reference(m: Fields, value: string, from: string): string {
+  const name = value.slice(1);
+  for (const group of GROUPS) {
+    const map = m[group] as Record<string, unknown> | undefined;
+    const range = map && Object.hasOwn(map, name) ? map[name] : undefined;
+    if (typeof range === "string") return range;
+  }
+  throw fail(`${from} is ${value}, and the root does not depend on ${name}`);
+}
+
+/** The value as a spec of `name`: a local tarball's path as the root's, a workspace refused. */
+function normalValue(name: string, value: string, from: string): string {
+  if (value === "-") return value;
+  let spec;
+  try {
+    spec = parseDep(name, value);
+  } catch (error) {
+    throw fail(`${from}: ${(error as Error).message}`);
+  }
+  if (spec.type === "workspace") throw fail(`${from}: an override cannot name a workspace`);
+  return spec.type === "tarball" ? spec.fetchSpec : value;
+}
+
+function entries(value: unknown, at: string): [string, unknown][] {
+  if (value === undefined) return [];
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    throw fail(`${at} in package.json must be an object`);
+  }
+  return Object.entries(value);
+}
+
+function fail(message: string): Error {
+  return Object.assign(new Error(message), { code: "EMANIFEST" });
+}

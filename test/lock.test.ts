@@ -1556,6 +1556,15 @@ describe("workspaces", () => {
       expect(sameTree(toLockfile(tree()), manifest, found())).toBe(true);
     });
 
+    it("sees the overrides move, whatever order they are in", () => {
+      const lock = toLockfile(tree());
+      lock.root.overrides = { "a>b": "1.0.0", c: "^2" };
+      expect(sameTree(lock, manifest, found(), { c: "^2", "a>b": "1.0.0" })).toBe(true);
+      expect(sameTree(lock, manifest, found(), { c: "^2" })).toBe(false);
+      expect(sameTree(lock, manifest, found())).toBe(false);
+      expect(sameTree(toLockfile(tree()), manifest, found(), { c: "^2" })).toBe(false);
+    });
+
     it("sees the patterns move", () => {
       expect(
         sameTree(toLockfile(tree()), { ...manifest, workspaces: ["packages/**"] }, found()),

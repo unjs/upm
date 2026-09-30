@@ -13,6 +13,7 @@ export type {
   RootSpecs,
 } from "./resolve.ts";
 export { formatLockfile, fromLockfile, parseLockfile, toLockfile } from "./lock.ts";
+export type { Overrides } from "./overrides.ts";
 export type { LockEntry, Lockfile, WorkspaceEntry } from "./lock.ts";
 export { parseSpec } from "./spec.ts";
 export type { PackumentView, PickOptions } from "./pick.ts";

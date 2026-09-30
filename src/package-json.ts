@@ -95,8 +95,8 @@ export function unapplied(manifest: RootManifest): string[] {
   const set = (value: unknown) =>
     value !== null && typeof value === "object" && Object.keys(value).length > 0;
   return [
-    ...["overrides", "resolutions", "patchedDependencies"].filter((key) => set(m[key])),
-    ...["overrides", "packageExtensions", "patchedDependencies"]
+    ...(set(m.patchedDependencies) ? ["patchedDependencies"] : []),
+    ...["packageExtensions", "patchedDependencies"]
       .filter((key) => set(m.pnpm?.[key]))
       .map((key) => `pnpm.${key}`),
   ];

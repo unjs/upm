@@ -154,6 +154,39 @@ install that has to fetch it fails with `EINTEGRITY` if the server now sends oth
 take a new version, point the dependency at a new URL, or remove it and add it again.
 Credentials in `.npmrc` are sent to a URL on the same host, as for a registry.
 
+### Override dependencies
+
+```json
+{
+  "overrides": { "minimatch": "^9.0.5", "eslint": { "ajv": "6.12.6" }, "react": "$react" },
+  "resolutions": { "**/semver": "7.6.3", "jest/chalk": "4.1.2" },
+  "pnpm": { "overrides": { "glob@<9": "9.3.5", "request>form-data": "-" } }
+}
+```
+
+upm reads npm's `overrides`, yarn's `resolutions` and pnpm's `pnpm.overrides` from the
+root `package.json`, and changes the dependencies of installed packages to match:
+
+- `name` replaces every dependency on that package. `name@range` replaces only those
+  that would otherwise install a version in the range.
+- A rule scoped to a parent (`"eslint": { "ajv": … }`, `jest/chalk`, `request>form-data`)
+  changes only that parent's own dependencies. A version range can follow the parent's
+  name too (`eslint@^8`).
+- The value can be a range, a version, a tag, an alias (`npm:other@^1`), a tarball URL
+  or a `file:` path from the root. `$name` means the range the root declares for `name`.
+  `-` removes the dependency.
+- Peer ranges are overridden too. This lets a plugin share the version the root chose.
+- The root's and workspaces' own dependencies are not changed. Edit their
+  `package.json` instead.
+
+`upm.lock` records the overrides. When they change, the next install resolves the
+affected dependencies again and keeps the rest of the tree. `--frozen-lockfile` fails
+instead.
+
+A package has one set of dependencies in the tree, so a rule nested deeper than one
+parent (`"a": { "b": { "c": … } }`, `a/**/c`, `a>b>c`) is not applied. upm warns about
+it. Workspaces' overrides and `pnpm-workspace.yaml` are not read.
+
 ## Performance
 
 upm aims to make cached and repeat installs cheap by reusing files and saved
