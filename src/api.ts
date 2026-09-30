@@ -566,12 +566,13 @@ async function installed(ctx: Context, edit?: Edit, loaded?: Project): Promise<I
   // hash; failing that, the hash decides. A local tarball has only its stamp: any other, and
   // the install below checks its bytes.
   if (state?.inputs !== undefined && !edit && !ctx.dedupe) {
-    const stamps = stampsOf(ctx, dir);
+    const stamps = stampsOf(ctx, project);
     const stamped =
       stamps !== undefined &&
       project.proven &&
       sameStamp(stamps.lock, state.stamps?.lock) &&
       sameStamp(stamps.manifest, state.stamps?.manifest) &&
+      `${stamps.pnpm}` === `${state.stamps?.pnpm}` && // both absent, or the same
       stamps.settings === state.stamps?.settings;
     let matched = stamped;
     if (!matched) {
@@ -586,7 +587,7 @@ async function installed(ctx: Context, edit?: Edit, loaded?: Project): Promise<I
       // Read and hashed, or folders read again, this time: recorded so the next install need not.
       // The lockfile was read after its stamp; package.json before, so it is read again.
       if (!stamped || project.learned) {
-        const held = stamped || holds(dir, project.manifest) ? stamps : undefined;
+        const held = stamped || holds(project) ? stamps : undefined;
         await writeState(dir, { ...state, stamps: held, workspaces: project.proof });
       }
       trace("linked");
@@ -740,7 +741,7 @@ async function installed(ctx: Context, edit?: Edit, loaded?: Project): Promise<I
             packages: wanted.length,
             otherPlatforms: elsewhere,
             warnings: resolution.warnings,
-            stamps: await heldStamps(ctx, dir, inputs, project.manifest),
+            stamps: await heldStamps(ctx, project, inputs),
           },
     tarballs: filesOf(ctx, lock),
     workspaces: project.proof,
@@ -822,7 +823,7 @@ async function restoreLock(ctx: Context, project: Project, state?: InstallState)
     } catch {
       return; // torn, or another version's: resolve
     }
-    if (!sameTree(ctx.restored, manifest, workspaces, await overridesOf(manifest))) {
+    if (!sameTree(ctx.restored, manifest, workspaces, await overridesOf(project))) {
       ctx.restored = undefined;
       return;
     }
@@ -861,38 +862,46 @@ async function lockText(ctx: Context, dir: string): Promise<string | undefined> 
   }
 }
 
-/** The lockfile's and the root manifest's stamps, when both are there, and the settings. */
-function stampsOf(ctx: Context, dir: string): InstallState["stamps"] {
+/**
+ * The lockfile's and the root manifest's stamps, when both are there, and the settings; and
+ * pnpm-workspace.yaml's, when its overrides count.
+ */
+function stampsOf(ctx: Context, { dir, pnpm }: Project): InstallState["stamps"] {
   const { join } = builtin.path;
   const lock = ctx.read ? ctx.read.stamp : stampOf(lockSource(ctx, dir).path);
   const manifest = stampOf(join(dir, "package.json"));
-  return lock && manifest ? { lock, manifest, settings: settingsOf(settingsIn(ctx)) } : undefined;
+  if (!lock || !manifest) return undefined;
+  const yaml = pnpm && stampOf(join(dir, PNPM_WORKSPACE));
+  return { lock, manifest, settings: settingsOf(settingsIn(ctx)), ...(yaml && { pnpm: yaml }) };
 }
 
 /**
- * `stampsOf`, but only while both files still hold what this install planned from: each is
+ * `stampsOf`, but only while the files still hold what this install planned from: each is
  * stamped before it is read again, so a write since shows here, and a later one as another
  * stamp. Without it, another install's files, written meanwhile, would pass for this tree's.
  */
 async function heldStamps(
   ctx: Context,
-  dir: string,
+  project: Project,
   lock: string,
-  manifest: RootManifest,
 ): Promise<InstallState["stamps"]> {
-  const stamps = stampsOf(ctx, dir);
-  if (!stamps || (await lockText(ctx, dir)) !== lock || !holds(dir, manifest)) return undefined;
+  const stamps = stampsOf(ctx, project);
+  if (!stamps || (await lockText(ctx, project.dir)) !== lock || !holds(project)) return undefined;
   return stamps;
 }
 
-/** Whether the root's package.json parses to `manifest` still, as `inputsHash` compares it. */
-function holds(dir: string, manifest: RootManifest): boolean {
+/**
+ * Whether the root's package.json parses to `manifest` still, as `inputsHash` compares it, and
+ * pnpm-workspace.yaml holds the text its overrides were read from.
+ */
+function holds({ dir, manifest, pnpm }: Project): boolean {
   try {
     const text = builtin.fs.readFileSync(builtin.path.join(dir, "package.json"), "utf8");
-    return JSON.stringify(JSON.parse(text)) === JSON.stringify(manifest);
+    if (JSON.stringify(JSON.parse(text)) !== JSON.stringify(manifest)) return false;
   } catch {
     return false;
   }
+  return !pnpm || pnpmText(dir) === pnpm.text;
 }
 
 /** Each of the lockfile's local tarballs with the stamp this command took before it checked it. */
@@ -947,7 +956,14 @@ async function movedIn(
 /** What the tree is a function of, besides the store's content. */
 function inputsOf(ctx: Context, project: Project, lock: string): Inputs {
   const workspaces = project.workspaces.map((ws): [string, unknown] => [ws.path, ws.manifest]);
-  return { lock, manifest: project.manifest, workspaces, ...settingsIn(ctx) };
+  const pnpm = project.pnpm?.text;
+  return {
+    lock,
+    manifest: project.manifest,
+    workspaces,
+    ...(pnpm && { pnpm }),
+    ...settingsIn(ctx),
+  };
 }
 
 /** The inputs that are not files. */
@@ -1526,7 +1542,7 @@ async function plan(
     if (ctx.dedupe) throw (await import("./foreign-lock.ts")).beside(foreign, "dedupe");
     return await foreignLock(ctx, project, foreign);
   }
-  const overrides = await overridesOf(manifest);
+  const overrides = await overridesOf(project);
   warnUnapplied(ctx, manifest, overrides.skipped);
   const existing = frozen
     ? await readLockfile(dir, (text) => (ctx.planned = text))
@@ -1569,13 +1585,18 @@ function warnUnapplied(ctx: Context, manifest: RootManifest, skipped: string[]):
   }
 }
 
-/** The root's overrides, loading their reader only for a package.json that declares some. */
-async function overridesOf(manifest: RootManifest): Promise<TopOverrides & { skipped: string[] }> {
-  if (!declaresOverrides(manifest)) return { overrides: {}, skipped: [] };
+/** The root's overrides, loading their reader only for a project that declares some. */
+async function overridesOf({
+  manifest,
+  pnpm,
+}: Project): Promise<TopOverrides & { skipped: string[] }> {
+  if (!declaresOverrides(manifest) && !pnpm) return { overrides: {}, skipped: [] };
   const { readOverrides, valuesFor } = await import("./overrides.ts");
-  const read = readOverrides(manifest);
+  const read = readOverrides(manifest, pnpm?.overrides);
   return { ...read, values: valuesFor(read.overrides) };
 }
+
+const PNPM_WORKSPACE = "pnpm-workspace.yaml";
 
 /** What an install's walk is given besides the registry: its prefetch and its tarball reader. */
 type Walk = Pick<ResolveOptions, "onPick" | "tarball">;
@@ -1591,7 +1612,8 @@ async function resolveLock(
   const { dir, manifest } = project;
   const { dedupe, log } = ctx;
   const locked = keep(existing, registry.baseFor, moved);
-  const options = { registry, dedupe, ...walk, workspaces: tops(project) };
+  const pnpmOverrides = project.pnpm?.overrides;
+  const options = { registry, dedupe, ...walk, workspaces: tops(project), pnpmOverrides };
   let resolution = await resolveTree(manifest, { ...options, locked });
   // A range the lock could not satisfy brings in a version the kept ranges never got to see;
   // another pass lets them move onto it. The registry memoizes by version, so a pass that
@@ -1639,7 +1661,7 @@ async function lockProject(ctx: Context, options: LockOptions): Promise<Lockfile
     ctx.log(`✓ ${foreign} · ${counts(locked)}`, "info");
     return locked;
   }
-  const overrides = await overridesOf(manifest);
+  const overrides = await overridesOf(project);
   warnUnapplied(ctx, manifest, overrides.skipped);
   const existing = await currentLock(ctx, dir);
   const store = openStore(ctx);
@@ -1655,6 +1677,7 @@ async function lockProject(ctx: Context, options: LockOptions): Promise<Lockfile
     registry,
     locked: keep(existing, registry.baseFor, moved),
     workspaces: tops(project),
+    pnpmOverrides: project.pnpm?.overrides,
     tarball,
     onPick: counted(undefined, options.onProgress),
   }).finally(() => {
@@ -1754,6 +1777,8 @@ interface Project extends Omit<Listed, "workspaces"> {
   dir: string;
   manifest: RootManifest;
   workspaces: Workspace[];
+  /** pnpm-workspace.yaml, when it holds overrides: its text and those overrides. */
+  pnpm?: { text: string; overrides: unknown };
 }
 
 /** `resolving` opens the registry early for a resolve with no lockfile (`openEarly`). */
@@ -1762,9 +1787,29 @@ async function loadProject(ctx: Context, resolving?: "lock" | "tree"): Promise<P
   const { found } = ctx;
   const manifest = found?.manifest ?? (await loadManifest(dir)).manifest;
   if (resolving) openEarly(ctx, dir, manifest, resolving === "tree");
-  if (found?.listed) return { dir, manifest, ...found.listed };
-  const { workspacesOf } = await import("./workspaces.ts");
-  return { dir, manifest, ...(await workspacesOf(dir, manifest, !ctx.options.verify)) };
+  const pnpm = await pnpmOf(dir);
+  const listed =
+    found?.listed ??
+    (await (await import("./workspaces.ts")).workspacesOf(dir, manifest, !ctx.options.verify));
+  return { dir, manifest, ...listed, ...(pnpm && { pnpm }) };
+}
+
+/**
+ * pnpm-workspace.yaml, when it holds overrides: pnpm 10 and later read them there in place of
+ * package.json. Its text is then an input of the tree, as package.json's is.
+ */
+async function pnpmOf(dir: string): Promise<Project["pnpm"]> {
+  const text = pnpmText(dir);
+  if (text === undefined || !/^overrides\s*:/m.test(text)) return undefined;
+  return { text, overrides: (await import("./overrides.ts")).pnpmOverrides(text) };
+}
+
+function pnpmText(dir: string): string | undefined {
+  try {
+    return builtin.fs.readFileSync(builtin.path.join(dir, PNPM_WORKSPACE), "utf8"); // see readState
+  } catch {
+    return undefined;
+  }
 }
 
 /** What the resolver is told about the workspaces: where each is and what it declares. */

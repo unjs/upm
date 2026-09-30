@@ -93,8 +93,8 @@ do not claim byte verification from a size check.
 
 The install state carries two levels of evidence. Its `hash` describes the resolution and is
 compared with one computed from the lockfile; its `inputs` describe what that resolution was
-computed from (lockfile bytes, root manifest, each workspace's path and manifest, store,
-registry hosts, platform, flags), and an install whose inputs match checks only what the state
+computed from (lockfile bytes, root manifest, each workspace's path and manifest,
+`pnpm-workspace.yaml` when it holds overrides, store, registry hosts, platform, flags), and an install whose inputs match checks only what the state
 recorded — the links and bins of the root and of each workspace, the package dir each direct
 link lands on, the `.upm` entry names — without reading the graph. It costs a stat per direct
 dependency, never one per package; damage deeper in an entry is `--verify`'s to find. Both

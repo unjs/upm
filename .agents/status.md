@@ -166,9 +166,9 @@ These need a scope decision, not just a patch:
   installed packages' peer ranges. A rule scoped to a parent reaches that parent's own edges only;
   deeper nesting is warned about and skipped, since a `name@version` has one set of edges. It
   would need a package keyed by the rules over it, as peer copies would. A rule's range matches
-  the version the edge would take without it, where npm and pnpm 12 ask whether the declared
-  range intersects it. Workspaces' overrides and
-  `pnpm-workspace.yaml` are not read.
+  an edge whose declared range intersects it, as npm and pnpm 12 match. Of
+  `pnpm-workspace.yaml` only `overrides` is read (`pnpmOverrides`); its `catalog:` values, which
+  pnpm 12 prefers to `$name`, are not supported, and neither are workspaces' own overrides.
 - No separate copies of a consumer for different peer environments. Different
   consumers can have different peer versions, but an own dependency can still conflict
   with that consumer's peer range. `--verify` reports such conflicts; it cannot fix them.

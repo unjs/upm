@@ -52,9 +52,10 @@ export interface InstallState {
    * the rest of the inputs as `settingsOf` spells them. The same stamps again mean the same
    * bytes — a change of content moves the ctime, which no unprivileged tool can set back —
    * so the next install compares these and skips reading and hashing the two files;
-   * different stamps mean hashing, never a miss.
+   * different stamps mean hashing, never a miss. `pnpm` is pnpm-workspace.yaml's, when its
+   * overrides are an input.
    */
-  stamps?: { lock: Stamp; manifest: Stamp; settings: string };
+  stamps?: { lock: Stamp; manifest: Stamp; settings: string; pnpm?: Stamp };
   /**
    * Every local tarball the lockfile names, by source, with the stamp it had just before an
    * install checked it against the lockfile or read it into one, and the integrity both agreed
@@ -106,6 +107,8 @@ export interface Inputs {
   manifest: unknown;
   /** Each workspace's path and parsed package.json, in order, when there are any. */
   workspaces?: [string, unknown][];
+  /** pnpm-workspace.yaml's text, when it holds overrides. */
+  pnpm?: string;
   production: boolean;
   store: string;
   hoist: boolean;
@@ -123,12 +126,15 @@ export function inputsHash(inputs: Inputs): Promise<string> {
   const settings = settingsOf(inputs);
   // Without workspaces, the same value as before they counted: an older state still matches.
   const workspaces = inputs.workspaces?.length ? `${JSON.stringify(inputs.workspaces)}\n` : "";
+  const pnpm = inputs.pnpm === undefined ? "" : `${JSON.stringify(inputs.pnpm)}\n`;
   const manifest = JSON.stringify(inputs.manifest);
-  return shortHash(`upm-inputs-1\n${manifest}\n${workspaces}${settings}\n${inputs.lock}`);
+  return shortHash(`upm-inputs-1\n${manifest}\n${workspaces}${pnpm}${settings}\n${inputs.lock}`);
 }
 
 /** The inputs that are not the two files, as one string. */
-export function settingsOf(inputs: Omit<Inputs, "lock" | "manifest" | "workspaces">): string {
+export function settingsOf(
+  inputs: Omit<Inputs, "lock" | "manifest" | "workspaces" | "pnpm">,
+): string {
   const { production, store, hoist, hosts, platform } = inputs;
   return JSON.stringify([production, builtin.path.resolve(store), hoist, hosts, platform]);
 }

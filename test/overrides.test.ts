@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { changedTargets, compileOverrides, readOverrides } from "../src/overrides.ts";
+import {
+  changedTargets,
+  compileOverrides,
+  intersects,
+  pnpmOverrides,
+  readOverrides,
+} from "../src/overrides.ts";
 
 const read = (manifest: object) => readOverrides(manifest);
 
@@ -133,6 +139,52 @@ describe("readOverrides", () => {
   });
 });
 
+describe("pnpmOverrides", () => {
+  it("reads the overrides block of a pnpm-workspace.yaml a person wrote, and nothing else", () => {
+    const text = [
+      "# pnpm settings",
+      "packages:",
+      "- packages/*",
+      "overrides:",
+      "  ms: 2.1.1 # pinned for a reason",
+      '  "ansi-styles@>=4.3.0": 4.2.1',
+      "  'debug>ms': '-'",
+      '  hash: "a # b"',
+      "",
+      "  semver: ^7",
+      "catalog:",
+      "  react: ^18",
+    ].join("\r\n");
+    expect(pnpmOverrides(text)).toEqual({
+      ms: "2.1.1",
+      "ansi-styles@>=4.3.0": "4.2.1",
+      "debug>ms": "-",
+      hash: "a # b",
+      semver: "^7",
+    });
+    expect(pnpmOverrides("overrides: { ms: 2.1.1, 'a>b': '-' }\n")).toEqual({
+      ms: "2.1.1",
+      "a>b": "-",
+    });
+    expect(pnpmOverrides("packages:\n  - a\n")).toBeUndefined();
+    expect(pnpmOverrides("overrides:\n")).toEqual({});
+  });
+
+  it("joins package.json's rules, named by the file they came from", () => {
+    const manifest = { overrides: { ms: "2.1.1" } };
+    const pnpm = { "debug>ms": "-", ms: "2.1.1" };
+    expect(read(manifest)).toEqual({ overrides: { ms: "2.1.1" }, skipped: [] });
+    expect(readOverrides(manifest, pnpm)).toEqual({
+      overrides: { "debug>ms": "-", ms: "2.1.1" },
+      skipped: [],
+    });
+    expect(() => readOverrides(manifest, { ms: "2.1.2" })).toThrow(
+      'overrides.ms and pnpm-workspace.yaml overrides["ms"] disagree',
+    );
+    expect(() => readOverrides({}, ["ms"])).toThrow("must be an object");
+  });
+});
+
 describe("compileOverrides", () => {
   it("puts a rule for a version of a parent before one for any of it", () => {
     const rules = compileOverrides({ "a>b": "1.0.0", "a@1>b": "1.2.0" });
@@ -149,6 +201,30 @@ describe("compileOverrides", () => {
       parentRange: "1",
       value: "4",
     });
+  });
+});
+
+describe("intersects", () => {
+  it("is true when some version is in both ranges", () => {
+    const yes: [string, string][] = [
+      ["^4.1.0", "<4.2.0"],
+      ["^4.1.0", ">=4.3.0"],
+      ["1.2.3", "<2"],
+      ["<=1.0.0", ">=1.0.0"],
+      ["*", "<1"],
+      ["^1 || ^3", ">=3"],
+      [">1.0.0 <1.0.2", "1.0.1"],
+    ];
+    const no: [string, string][] = [
+      ["^4.1.0", ">=5"],
+      ["^1", "<1.0.0"],
+      ["~1.2.0", "1.3.x"],
+      ["<1.0.0", ">=1.0.0"],
+      [">1.0.0 <1.0.2", "1.0.2"],
+      ["^1", "not a range"],
+    ];
+    for (const [a, b] of yes) expect([a, b, intersects(a, b)]).toEqual([a, b, true]);
+    for (const [a, b] of no) expect([a, b, intersects(a, b)]).toEqual([a, b, false]);
   });
 });
 

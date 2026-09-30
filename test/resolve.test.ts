@@ -3056,13 +3056,12 @@ describe("overrides", () => {
     expect(edgesOf(other, "a@1.0.0")).toEqual({ b: "1.9.0" });
   });
 
-  it("matches a rule's range against the version the edge would take without it", async () => {
-    const root = { dependencies: { a: "^1", c: "^1" }, overrides: { "b@<1.5": "1.9.0" } };
+  it("matches a rule's range against the declared one, as npm and pnpm do", async () => {
+    const root = { dependencies: { a: "^1", c: "^1" }, overrides: { "b@<1.1": "2.0.0" } };
     const out = await resolve(fixture, root);
-    // a's ^1 takes 1.9.0 anyway; c's ~1.2.0 would take 1.2.0, which the rule moves.
-    expect(edgesOf(out, "a@1.0.0")).toEqual({ b: "1.9.0" });
-    expect(edgesOf(out, "c@1.0.0")).toEqual({ b: "1.9.0" });
-    expect(Object.keys(out.packages)).toEqual(["a@1.0.0", "b@1.9.0", "c@1.0.0"]);
+    // a's ^1 overlaps <1.1, though it would pick 1.9.0; c's ~1.2.0 does not.
+    expect(edgesOf(out, "a@1.0.0")).toEqual({ b: "2.0.0" });
+    expect(edgesOf(out, "c@1.0.0")).toEqual({ b: "1.2.0" });
   });
 
   it("drops an edge on `-`, and installs another package under the name on an alias", async () => {

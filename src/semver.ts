@@ -101,7 +101,7 @@ export function rsort(versions: string[]): string[] {
 }
 
 type Op = "<" | "<=" | ">" | ">=" | "=";
-interface Comparator {
+export interface Comparator {
   op: Op;
   v: Version;
 }
@@ -228,7 +228,8 @@ function parseSet(branch: string, incPr: boolean): Comparator[] | undefined {
 // each time, so it is kept. Comparators are never written to after this.
 const ranges = new Map<string, Comparator[][] | undefined>();
 
-function parseRange(range: string, incPr: boolean): Comparator[][] | undefined {
+/** A range as its comparator sets, any one of which a version must meet; undefined when invalid. */
+export function parseRange(range: string, incPr: boolean): Comparator[][] | undefined {
   if (typeof range !== "string") return undefined;
   const key = `${incPr ? "p" : "-"}${range}`;
   if (ranges.has(key)) return ranges.get(key);
@@ -245,7 +246,8 @@ function parseRange(range: string, incPr: boolean): Comparator[][] | undefined {
   return sets;
 }
 
-function holds(r: -1 | 0 | 1, op: Op): boolean {
+/** Whether a version that compares `r` to a comparator's version meets it. */
+export function holds(r: -1 | 0 | 1, op: Op): boolean {
   if (r === 0) return op !== "<" && op !== ">";
   return r < 0 ? op === "<" || op === "<=" : op === ">" || op === ">=";
 }

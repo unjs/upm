@@ -165,11 +165,21 @@ Credentials in `.npmrc` are sent to a URL on the same host, as for a registry.
 ```
 
 upm reads npm's `overrides`, yarn's `resolutions` and pnpm's `pnpm.overrides` from the
-root `package.json`, and changes dependencies across the whole tree to match: those of
-the root, of each workspace and of every installed package.
+root `package.json`, and the `overrides` of `pnpm-workspace.yaml`, where pnpm 10 and later
+keep them:
+
+```yaml
+overrides:
+  "semver@>=7.0.0 <7.5.2": 7.5.2
+  "request>form-data": "-"
+```
+
+It changes dependencies across the whole tree to match: those of the root, of each
+workspace and of every installed package.
 
 - `name` replaces every dependency on that package. `name@range` replaces only those
-  that would otherwise install a version in the range.
+  whose declared range overlaps it, as npm and pnpm match: `semver@<7.5.2` replaces
+  `^7.0.0` even where that would install 7.6.
 - A rule scoped to a parent (`"eslint": { "ajv": … }`, `jest/chalk`, `request>form-data`)
   changes only that parent's own dependencies. The parent can be a workspace, by its
   name. A version range can follow the parent's name too (`eslint@^8`).
@@ -187,7 +197,8 @@ instead.
 
 A package has one set of dependencies in the tree, so a rule nested deeper than one
 parent (`"a": { "b": { "c": … } }`, `a/**/c`, `a>b>c`) is not applied. upm warns about
-it. Workspaces' overrides and `pnpm-workspace.yaml` are not read.
+it; pnpm refuses `a>b>c`. Workspaces' overrides, `catalog:` values and the rest of
+`pnpm-workspace.yaml` are not read.
 
 ## Performance
 

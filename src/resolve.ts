@@ -144,6 +144,11 @@ export interface ResolveOptions {
    */
   workspaces?: { path: string; manifest: RootManifest }[];
   /**
+   * The `overrides` of the root's pnpm-workspace.yaml as `pnpmOverrides` reads them, where pnpm
+   * keeps them in place of package.json: applied with the manifest's own.
+   */
+  pnpmOverrides?: unknown;
+  /**
    * Reads a tarball dependency: its package.json, with `dist` giving the source as the tarball
    * and the integrity of its bytes. `source` is as `ResolvedPackage.source` spells it. `pinned`
    * is the integrity the lock has for it, whose bytes are the only ones to read: asked with it
@@ -213,11 +218,11 @@ export async function resolveTree(
   }
   // Loaded only where there are overrides, now or in the lock, so no other resolve pays for it.
   const before = options.locked?.root.overrides;
+  const { pnpmOverrides: pnpm } = options;
   const over =
-    declaresOverrides(manifest) || before
-      ? (await import("./overrides.ts")).overrider(manifest, before, {
+    declaresOverrides(manifest) || pnpm || before
+      ? (await import("./overrides.ts")).overrider(manifest, pnpm, before, {
           parent: (from) => records.get(from),
-          take: async (spec) => kept(spec) ?? (await pick(spec)).version,
           locked,
           baseFor: registry.baseFor,
         })
@@ -327,14 +332,14 @@ export async function resolveTree(
     const optional = m.optionalDependencies ?? {};
     const own = m.dependencies ?? {};
     const peers = declaredPeers(m);
+    over?.peers(key, found, peers);
+    if (Object.keys(peers).length > 0) found.peers = peers;
     await Promise.all([
       ...Object.entries(own)
         .filter(([n]) => !(n in optional))
         .map(([n, r]) => edge(key, n, r, false)),
       ...Object.entries(optional).map(([n, r]) => edge(key, n, r, true)),
-      over?.peers(key, found, peers),
     ]);
-    if (Object.keys(peers).length > 0) found.peers = peers;
     settle(key, peers, found.peerDependencies ?? {});
   }
 
@@ -512,7 +517,7 @@ export async function resolveTree(
   ): Promise<void> {
     try {
       if (!given && over?.has(name)) {
-        const to = await over.edge(from, name, range);
+        const to = over.edge(from, name, range);
         if (to === undefined) return;
         range = to;
       }

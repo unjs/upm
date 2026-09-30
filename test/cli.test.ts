@@ -1249,6 +1249,7 @@ describe("startup budget", () => {
       "index-upgrade.ts",
       "newer.ts",
       "overrides.ts",
+      "yaml.ts",
     ];
     for (const name of lazy) {
       expect(modules.has(name)).toBe(false);

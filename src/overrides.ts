@@ -1,11 +1,13 @@
-// The root's overrides: npm's `overrides`, yarn's `resolutions` and `pnpm.overrides`, read into
-// one map the resolver applies to the edges of installed packages. Portable: no Node here.
+// The root's overrides: npm's `overrides`, yarn's `resolutions`, `pnpm.overrides` and those of
+// pnpm-workspace.yaml, read into one map the resolver applies to the edges of the tree.
+// Portable: no Node here.
 import { tarballUrl } from "./registry.ts";
 import type { BaseFor } from "./registry.ts";
 import type { PeerKind, ResolvedPackage } from "./resolve.ts";
-import { parse, satisfies, validRange } from "./semver.ts";
+import { compare, holds, parse, parseRange, satisfies, validRange } from "./semver.ts";
+import type { Comparator } from "./semver.ts";
 import { parseDep } from "./spec.ts";
-import type { Spec } from "./spec.ts";
+import { yaml } from "./yaml.ts";
 
 /**
  * Selector -> what a matching edge takes instead: a spec, or `-` to drop the edge (pnpm's).
@@ -16,7 +18,7 @@ export type Overrides = Record<string, string>;
 
 export interface Rule {
   name: string;
-  /** Matches when the version the edge would take without the rule is in this range. */
+  /** Matches an edge whose declared range overlaps this one, as npm and pnpm match. */
   range?: string;
   /** Only an edge of a package of this name, whose version is in `parentRange` when given. */
   parent?: string;
@@ -34,8 +36,6 @@ export interface Parent {
 export interface Walk {
   /** The package at a key, a rule's parent; nothing for the root, which only unscoped rules reach. */
   parent: (from: string) => Parent | undefined;
-  /** The version a spec takes without the rules. */
-  take: (spec: Spec) => Promise<string>;
   /** What the resolve keeps from its lock, of which `touched` names what the rules moved. */
   locked: Record<string, ResolvedPackage>;
   baseFor: BaseFor;
@@ -45,61 +45,42 @@ export interface Walk {
  * The root's overrides applied over one resolve, `before` being those its lock was made under.
  * Kept apart from the resolver so a project without overrides never loads this.
  */
-export function overrider(manifest: object, before: Overrides | undefined, walk: Walk) {
-  const { overrides } = readOverrides(manifest);
+export function overrider(
+  manifest: object,
+  pnpm: unknown,
+  before: Overrides | undefined,
+  walk: Walk,
+) {
+  const { overrides } = readOverrides(manifest, pnpm);
   const rules = compileOverrides(overrides);
   const changed = changedTargets(before, overrides);
 
-  /**
-   * What the rules make of an edge of `from`: the spec it takes, or nothing when a `-` drops it.
-   * A rule with a range matches by the version the edge would take without it, so that is
-   * picked first.
-   */
-  async function edge(from: string, name: string, range: string): Promise<string | undefined> {
+  /** What the rules make of an edge of `from`: the spec it takes, or nothing when a `-` drops it. */
+  function edge(from: string, name: string, range: string): string | undefined {
     const parent = walk.parent(from);
-    let would: Promise<string | undefined> | undefined;
     for (const rule of rules.get(name) ?? []) {
       if (!reaches(rule, parent)) continue;
-      if (rule.range) {
-        const version = await (would ??= wouldTake(name, range));
-        if (version === undefined || !satisfies(version, rule.range)) continue;
-      }
+      if (rule.range && !overlaps(name, range, rule.range)) continue;
       return rule.value === "-" ? undefined : rule.value;
     }
     return range;
-  }
-
-  /** The version an edge would take, as far as the lock or the registry says; nothing on failure. */
-  async function wouldTake(name: string, range: string): Promise<string | undefined> {
-    try {
-      const spec = parseDep(name, range);
-      if (spec.type === "version") return parse(spec.fetchSpec)?.version;
-      if (spec.type !== "range" && spec.type !== "tag") return undefined;
-      return await walk.take(spec);
-    } catch {
-      return undefined;
-    }
   }
 
   /**
    * The rules over a package's peer ranges, written into its record: the tree settles its peers
    * against them, and `unmetPeers` checks them. A `-` takes the peer away.
    */
-  async function peers(
-    key: string,
-    found: ResolvedPackage,
-    kinds: Record<string, PeerKind>,
-  ): Promise<void> {
+  function peers(key: string, found: ResolvedPackage, kinds: Record<string, PeerKind>): void {
     const declared = found.peerDependencies;
     if (!declared) return;
-    await Promise.all(
-      Object.entries(declared).map(async ([name, range]) => {
-        const to = await edge(key, name, range);
-        if (to !== undefined) return void (declared[name] = to);
+    for (const [name, range] of Object.entries(declared)) {
+      const to = edge(key, name, range);
+      if (to !== undefined) declared[name] = to;
+      else {
         delete declared[name];
         delete kinds[name];
-      }),
-    );
+      }
+    }
     if (Object.keys(declared).length === 0) delete found.peerDependencies;
   }
 
@@ -153,6 +134,44 @@ export function valuesFor(
       .map((rule) => rule.value);
 }
 
+/**
+ * Whether an edge's declared spec can take a version in a rule's range, as npm and pnpm match
+ * one: its range, an alias's included, overlaps the rule's. A tag or a tarball names no version.
+ */
+function overlaps(name: string, declared: string, range: string): boolean {
+  try {
+    const spec = parseDep(name, declared);
+    return (spec.type === "range" || spec.type === "version") && intersects(spec.fetchSpec, range);
+  } catch {
+    return false;
+  }
+}
+
+/** Whether some version is in both ranges: a comparator set of each that one version meets. */
+export function intersects(a: string, b: string): boolean {
+  const [x, y] = [parseRange(a, false), parseRange(b, false)];
+  return !!x && !!y && x.some((one) => y.some((other) => meetable([...one, ...other])));
+}
+
+/** Whether one version meets every comparator: an exact one meets the rest, or the bounds leave room. */
+function meetable(set: Comparator[]): boolean {
+  let low: Comparator | undefined;
+  let high: Comparator | undefined;
+  for (const c of set) {
+    if (c.op === "=") return set.every((d) => holds(compare(c.v, d.v), d.op));
+    if (c.op[0] === ">") {
+      const r = low ? compare(c.v, low.v) : 1;
+      if (r > 0 || (r === 0 && c.op === ">")) low = c;
+    } else {
+      const r = high ? compare(c.v, high.v) : -1;
+      if (r < 0 || (r === 0 && c.op === "<")) high = c;
+    }
+  }
+  if (!low || !high) return true;
+  const r = compare(low.v, high.v);
+  return r < 0 || (r === 0 && low.op === ">=" && high.op === "<=");
+}
+
 /** Whether a rule reaches the edges of `parent`, or of the root when there is none. */
 function reaches(rule: Rule, parent: Parent | undefined): boolean {
   if (rule.parent === undefined) return true;
@@ -178,7 +197,10 @@ interface Fields {
  * not a rule either. A value that is not a string, a `$name` the root does not depend on, or
  * two fields that disagree, fail.
  */
-export function readOverrides(manifest: object): { overrides: Overrides; skipped: string[] } {
+export function readOverrides(
+  manifest: object,
+  pnpm?: unknown,
+): { overrides: Overrides; skipped: string[] } {
   const m = manifest as Fields;
   const found = new Map<string, [value: string, from: string]>();
   const skipped: string[] = [];
@@ -210,16 +232,48 @@ export function readOverrides(manifest: object): { overrides: Overrides; skipped
       else put(parent && under(parent, child), inner, where);
     }
   }
-  for (const [key, value] of entries(m.pnpm?.overrides, "pnpm.overrides")) {
-    const at = cut(key);
-    const [parent, name] = [key.slice(0, at), key.slice(at + 1)];
-    // One `>` at most: a rule two levels down is not one upm can keep.
-    const found = at < 0 ? selector(key) : cut(name) < 0 ? under(parent, name) : undefined;
-    put(found, value, `pnpm.overrides[${JSON.stringify(key)}]`);
+  for (const [field, map] of [
+    ["pnpm.overrides", m.pnpm?.overrides],
+    ["pnpm-workspace.yaml overrides", pnpm],
+  ] as const) {
+    for (const [key, value] of entries(map, field)) {
+      const at = cut(key);
+      const [parent, name] = [key.slice(0, at), key.slice(at + 1)];
+      // One `>` at most: a rule two levels down is not one upm can keep.
+      const found = at < 0 ? selector(key) : cut(name) < 0 ? under(parent, name) : undefined;
+      put(found, value, `${field}[${JSON.stringify(key)}]`);
+    }
   }
   const overrides: Overrides = {};
   for (const key of [...found.keys()].sort()) overrides[key] = found.get(key)![0];
   return { overrides, skipped };
+}
+
+/**
+ * The `overrides` block of a pnpm-workspace.yaml, where pnpm 10 and later read them in place
+ * of package.json; the rest of the file is not read. A person writes this file, so comments
+ * go first, then the block is read as pnpm's lockfile is.
+ */
+export function pnpmOverrides(text: string): unknown {
+  const lines = text.split(/\r?\n/).map(uncomment);
+  const at = lines.findIndex((line) => /^overrides\s*:/.test(line));
+  if (at < 0) return undefined;
+  const end = lines.findIndex((line, i) => i > at && /^\S/.test(line));
+  const block = lines.slice(at, end < 0 ? undefined : end).join("\n");
+  return (yaml(block) as { overrides?: unknown }).overrides;
+}
+
+/** A YAML line without its comment: a `#` at its start or after a space, outside quotes. */
+function uncomment(line: string): string {
+  let quote: string | undefined;
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i]!;
+    if (quote) {
+      if (ch === quote) quote = undefined;
+    } else if (ch === '"' || ch === "'") quote = ch;
+    else if (ch === "#" && (i === 0 || /\s/.test(line[i - 1]!))) return line.slice(0, i).trimEnd();
+  }
+  return line;
 }
 
 /**
