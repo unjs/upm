@@ -7,15 +7,15 @@
     "@acme/ui-card": "*",
     "@acme/ui-theme": "*",
     "@acme/utils": "*",
-    "@tanstack/react-query": "5.102.8",
-    "zod": "4.5.4"
+    "@tanstack/react-query": "5.104.0",
+    "zod": "4.6.5"
   },
   "devDependencies": {
     "@acme/tsconfig": "*",
-    "@types/react": "19.2.18",
-    "react": "19.2.8"
+    "@types/react": "19.3.0",
+    "react": "19.3.0"
   },
   "peerDependencies": {
-    "react": "^19.0.0"
+    "react": "^19.3.0"
   }
 }

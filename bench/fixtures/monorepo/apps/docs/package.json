@@ -3,7 +3,7 @@
   "version": "0.0.0",
   "private": true,
   "dependencies": {
-    "vue": "3.5.42"
+    "vue": "3.5.43"
   },
   "devDependencies": {
     "vitepress": "1.6.4"

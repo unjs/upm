@@ -6,7 +6,7 @@
     "@acme/errors": "*",
     "@acme/schemas": "*",
     "ky": "2.1.0",
-    "zod": "4.5.4"
+    "zod": "4.6.5"
   },
   "devDependencies": {
     "@acme/tsconfig": "*"

@@ -4,14 +4,14 @@
   "private": true,
   "dependencies": {
     "@acme/ui-theme": "*",
-    "lucide-react": "1.38.0"
+    "lucide-react": "1.48.0"
   },
   "devDependencies": {
     "@acme/tsconfig": "*",
-    "@types/react": "19.2.18",
-    "react": "19.2.8"
+    "@types/react": "19.3.0",
+    "react": "19.3.0"
   },
   "peerDependencies": {
-    "react": "^19.0.0"
+    "react": "^19.3.0"
   }
 }

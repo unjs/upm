@@ -6,11 +6,11 @@
     "@acme/cache": "*",
     "@acme/db": "*",
     "@acme/logger": "*",
-    "bullmq": "6.3.3",
+    "bullmq": "6.3.9",
     "ioredis": "6.0.0"
   },
   "devDependencies": {
     "@acme/tsconfig": "*",
-    "tsx": "4.23.13"
+    "tsx": "4.23.15"
   }
 }
