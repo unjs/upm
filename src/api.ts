@@ -60,7 +60,7 @@ import {
 } from "./run.ts";
 import { cpus, pid } from "./runtime.ts";
 import { parse, satisfies } from "./semver.ts";
-import { bareTarball, parseDep, parseSpec } from "./spec.ts";
+import { bareTarball, isGit, parseDep, parseSpec } from "./spec.ts";
 import type { Spec } from "./spec.ts";
 import {
   inputsHash,
@@ -1219,7 +1219,10 @@ async function adding(specs: string[], options: AddOptions): Promise<AddResult> 
             const store = openStore(ctx);
             name = await nameOf(tarballReader(ctx, dir, store), dir, edit.file, raw, fetchSpec);
           }
-          return { name, range: parseDep(name, fetchSpec).fetchSpec, group };
+          // A git spec is saved as typed: its archive url is the lockfile's to keep.
+          const typed = bare[i] === undefined ? spec!.raw.slice(spec!.name.length + 1) : raw;
+          const range = isGit(typed) ? typed.trim() : parseDep(name, fetchSpec).fetchSpec;
+          return { name, range, group };
         }
         const version = local.get(spec.fetchName);
         const found =

@@ -94,18 +94,13 @@ describe("readOverrides", () => {
     expect(() => read({ overrides: { a: { b: 1 } } })).not.toThrow();
   });
 
-  it("skips a value upm does not install, as yarn's patches and git", () => {
+  it("skips a value upm does not install, as yarn's patches and git off a known host", () => {
     const resolutions = { a: "patch:a@npm%3A1.0.0#./a.patch", b: "portal:../b", c: "1.0.0" };
     const overrides = { d: "git+ssh://x", e: "workspace:*", f: "github:u/f" };
     expect(read({ resolutions, overrides })).toEqual({
-      overrides: { c: "1.0.0" },
-      skipped: [
-        'resolutions["a"]',
-        'resolutions["b"]',
-        "overrides.d",
-        "overrides.e",
-        "overrides.f",
-      ],
+      // A git spec on a known host is its archive's url.
+      overrides: { c: "1.0.0", f: "https://codeload.github.com/u/f/tar.gz/HEAD" },
+      skipped: ['resolutions["a"]', 'resolutions["b"]', "overrides.d", "overrides.e"],
     });
   });
 

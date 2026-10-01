@@ -169,6 +169,27 @@ A link to a directory that does not exist is made anyway, with a warning. It is 
 as another package's peer dependency. bun's `link:<name>` (a package registered with
 `bun link`) is not supported.
 
+### Install from git
+
+```sh
+upm add github:unjs/ufo#v1.5.4         # also unjs/ufo#v1.5.4
+upm add git+https://github.com/unjs/ufo.git#3f1c0a2
+upm add gitlab:group/sub/repo#main
+```
+
+upm does not run git. A git dependency on GitHub, GitLab or Bitbucket is installed from
+the host's archive of its ref, the way a tarball URL is: `upm.lock` keys it by that
+archive URL and pins its bytes. `package.json` keeps the spec as written. These forms
+work: `github:`, `gitlab:` and `bitbucket:` shortcuts, `user/repo` for GitHub,
+`git://`, `git+https://`, `git+ssh://`, `git@host:user/repo` and `https://` URLs ending
+in `.git`. The ref after `#` is a commit, branch or tag, and `HEAD` when left out.
+
+Other hosts, `#semver:` ranges and `::path:` subdirectories are refused, as they need a
+clone. `prepare` and other scripts are not run, so a repository that only ships
+sources (no built files committed) installs but may not load. A branch or `HEAD` moves:
+a fresh machine that fetches it after a push fails with `EINTEGRITY`, so pin a tag or
+commit.
+
 ### Override dependencies
 
 ```json
@@ -198,8 +219,8 @@ workspace and of every installed package.
 - A rule scoped to a parent (`"eslint": { "ajv": … }`, `jest/chalk`, `request>form-data`)
   changes only that parent's own dependencies. The parent can be a workspace, by its
   name. A version range can follow the parent's name too (`eslint@^8`).
-- The value can be a range, a version, a tag, an alias (`npm:other@^1`), a tarball URL
-  or a `file:` path from the root. `$name` means the range the root declares for `name`.
+- The value can be a range, a version, a tag, an alias (`npm:other@^1`), a tarball URL,
+  a git spec on a supported host or a `file:` path from the root. `$name` means the range the root declares for `name`.
   `-` removes the dependency.
 - Peer ranges of installed packages are overridden too. This lets a plugin share the
   version the root chose.
@@ -766,7 +787,8 @@ during an install; that grace period does not guarantee safe concurrent cleanup.
 
 ## Current limits
 
-- **Registry, workspace and tarball dependencies only.** No Git or local directory
+- **Registry, workspace and tarball dependencies only.** Git works only through a
+  GitHub, GitLab or Bitbucket archive, with no `prepare`. No local directory
   dependencies.
 - **Workspaces install as one tree.** No filtered installs or catalogs. A
   `workspace:` spec names a workspace by its own name, not by path or alias.

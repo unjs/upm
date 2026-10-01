@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { bareTarball, escapeName, parseDep, parseSpec, tarballSource } from "../src/spec.ts";
+import { bareTarball, escapeName, isGit, parseDep, parseSpec, tarballSource } from "../src/spec.ts";
 
 describe("parseSpec", () => {
   it("bare name becomes the * range", () => {
@@ -438,5 +438,83 @@ describe("tarball specs", () => {
     expect(tarballSource("file:a.tgz", "")).toBe("file:a.tgz");
     expect(tarballSource("file:../a.tgz", "")).toBe("file:../a.tgz");
     expect(tarballSource("https://t.test/a.tgz", "packages/w")).toBe("https://t.test/a.tgz");
+  });
+});
+
+describe("git specs", () => {
+  const gh = "https://codeload.github.com/u/r/tar.gz";
+  it.each([
+    ["github:u/r", `${gh}/HEAD`],
+    ["github:u/r#v1.2.0", `${gh}/v1.2.0`],
+    ["GitHub:u/r.git#", `${gh}/HEAD`],
+    ["u/r", `${gh}/HEAD`],
+    ["u/r#feat/x", `${gh}/feat%2Fx`],
+    ["u.js/r_x-1#0a1b2c3", "https://codeload.github.com/u.js/r_x-1/tar.gz/0a1b2c3"],
+    ["git://github.com/u/r.git#main", `${gh}/main`],
+    ["git+https://github.com/u/r.git", `${gh}/HEAD`],
+    ["git+https://user:token@github.com/u/r", `${gh}/HEAD`],
+    ["git+ssh://git@github.com/u/r.git#main", `${gh}/main`],
+    ["git+ssh://git@github.com:u/r.git#main", `${gh}/main`],
+    ["git+ssh://git@github.com:22/u/r.git", `${gh}/HEAD`],
+    ["git@github.com:u/r.git", `${gh}/HEAD`],
+    ["https://github.com/u/r.git#main", `${gh}/main`],
+    [
+      "gitlab:g/sub/r#v1",
+      "https://gitlab.com/api/v4/projects/g%2Fsub%2Fr/repository/archive.tar.gz?sha=v1",
+    ],
+    [
+      "git+https://gitlab.com/g/r.git",
+      "https://gitlab.com/api/v4/projects/g%2Fr/repository/archive.tar.gz?sha=HEAD",
+    ],
+    ["bitbucket:u/r#main", "https://bitbucket.org/u/r/get/main.tar.gz"],
+  ])("%s is a tarball at %s", (spec, fetchSpec) => {
+    expect(parseDep("a", spec)).toMatchObject({ raw: `a@${spec}`, type: "tarball", fetchSpec });
+  });
+
+  it("splits a CLI argument on the name's @, not the git url's", () => {
+    expect(parseSpec("@s/a@git@github.com:u/r.git")).toMatchObject({
+      name: "@s/a",
+      type: "tarball",
+      fetchSpec: `${gh}/HEAD`,
+    });
+    expect(parseSpec("a@u/r#main").fetchSpec).toBe(`${gh}/main`);
+  });
+
+  it.each([
+    ["git+https://example.com/u/r.git", /only from GitHub, GitLab or Bitbucket/],
+    ["git+file:///tmp/r", /only from GitHub, GitLab or Bitbucket/],
+    ["https://example.com/u/r.git", /only from GitHub, GitLab or Bitbucket/],
+    ["gist:abc123", /only github, gitlab, bitbucket shortcuts install/],
+    ["github:u/r#semver:^1.0.0", /only a commit, branch or tag/],
+    ["github:u/r#main::path:packages/a", /only a commit, branch or tag/],
+    ["github:u", /no user\/repo/],
+    ["git+https://github.com/u/r/tree/main", /no user\/repo/],
+    ["github:u/r%20x", /user\/repo is malformed/],
+    ["github:u/..", /user\/repo is malformed/],
+  ])("refuses %s", (spec, message) => {
+    expect(() => parseDep("a", spec)).toThrow(message);
+    expect(() => parseDep("a", spec)).toThrow(expect.objectContaining({ code: "EINVALIDSPEC" }));
+  });
+
+  it.each([
+    ["github:u/r#main", `${gh}/main`],
+    ["u/r", `${gh}/HEAD`],
+    ["git@github.com:u/r.git", `${gh}/HEAD`],
+    ["git+ssh://git@github.com/u/r.git", `${gh}/HEAD`],
+  ])("takes %s on its own as a tarball", (arg, fetchSpec) => {
+    expect(bareTarball(arg)).toBe(fetchSpec);
+  });
+
+  it.each([
+    "a",
+    "@s/a",
+    "a@1.0.0",
+    "a@npm:b@1",
+    "vendor/a-1.0.0.tgz",
+    "./u/r",
+    "https://t.test/a.tgz",
+    "https://codeload.github.com/u/r/tar.gz/main",
+  ])("%s is not git", (arg) => {
+    expect(isGit(arg)).toBe(false);
   });
 });
