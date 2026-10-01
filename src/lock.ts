@@ -340,14 +340,15 @@ function pinsFit(
   return rootEdges(specs).every(([name, raw]) => {
     if (!Object.hasOwn(edges, name)) return true;
     const pinned = edges[name]!;
-    return [raw, ...overridden(name)].some((range) => {
+    return [raw, ...overridden(name)].some((range, i) => {
       let spec: Spec;
       try {
         spec = parseDep(name, range);
       } catch {
         return true; // the resolve says what is wrong with it
       }
-      if (spec.type === "tarball") return pinned === tarballSource(spec.fetchSpec, base);
+      // An override's tarball is the root's path, the top's own one its own.
+      if (spec.type === "tarball") return pinned === tarballSource(spec.fetchSpec, i ? "" : base);
       if (spec.type === "workspace") return pinned.startsWith("link:");
       const entry = lock.packages[`${name}@${pinned}`];
       if (entry?.version !== undefined) return false; // a tarball, for a registry spec
