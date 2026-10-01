@@ -7,7 +7,7 @@ import { fromShasum } from "./integrity.ts";
 import { engineOk, pickManifest } from "./pick.ts";
 import { createRegistry, tarballUrl } from "./registry.ts";
 import type { Registry } from "./registry.ts";
-import { parseDep, tarballSource } from "./spec.ts";
+import { joinPath, parseDep, tarballSource } from "./spec.ts";
 import type { Spec } from "./spec.ts";
 import { createLimiter } from "./limit.ts";
 import type { Overrides } from "./overrides.ts";
@@ -33,6 +33,12 @@ export interface ResolvedPackage {
    * it never shares an identity with a registry package of the same name and version.
    */
   local?: string;
+  /**
+   * With `local`: a `link:` dependency of a top, not a workspace. Its directory is linked as it
+   * is, may sit outside the project (`../x`), and nothing it declares is walked. The lockfile
+   * keeps only the edge; its bins and version are read off the directory at install time.
+   */
+  link?: true;
   /** Local entries only: the ranges the workspace's manifest declared, for the lockfile. */
   specs?: RootSpecs;
   /**
@@ -473,14 +479,16 @@ export async function resolveTree(
    */
   function sourceOf(fetchSpec: string, from: string): string {
     if (!fetchSpec.startsWith("file:")) return fetchSpec;
+    return tarballSource(fetchSpec, topOf(from, "a local tarball"));
+  }
+
+  /** The root-relative path of the top `from`, which a path it declares is read from. */
+  function topOf(from: string, what: string): string {
     const top = records.get(from)?.local ?? (from === ROOT ? "" : undefined);
-    if (top === undefined) {
-      throw fail(
-        `a local tarball can be a dependency of the root or a workspace only`,
-        "EINVALIDSPEC",
-      );
+    if (top === undefined || records.get(from)?.link) {
+      throw fail(`${what} can be a dependency of the root or a workspace only`, "EINVALIDSPEC");
     }
-    return tarballSource(fetchSpec, top);
+    return top;
   }
 
   /** A tarball's package.json, once per source. A source has a `:`, which no name has. */
@@ -527,6 +535,18 @@ export async function resolveTree(
         if (to !== undefined) [range, base] = [to, ROOT];
       } else if (given && over?.gives(name, range)) base = ROOT;
       const spec = parseDep(name, range);
+      if (spec.type === "link") {
+        const path = joinPath(topOf(from, "a link: dependency"), spec.fetchSpec);
+        const found = linkRecord(spec.name, path);
+        const key = keyOf(found);
+        // A workspace at that path under that name is the same link, and stays a top.
+        if (!records.has(key)) {
+          records.set(key, found);
+          edges.set(key, []);
+        }
+        edges.get(from)?.push({ name: spec.name, version: versionOf(found), optional });
+        return;
+      }
       if (spec.type === "tarball") {
         const source = sourceOf(spec.fetchSpec, base);
         // Replayed when locked, as a kept registry version is. Walked again when deduping, so its
@@ -902,7 +922,7 @@ function reach(
     push(`${name}@${version}`, true);
   }
   for (const [key, found] of Object.entries(resolution.packages)) {
-    if (found.local !== undefined) push(key, false);
+    if (found.local !== undefined && !found.link) push(key, false);
   }
   for (const key of queue) {
     const found = resolution.packages[key]!;
@@ -1067,6 +1087,38 @@ function top(manifest: RootManifest): Top {
 export function localPath(path: string): boolean {
   if (path === "" || path.includes("\\")) return false;
   return !path.split("/").some((part) => part === "" || part === "." || part === "..");
+}
+
+/**
+ * Whether a `link:` path can be trusted where it is used: relative, `/`-separated and clean as
+ * `joinPath` leaves it, so it may climb out of the project only at its start.
+ */
+export function linkPath(path: string): boolean {
+  if (path === "" || path.includes("\\")) return false;
+  const parts = path.split("/");
+  const climb = parts.findIndex((part) => part !== "..");
+  return (
+    climb >= 0 && parts.slice(climb).every((part) => part !== "" && part !== "." && part !== "..")
+  );
+}
+
+/**
+ * A `link:` dependency as the resolver and the lockfile know it: a name and a path. Its version
+ * and bins are its package.json's, which only the install reads (`readLinks` in `src/tarball-deps.ts`).
+ */
+export function linkRecord(name: string, path: string): ResolvedPackage {
+  return {
+    name,
+    version: "0.0.0",
+    resolved: "",
+    integrity: "",
+    local: path,
+    link: true,
+    dependencies: {},
+    optional: false,
+    dev: false,
+    bin: {},
+  };
 }
 
 /**

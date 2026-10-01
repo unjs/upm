@@ -621,6 +621,9 @@ async function installed(ctx: Context, edit?: Edit, loaded?: Project): Promise<I
   // The lockfile holds every platform's builds; this machine installs its own. Checked
   // already: `plan` returns what `readLockfile` parsed or what `formatLockfile` accepted.
   const checked = fromCheckedLockfile(lock, hostsOf(ctx));
+  if (Object.values(checked.packages).some((pkg) => pkg.link)) {
+    await (await import("./tarball-deps.ts")).readLinks(dir, checked);
+  }
   trace("checked");
   const resolution = filterPlatform(checked);
   trace("resolution");
@@ -630,10 +633,10 @@ async function installed(ctx: Context, edit?: Edit, loaded?: Project): Promise<I
   if (options.verify) {
     for (const unmet of unmetPeers(resolution)) log(`unmet peer — ${unmet}`, "warn");
   }
-  // Workspaces are linked from their directories, so they are neither packages nor fetched.
+  // Workspaces and `link:` directories are linked in place: neither packages nor fetched.
   const workspaces = Object.keys(lock.workspaces ?? {}).length;
-  const elsewhere =
-    Object.keys(lock.packages).length - (Object.keys(resolution.packages).length - workspaces);
+  const here = Object.values(resolution.packages).filter((pkg) => pkg.local === undefined);
+  const elsewhere = Object.keys(lock.packages).length - here.length;
   const wanted = Object.values(resolution.packages).filter(
     (pkg) => pkg.local === undefined && !(options.production && pkg.dev),
   );
@@ -1181,6 +1184,10 @@ async function adding(specs: string[], options: AddOptions): Promise<AddResult> 
     added = await Promise.all(
       specs.map(async (raw, i) => {
         const spec = parsed[i];
+        if (spec?.type === "link") {
+          const { fromCwd } = await import("./tarball-deps.ts");
+          return { name: spec.name, range: fromCwd(edit.file, `link:${spec.fetchSpec}`), group };
+        }
         if (spec === undefined || spec.type === "tarball") {
           const { fromCwd, nameOf } = await import("./tarball-deps.ts");
           const fetchSpec = fromCwd(edit.file, bare[i] ?? spec!.fetchSpec);
@@ -1400,7 +1407,7 @@ async function execProject(
   home: string,
 ): Promise<{ dir: string; specs: string[] }> {
   const parsed = specs.map((raw) => parseSpec(raw));
-  const local = parsed.find((spec) => spec.type === "workspace" || spec.type === "tarball");
+  const local = parsed.find((spec) => ["workspace", "link", "tarball"].includes(spec.type));
   if (local) throw fail(`exec installs registry packages, not ${local.raw}`, "EINVALIDSPEC");
   // An exact version is its own answer, so running one again asks the registry nothing.
   const loose = parsed.filter((spec) => spec.type !== "version");
@@ -2143,8 +2150,8 @@ async function pickAll(ctx: Context, specs: string[]): Promise<Manifest[]> {
   if (specs.length === 0) throw fail("needs at least one spec", "EOPTION");
   // Every spec parsed first, so a bad one fails before any request is left running.
   const parsed = specs.map((raw) => parseSpec(raw));
-  const tarball = parsed.find((spec) => spec.type === "tarball");
-  if (tarball) throw fail(`${tarball.raw} is a tarball, not a registry spec`, "EINVALIDSPEC");
+  const local = parsed.find((spec) => spec.type === "tarball" || spec.type === "link");
+  if (local) throw fail(`${local.raw} is a ${local.type}, not a registry spec`, "EINVALIDSPEC");
   // No walk follows these picks, so no threads: each spec is one question, answered here.
   const registry = await openRegistry(ctx, 0);
   return await Promise.all(parsed.map((spec) => pickOne(registry, spec))).finally(registry.close);

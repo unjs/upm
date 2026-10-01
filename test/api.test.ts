@@ -33,6 +33,7 @@ import { stampOf } from "../src/state.ts";
 import { createStore } from "../src/store.ts";
 import { holdTree, TREE_HELD } from "../src/tree-lock.ts";
 import { hashOf } from "./hash.ts";
+import { binOf } from "./link.ts";
 import { makeTarball } from "./tarball.ts";
 
 const tarball = makeTarball([{ path: "index.js", data: 'module.exports = "nanoid";\n' }]);
@@ -1847,6 +1848,91 @@ describe("tarball dependencies", () => {
     await expect(upm.exec("a", { ...base, packages: [`a@${url()}`] })).rejects.toMatchObject({
       code: "EINVALIDSPEC",
     });
+  });
+});
+
+describe("link: dependencies", () => {
+  let app: string;
+  let options: upm.InstallOptions;
+
+  beforeEach(async () => {
+    app = join(dir, "app");
+    options = { ...base, dir: app };
+    await mkdir(join(dir, "lib"));
+    await mkdir(app);
+    const lib = { name: "lib", version: "1.2.3", bin: "cli.js", dependencies: { nanoid: "^5" } };
+    await writeFile(join(dir, "lib", "package.json"), JSON.stringify(lib));
+    await writeFile(join(dir, "lib", "cli.js"), "#!/usr/bin/env node\n");
+  });
+
+  it("links a directory as it is, with its bins and none of its dependencies", async () => {
+    const manifest = { dependencies: { nanoid: "^5" }, devDependencies: { mine: "link:../lib" } };
+    await writeFile(join(app, "package.json"), JSON.stringify(manifest));
+    expect(await upm.install(options)).toMatchObject({ packages: 1, upToDate: false });
+    const nm = join(app, "node_modules");
+    expect(await realpath(join(nm, "mine"))).toBe(await realpath(join(dir, "lib")));
+    expect(await binOf(join(nm, ".bin", "lib"))).toBe("../mine/cli.js");
+    // Its own nanoid is not installed for it: the one here is the root's.
+    expect(await readdir(join(dir, "lib"))).toEqual(["cli.js", "package.json"]);
+
+    // The edge alone: the directory says the rest.
+    const lock = await readJson(join(app, "upm.lock"));
+    expect(lock.root.dependencies).toEqual({ mine: "link:../lib", nanoid: "5.0.0" });
+    expect(Object.keys(lock.packages)).toEqual(["nanoid@5.0.0"]);
+    expect((await upm.install(options)).upToDate).toBe(true);
+
+    // From the lockfile alone, bins read off the directory again; dev, so not in production.
+    await rm(nm, { recursive: true });
+    await upm.install({ ...options, frozen: true });
+    expect(await binOf(join(nm, ".bin", "lib"))).toBe("../mine/cli.js");
+    await upm.install({ ...options, production: true });
+    await expect(lstat(join(nm, "mine"))).rejects.toThrow();
+    expect(await readdir(nm)).toContain("nanoid");
+  });
+
+  it("reads a workspace's path from its own directory, and locks it from the root", async () => {
+    const root = { private: true, workspaces: ["packages/*"] };
+    await writeFile(join(app, "package.json"), JSON.stringify(root));
+    await mkdir(join(app, "packages", "w"), { recursive: true });
+    const w = { name: "w", dependencies: { lib: "link:../../../lib" } };
+    await writeFile(join(app, "packages", "w", "package.json"), JSON.stringify(w));
+    await upm.install(options);
+    const lock = await readJson(join(app, "upm.lock"));
+    expect(lock.workspaces["packages/w"].dependencies).toEqual({ lib: "link:../lib" });
+    const at = join(app, "packages", "w", "node_modules", "lib");
+    expect(await realpath(at)).toBe(await realpath(join(dir, "lib")));
+  });
+
+  it("adds a path from cwd, saved from package.json", async () => {
+    await writeFile(join(app, "package.json"), "{}");
+    const was = process.cwd();
+    process.chdir(dir);
+    try {
+      const { added } = await upm.add(["mine@link:./lib"], options);
+      expect(added).toEqual([{ name: "mine", range: "link:../lib", group: "dependencies" }]);
+    } finally {
+      process.chdir(was);
+    }
+    expect((await readJson(join(app, "package.json"))).dependencies).toEqual({
+      mine: "link:../lib",
+    });
+    expect(await realpath(join(app, "node_modules", "mine"))).toBe(
+      await realpath(join(dir, "lib")),
+    );
+  });
+
+  it("is a top's to declare, not a registry package's", async () => {
+    const dep = {
+      name: "dep",
+      version: "1.0.0",
+      dependencies: { lib: "link:../lib" },
+      dist: { tarball: `${registry()}/dep/-/dep-1.0.0.tgz`, integrity: hashOf(tarball) },
+    };
+    docs["/dep"] = { name: "dep", "dist-tags": { latest: "1.0.0" }, versions: { "1.0.0": dep } };
+    await writeFile(join(app, "package.json"), JSON.stringify({ dependencies: { dep: "1" } }));
+    await expect(upm.install(options)).rejects.toThrow(
+      /a link: dependency can be a dependency of the root or a workspace only/,
+    );
   });
 });
 

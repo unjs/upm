@@ -393,13 +393,14 @@ function reference(m: Fields, value: string, from: string): string {
 
 /**
  * The value as a spec of `name`, a local tarball's path as the root's; nothing when it is not
- * one upm installs from an override, which a workspace is not.
+ * one upm installs from an override, which a workspace or a `link:` directory is not.
  */
 function normalValue(name: string, value: string): string | undefined {
   if (value === "-") return value;
   try {
     const spec = parseDep(name, value);
-    if (spec.type !== "workspace") return spec.type === "tarball" ? spec.fetchSpec : value;
+    if (spec.type === "workspace" || spec.type === "link") return undefined;
+    return spec.type === "tarball" ? spec.fetchSpec : value;
   } catch {}
   return undefined;
 }

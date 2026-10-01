@@ -159,7 +159,8 @@ export async function stateHash(resolution: Resolution, flags: StateFlags): Prom
     // and a `--production` run links a different subset of the same graph.
     const bin = Object.entries(pkg.bin).sort().flat().join(",");
     if (pkg.local !== undefined) {
-      lines.push(`${id}:local:${pkg.local}:${bin}`); // no content, and always linked
+      // No content, and always linked: a `link:` dependency unless dev under --production.
+      lines.push(`${id}:local:${pkg.local}:${bin}${pkg.link && pkg.dev ? ":d" : ""}`);
       continue;
     }
     lines.push(`${id}:${pkg.integrity}:${bin}:${pkg.dev ? "d" : ""}${pkg.optional ? "o" : ""}`);

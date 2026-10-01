@@ -1,12 +1,14 @@
 // What the commands do with tarball dependencies: read one into the store for the resolver,
-// name one `add` was given alone, and check the local ones against the lockfile. Its own
-// module, loaded by a command that meets a tarball, so no other pays for it at startup.
+// name one `add` was given alone, and check the local ones against the lockfile; and a `link:`
+// directory's package.json. Its own module, loaded by a command that meets one of them, so no
+// other pays for it at startup.
 import { builtin } from "./builtin.ts";
+import { normalizeBin } from "./normalize-bin.ts";
 import { LOCKFILE } from "./lock.ts";
 import type { Lockfile } from "./lock.ts";
 import { parseManifest } from "./package-json.ts";
 import { GROUPS } from "./resolve.ts";
-import type { ResolveOptions } from "./resolve.ts";
+import type { Resolution, ResolveOptions } from "./resolve.ts";
 import { parse } from "./semver.ts";
 import { tarballSource } from "./spec.ts";
 import { sameStamp, stampOf } from "./state.ts";
@@ -125,12 +127,13 @@ export async function nameOf(
 
 /**
  * A path `add` is given is the shell's, read from cwd. The package.json `file` keeps it from its
- * own directory, which is where a path written there is read from.
+ * own directory, which is where a path written there is read from. A `link:` directory too.
  */
 export function fromCwd(file: string, fetchSpec: string): string {
-  if (!fetchSpec.startsWith("file:")) return fetchSpec;
+  const prefix = /^(?:file|link):/.exec(fetchSpec)?.[0];
+  if (!prefix) return fetchSpec;
   const { basename, dirname, join, relative, resolve } = builtin.path;
-  const at = resolve(fetchSpec.slice("file:".length));
+  const at = resolve(fetchSpec.slice(prefix.length));
   // Both ends as the disk has them: cwd is always the real path, so a project reached through
   // a link (macOS's /var is /private/var) would otherwise save a detour through the link.
   const real = (path: string) => {
@@ -141,7 +144,29 @@ export function fromCwd(file: string, fetchSpec: string): string {
     }
   };
   const path = join(relative(real(dirname(file)), real(dirname(at))), basename(at));
-  return `file:${path.replaceAll("\\", "/")}`;
+  return `${prefix}${path.replaceAll("\\", "/")}`;
+}
+
+/**
+ * A `link:` dependency's version and bins, off its package.json now: the lockfile keeps only
+ * the edge, as pnpm's does. A directory without one, or not there yet, links with no bins.
+ */
+export async function readLinks(dir: string, resolution: Resolution): Promise<void> {
+  const links = Object.values(resolution.packages).filter((pkg) => pkg.link);
+  await Promise.all(
+    links.map(async (pkg) => {
+      const file = builtin.path.join(dir, pkg.local!, "package.json");
+      const m = await builtin.fsp
+        .readFile(file, "utf8")
+        .then((text) => JSON.parse(text) as Manifest)
+        .catch(() => undefined);
+      if (!m) return;
+      if (typeof m.version === "string" && parse(m.version)?.version === m.version) {
+        pkg.version = m.version;
+      }
+      pkg.bin = normalizeBin(m);
+    }),
+  );
 }
 
 /** A tarball dependency whose bytes are not the ones the lockfile pinned: say which, and the way out. */

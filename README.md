@@ -139,7 +139,7 @@ A dependency can be an `http://` or `https://` URL of a tarball, or a path to a 
 `package.json`. In `package.json`, a path is relative to that file, so only the root
 and workspaces can use one; `add` reads a path from the current directory and saves it
 that way. Absolute paths are refused because they would not work on another machine.
-A directory is not supported: make it a workspace or pack it.
+To use a directory, make it a workspace, pack it, or link it (below).
 
 A tarball is read when it is first locked. `upm.lock` keys it by its URL or
 root-relative path and records the integrity of its bytes. Its own dependencies come
@@ -153,6 +153,19 @@ lockfile is out of date. A URL is not read again: the lockfile pins its bytes, a
 install that has to fetch it fails with `EINTEGRITY` if the server now sends others. To
 take a new version, point the dependency at a new URL, or remove it and add it again.
 Credentials in `.npmrc` are sent to a URL on the same host, as for a registry.
+
+### Link a directory
+
+```sh
+upm add lib@link:../lib               # saves "lib": "link:../lib"
+```
+
+`link:<path>` works as it does in pnpm and yarn. It symlinks the directory into
+`node_modules` as it is and links its bins. None of its own dependencies are installed.
+The path is relative to the `package.json` that declares it, so only the root and
+workspaces can use one. It may lead outside the project. `upm.lock` keeps only the link.
+Each install reads the directory's `package.json` for its bins. bun's `link:<name>`
+(a package registered with `bun link`) is not supported.
 
 ### Override dependencies
 

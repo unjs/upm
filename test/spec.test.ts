@@ -276,6 +276,35 @@ describe("alias specs", () => {
   });
 });
 
+describe("link: specs", () => {
+  it.each([
+    ["link:../lib", "../lib"],
+    ["link:./lib/", "lib"],
+    ["link:vendor\\lib", "vendor/lib"],
+    ["link: ../a/../b ", "../b"],
+  ])("%s is a clean relative directory", (spec, fetchSpec) => {
+    expect(parseDep("lib", spec)).toMatchObject({ name: "lib", type: "link", fetchSpec });
+  });
+
+  it("parses one as a CLI argument", () => {
+    expect(parseSpec("@s/lib@link:../lib")).toMatchObject({
+      name: "@s/lib",
+      type: "link",
+      fetchSpec: "../lib",
+    });
+  });
+
+  it.each([
+    ["an absolute path", "link:/srv/lib", /give it relative to package.json/],
+    ["a home path", "link:~/lib", /give it relative to package.json/],
+    ["a drive", "link:C:\\lib", /give it relative to package.json/],
+    ["no directory", "link:.", /it names no directory/],
+    ["an alias of one", "npm:lib@link:../lib", /cannot point at an alias/],
+  ])("refuses %s", (_, spec, message) => {
+    expect(() => parseDep("lib", spec)).toThrow(message);
+  });
+});
+
 describe("workspace: specs", () => {
   it.each(["workspace:", "workspace:*", "workspace:^", "workspace:~", "workspace: * "])(
     "%s takes any version of the workspace",

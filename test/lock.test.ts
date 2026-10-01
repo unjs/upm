@@ -1499,9 +1499,30 @@ describe("workspaces", () => {
       );
     });
 
+    it("takes a link: edge with no workspace only where the top's own spec is link:", () => {
+      const lock = (specs: object, version = "link:../lib") => ({
+        lockfileVersion: 1,
+        root: { specs: { devDependencies: specs }, dependencies: { lib: version } },
+        packages: {},
+      });
+      const out = fromLockfile(parseLockfile(JSON.stringify(lock({ lib: "link:../lib" }))));
+      expect(out.packages["lib@link:../lib"]).toMatchObject({
+        local: "../lib",
+        link: true,
+        dev: true,
+      });
+      expect(toLockfile(out)).toEqual(lock({ lib: "link:../lib" }));
+      expect(check(lock({ lib: "^1" })).message).toMatch(/points at lib@link:\.\.\/lib/);
+      expect(check(lock({ lib: "link:../lib" }, "link:a/../../lib")).message).toMatch(
+        /points at lib@link:a\/\.\.\/\.\.\/lib/,
+      );
+    });
+
     it("rejects a link: version in packages", () => {
       const lock = { ...base(), packages: { "a@link:packages/a": { integrity: "sha512-a" } } };
-      expect(check(lock).message).toMatch(/package key "a@link:packages\/a" is not a valid/);
+      expect(check(lock).message).toMatch(
+        /package key "a@link:packages\/a" does not end in an exact/,
+      );
     });
 
     it.each([

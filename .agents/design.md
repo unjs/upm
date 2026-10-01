@@ -58,6 +58,15 @@ self-contained and portable across projects; keep that even where npm would link
 workspace into a registry package. The root's `.npmrc` is the only one read, or two
 workspaces could install one lockfile two ways.
 
+## A `link:` directory is the project's, not the store's
+
+A `link:<path>` dependency is a local record like a workspace (`name@link:<path>`, linked
+from its directory) but never a top: nothing it declares is walked, no `node_modules` is
+made in it, and its path may climb out of the project. `upm.lock` keeps only the top's edge,
+as pnpm's does, and accepts a `link:` edge to no workspace only where that top's own spec is
+`link:`, so a hand-edited lockfile cannot point a registry range at a directory. Its bins
+and version are read off its `package.json` at install time (`readLinks`), never locked.
+
 ## A tarball is keyed by where it is
 
 A tarball dependency's identity is `name@<source>`: its http(s) url, or `file:` and a

@@ -52,7 +52,9 @@ export function graphHash(resolution: Resolution): Promise<string> {
   // A workspace's own edges, the way the root's are: they place links in its `node_modules`,
   // and `lineOf` leaves them out on purpose.
   for (const found of Object.values(packages)) {
-    if (found.local !== undefined) lines.push(`::top:${found.local}::${edges(allDeps(found))}`);
+    if (found.local !== undefined && !found.link) {
+      lines.push(`::top:${found.local}::${edges(allDeps(found))}`);
+    }
   }
   return hash(lines);
 }

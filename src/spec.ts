@@ -1,4 +1,4 @@
-// Replacement for `npm-package-arg`: version, range, tag, alias, workspace and tarball specs.
+// Replacement for `npm-package-arg`: version, range, tag, alias, workspace, link and tarball specs.
 import { parse, validRange } from "./semver.ts";
 
 export interface Spec {
@@ -13,8 +13,9 @@ export interface Spec {
    * `workspace` never asks the registry: `fetchSpec` is the range a workspace's version must
    * satisfy. Nor does `tarball`: `fetchSpec` is its http(s) url as given, or `file:` and a path
    * relative to the package.json that declares it, `/`-separated and without `.` segments.
+   * Nor does `link`: `fetchSpec` is a directory in that same form, linked as it is.
    */
-  type: "version" | "range" | "tag" | "workspace" | "tarball";
+  type: "version" | "range" | "tag" | "workspace" | "link" | "tarball";
   fetchSpec: string;
   /** Registry path form of `fetchName`: `@scope/foo` -> `@scope%2ffoo`. */
   escapedName: string;
@@ -24,6 +25,7 @@ const NAME_RE = /^(?:@([^/]+)\/)?([^/]+)$/;
 const BLOCKED = new Set(["node_modules", "favicon.ico"]);
 const ALIAS = "npm:";
 const WORKSPACE = "workspace:";
+const LINK = "link:";
 const URL_RE = /^https?:\/\//i;
 const TARBALL_RE = /\.(?:tgz|tar\.gz|tar)$/i;
 
@@ -86,7 +88,7 @@ function build(name: string, spec: string, raw: string, where?: string): Spec {
     [fetchName, s] = splitAt(s.slice(ALIAS.length));
     checkName(fetchName, raw, where);
     s = s.trim();
-    if (s.startsWith(ALIAS) || s.startsWith(WORKSPACE)) {
+    if (s.startsWith(ALIAS) || s.startsWith(WORKSPACE) || s.startsWith(LINK)) {
       throw fail(`Invalid alias of package "${raw}": an alias cannot point at an alias`, where);
     }
   }
@@ -101,6 +103,9 @@ function build(name: string, spec: string, raw: string, where?: string): Spec {
 
   if (source !== undefined) {
     return { ...base, type: "tarball", fetchSpec: source };
+  }
+  if (s.startsWith(LINK)) {
+    return { ...base, type: "link", fetchSpec: link(s.slice(LINK.length), raw, where) };
   }
   if (local) {
     return { ...base, type: "workspace", fetchSpec: s };
@@ -145,10 +150,28 @@ function tarball(s: string, raw: string, where?: string): string | undefined {
 }
 
 /**
+ * pnpm's `link:` protocol: a directory, relative to package.json, symlinked into node_modules
+ * as it is. Its own dependencies are its business, so none are installed for it.
+ */
+function link(path: string, raw: string, where?: string): string {
+  const clean = path.trim().replaceAll("\\", "/");
+  if (/^(?:\/|~|[A-Za-z]:)/.test(clean)) {
+    throw fail(
+      `Invalid link "${path}" of package "${raw}": give it relative to package.json`,
+      where,
+    );
+  }
+  const joined = joinPath("", clean);
+  if (!joined)
+    throw fail(`Invalid link "${path}" of package "${raw}": it names no directory`, where);
+  return joined;
+}
+
+/**
  * `path` under `base`, both `/`-separated: `.` and empty segments dropped, `..` taking one off
  * where there is one to take. What is left can start with `..`, and nothing else can be one.
  */
-function joinPath(base: string, path: string): string {
+export function joinPath(base: string, path: string): string {
   const out: string[] = [];
   for (const part of `${base}/${path}`.split("/")) {
     if (part === "" || part === ".") continue;

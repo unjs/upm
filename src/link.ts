@@ -1068,7 +1068,8 @@ export async function linkTree(resolution: Resolution, options: LinkOptions): Pr
       const pkg = resolution.packages[id];
       if (!pkg) continue;
       const entry = wanted.get(id);
-      const real = pkg.local !== undefined ? join(options.dir, pkg.local) : entry && realDir(entry);
+      const local = pkg.local !== undefined && !(production && pkg.dev);
+      const real = local ? join(options.dir, pkg.local!) : entry && realDir(entry);
       if (!real) continue; // dropped, or dev under --production
       direct.push([name, { pkg }]);
       const at = join(nm, name);
@@ -1194,7 +1195,7 @@ function topsOf(dir: string, resolution: Resolution): Top[] {
     { path: "", nm: join(dir, "node_modules"), dependencies: resolution.root.dependencies },
   ];
   for (const pkg of Object.values(resolution.packages)) {
-    if (pkg.local === undefined) continue;
+    if (pkg.local === undefined || pkg.link) continue; // a `link:` directory is not ours to fill
     const nm = join(dir, pkg.local, "node_modules");
     tops.push({ path: pkg.local, nm, dependencies: allDeps(pkg) });
   }

@@ -7,9 +7,17 @@ import { registryBase, tarballUrl } from "./registry.ts";
 import type { BaseFor } from "./registry.ts";
 import { pid } from "./runtime.ts";
 import { parse, satisfies } from "./semver.ts";
-import { declaredSpecs, declaredWorkspaces, localPath, localShape, rootEdges } from "./resolve.ts";
+import {
+  declaredSpecs,
+  declaredWorkspaces,
+  linkPath,
+  linkRecord,
+  localPath,
+  localShape,
+  rootEdges,
+} from "./resolve.ts";
 import type { PeerKind, Resolution, ResolvedPackage, RootManifest, RootSpecs } from "./resolve.ts";
-import { parseDep, tarballSource } from "./spec.ts";
+import { joinPath, parseDep, tarballSource } from "./spec.ts";
 import type { Spec } from "./spec.ts";
 import { replaceFile, trace } from "./util.ts";
 
@@ -116,7 +124,8 @@ export function toLockfile(resolution: Resolution, baseFor = npmjs): Lockfile {
   const workspaces = new Map<string, WorkspaceEntry>();
   for (const [key, pkg] of Object.entries(resolution.packages)) {
     if (pkg.local !== undefined) {
-      workspaces.set(pkg.local, pkg);
+      // A `link:` dependency is its top's edge alone: its directory says the rest.
+      if (!pkg.link) workspaces.set(pkg.local, pkg);
       continue;
     }
     // A tarball's key says where it is; what is left to say is the version inside.
@@ -206,6 +215,22 @@ export function fromCheckedLockfile(lock: Lockfile, baseFor = npmjs): Resolution
       ...(entry.peerDependencies && { peerDependencies: entry.peerDependencies }),
       ...(entry.peers && { peers: entry.peers }),
     };
+  }
+  // A top's `link:` edge to no workspace is a `link:` dependency, which has no entry.
+  const tops = Object.values(lock.workspaces ?? {}).map((ws) => ({
+    ...ws.dependencies,
+    ...ws.optionalDependencies,
+  }));
+  for (const edges of [lock.root.dependencies, ...tops]) {
+    for (const [name, version] of Object.entries(edges)) {
+      const key = `${name}@${version}`;
+      if (!version.startsWith("link:") || Object.hasOwn(packages, key)) continue;
+      packages[key] = {
+        ...linkRecord(name, version.slice(5)),
+        optional: !required.has(key),
+        dev: !shipped.has(key),
+      };
+    }
   }
   return { root: root(lock.root), packages, warnings: [] };
 }
@@ -365,6 +390,7 @@ function pinsFit(
       // An override's tarball is the root's path, the top's own one its own.
       if (spec.type === "tarball") return pinned === tarballSource(spec.fetchSpec, i ? "" : base);
       if (spec.type === "workspace") return pinned.startsWith("link:");
+      if (spec.type === "link") return pinned === `link:${joinPath(base, spec.fetchSpec)}`;
       const entry = lock.packages[`${name}@${pinned}`];
       if (entry?.version !== undefined) return false; // a tarball, for a registry spec
       if (!parse(pinned)) return true; // a workspace, which a plain spec may land on
@@ -568,7 +594,7 @@ function validate(value: unknown): Lockfile {
   }
   for (const [path, ws] of Object.entries(lock.workspaces ?? {})) {
     const at = `workspaces[${JSON.stringify(path)}]`;
-    checkEdges(ws, at, known, true);
+    checkEdges(ws, at, known, ws.specs ?? {});
     const edges = { ...ws.dependencies, ...ws.optionalDependencies };
     for (const [name, version] of Object.entries(edges)) {
       if (`${name}@${version}` === keyOf(path, ws)) throw fail(`${at} depends on itself`);
@@ -576,7 +602,7 @@ function validate(value: unknown): Lockfile {
     checkTop(ws.specs, edges, at, ws.peerDependencies);
   }
   if (!isObject(lock.root.dependencies)) throw fail("root.dependencies must be an object");
-  links(lock.root.dependencies, "root.dependencies", known, true);
+  links(lock.root.dependencies, "root.dependencies", known, lock.root.specs ?? {});
   checkTop(lock.root.specs, lock.root.dependencies, "root");
   stringList(lock.root.workspaces, "root.workspaces");
   stringMap(lock.root.overrides, "root.overrides");
@@ -610,12 +636,15 @@ function workspaceKeys(lock: Lockfile): Record<string, WorkspaceEntry> {
   return out;
 }
 
-/** Bins, edges and peers, the same on a package and on a workspace; only a top may link. */
+/**
+ * Bins, edges and peers, the same on a package and on a workspace; only a top, given its specs,
+ * may link.
+ */
 function checkEdges(
   entry: LockEntry | WorkspaceEntry,
   at: string,
   known: object,
-  top = false,
+  top?: RootSpecs,
 ): void {
   stringMap(entry.bin, `${at}.bin`);
   for (const [name, target] of Object.entries(entry.bin ?? {})) {
@@ -740,7 +769,10 @@ function reach(
   };
   for (const top of tops) {
     for (const [name, version] of Object.entries(top.dependencies)) {
-      if (seed(top, name)) push(`${name}@${version}`);
+      if (!seed(top, name)) continue;
+      // A `link:` dependency: reached, with nothing to follow.
+      if (version.startsWith("link:")) seen.add(`${name}@${version}`);
+      else push(`${name}@${version}`);
     }
   }
   for (const key of queue) {
@@ -751,15 +783,30 @@ function reach(
   return seen;
 }
 
-/** A dangling reference is what breaks the linker, so it is a parse error here. */
-function links(deps: unknown, at: string, known: object, top = false): void {
+/**
+ * A dangling reference is what breaks the linker, so it is a parse error here. A top's `link:`
+ * edge to no workspace is a `link:` dependency, which only its own `link:` spec may make.
+ */
+function links(deps: unknown, at: string, known: object, top?: RootSpecs): void {
   stringMap(deps, at);
   for (const [name, version] of Object.entries((deps ?? {}) as Record<string, string>)) {
+    if (top && version.startsWith("link:") && linkPath(version.slice(5)) && linked(top, name)) {
+      continue;
+    }
     if (!Object.hasOwn(known, `${name}@${version}`)) {
       const where = top && version.startsWith("link:") ? "workspaces" : "packages";
       throw fail(`${at}["${name}"] points at ${name}@${version}, which is not in ${where}`);
     }
   }
+}
+
+/** Whether a top's specs, not yet checked, declare `name` as a `link:` dependency. */
+function linked(specs: RootSpecs, name: string): boolean {
+  if (!isObject(specs)) return false;
+  return GROUPS.some((group) => {
+    const range = isObject(specs[group]) ? specs[group][name] : undefined;
+    return typeof range === "string" && range.trim().startsWith("link:");
+  });
 }
 
 /** A `.bin` name or target that climbs out of its directory would let a lockfile write anywhere. */
