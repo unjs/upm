@@ -1,4 +1,4 @@
-// Small helpers shared across modules. Nothing here knows about packages.
+// Small helpers shared across modules, and what a worker needs to read a package.json.
 import type { Dirent } from "node:fs";
 import { builtin } from "./builtin.ts";
 import type { FileEntry, PackageIndex } from "./store.ts";
@@ -56,10 +56,93 @@ export function mismatch(index: PackageIndex, want: Identity): string | undefine
   return `its tarball is ${name ?? want.name}@${version ?? want.version}, not ${want.name}@${want.version}`;
 }
 
+/** Hosts whose archive url stands in for a clone, by shortcut: domain, then the url of a ref. */
+const HOSTS: Record<string, [domain: string, archive: (path: string, ref: string) => string]> = {
+  github: ["github.com", (path, ref) => `https://codeload.github.com/${path}/tar.gz/${ref}`],
+  gitlab: [
+    "gitlab.com",
+    (path, ref) =>
+      `https://gitlab.com/api/v4/projects/${encodeURIComponent(path)}/repository/archive.tar.gz?sha=${ref}`,
+  ],
+  bitbucket: ["bitbucket.org", (path, ref) => `https://bitbucket.org/${path}/get/${ref}.tar.gz`],
+};
+// `git:`, `git+https:`, `git+ssh:` and the like; only the first few have a host to ask.
+const GIT_URL_RE = /^git(?:\+[a-z]+)?:/i;
+const GIT_OK_RE = /^git(?:\+(?:https?|ssh))?:\/\//i;
+// npm's host shortcuts, `github:user/repo`.
+const HOST_RE = /^(github|gitlab|bitbucket|gist|sourcehut):/i;
+// npm's GitHub shortcut, `user/repo#ref`.
+const SHORTCUT_RE = /^[^@%/\s.~-][^:@%/\s]*\/[^:@\s/%#]+(?:#.*)?$/;
+// scp's `git@github.com:user/repo`.
+const SCP_RE = /^[^@/:\s]+@[^@/:\s]+\.[^@/:\s]+:/;
+
+/**
+ * Whether a spec names a git repository: a git url, scp's `git@host:user/repo`, `host:user/repo`,
+ * `user/repo` or an http(s) url of a known host ending in `.git`. A tarball's file name is none.
+ */
+export function isGit(s: string): boolean {
+  const at = s.split("#", 1)[0]!;
+  if (/^https?:\/\//i.test(at)) {
+    const url = URL.canParse(at) ? new URL(at) : undefined;
+    const known = Object.values(HOSTS).some(([domain]) => domain === url?.hostname);
+    return known && /\.git\/?$/i.test(url!.pathname);
+  }
+  return (
+    GIT_URL_RE.test(s) ||
+    HOST_RE.test(s) ||
+    (SHORTCUT_RE.test(s) && !/\.(?:tgz|tar\.gz|tar)$/i.test(at)) ||
+    SCP_RE.test(s)
+  );
+}
+
+/**
+ * The archive url of a git spec on a host in `HOSTS`, read as the tarball it is. There is no
+ * clone, so another host, a `semver:` range or a `path:` in the ref throws why. No ref is `HEAD`.
+ */
+export function gitArchive(s: string): string {
+  const hash = s.indexOf("#");
+  const at = hash < 0 ? s : s.slice(0, hash);
+  const ref = hash < 0 ? "" : s.slice(hash + 1);
+  let host: string | undefined;
+  let path: string;
+  const shortcut = HOST_RE.exec(at)?.[1]?.toLowerCase();
+  if (shortcut) {
+    if (!HOSTS[shortcut])
+      throw new Error(`only ${Object.keys(HOSTS).join(", ")} shortcuts install`);
+    [host, path] = [shortcut, at.slice(shortcut.length + 1)];
+  } else if (SHORTCUT_RE.test(at)) {
+    [host, path] = ["github", at];
+  } else {
+    // `git://host/path`, `git+ssh://git@host:path`, `git@host:path`. Only a url has a port.
+    const url =
+      GIT_OK_RE.test(at) || /^https?:/i.test(at)
+        ? /^[a-z+]+:\/\/(?:[^@/]+@)?([^@/:]+)(?::\d+(?=\/))?[:/](.*)$/i.exec(at)
+        : /^[^@/:]+@([^@/:]+):(.*)$/.exec(at);
+    const domain = url?.[1]!.toLowerCase();
+    host = Object.keys(HOSTS).find((name) => HOSTS[name]![0] === domain);
+    if (!host)
+      throw new Error("upm installs git only from GitHub, GitLab or Bitbucket, as a tarball");
+    path = url![2]!;
+  }
+  const parts = path
+    .replace(/^\/+|\/+$/g, "")
+    .replace(/\.git$/i, "")
+    .split("/");
+  // GitLab nests groups; the others are always `user/repo`.
+  if (parts.length < 2 || (host !== "gitlab" && parts.length > 2))
+    throw new Error("no user/repo in it");
+  if (parts.some((part) => !/^[\w.-]+$/.test(part) || /^(?:\.\.?|-)$/.test(part))) {
+    throw new Error("user/repo is malformed");
+  }
+  // A ref name cannot hold a `:`, so it marks npm's `semver:` and `path:`, which need a clone.
+  if (ref.includes(":")) throw new Error("only a commit, branch or tag can follow the #");
+  return HOSTS[host]![1](parts.join("/"), encodeURIComponent(ref || "HEAD"));
+}
+
 /**
  * What a package.json says it installs under another name: `"x": "npm:real@^1"` is `x` ->
- * `real`, and a url is its own: `"x": "https://…"` is `x` -> the url. Peers are left out: one
- * is settled against whatever the tree holds under its name.
+ * `real`, and a url is its own: `"x": "https://…"` is `x` -> the url, a git spec its archive's.
+ * Peers are left out: one is settled against whatever the tree holds under its name.
  */
 export function aliasesOf(manifest: unknown): Record<string, string> {
   const out: Record<string, string> = {};
@@ -69,6 +152,14 @@ export function aliasesOf(manifest: unknown): Record<string, string> {
     if (typeof deps !== "object" || deps === null) continue;
     for (const [name, spec] of Object.entries(deps)) {
       const trimmed = typeof spec === "string" ? spec.trim() : "";
+      if (isGit(trimmed)) {
+        try {
+          out[name] = gitArchive(trimmed);
+        } catch {
+          delete out[name]; // refused where it is resolved
+        }
+        continue;
+      }
       if (/^https?:\/\//i.test(trimmed)) {
         out[name] = trimmed;
         continue;
@@ -126,6 +217,23 @@ export function declaredIn(
   } catch {}
   read?.push(index);
   return (index.aliases = aliases);
+}
+
+/**
+ * `misdeclared` against what an index's package.json declares. Aliases an older upm kept can
+ * miss a spec it did not read, as git, so a failure reads the package.json again before it stands.
+ */
+export function misdeclaredIn(
+  index: PackageIndex,
+  blobPath: (file: FileEntry) => string,
+  edges: Record<string, string>,
+  read?: PackageIndex[],
+): string | undefined {
+  const kept = index.aliases !== undefined;
+  const wrong = misdeclared(declaredIn(index, blobPath, read), edges);
+  if (!wrong || !kept) return wrong;
+  delete index.aliases;
+  return misdeclared(declaredIn(index, blobPath, read), edges);
 }
 
 /** A map of names to names, as an index keeps its aliases. */

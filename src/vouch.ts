@@ -4,7 +4,7 @@ import { builtin } from "./builtin.ts";
 import { allDeps } from "./resolve.ts";
 import type { ResolvedPackage } from "./resolve.ts";
 import type { PackageIndex, Store } from "./store.ts";
-import { aliasesOf, declaredIn, misdeclared, mismatch } from "./util.ts";
+import { aliasesOf, misdeclared, misdeclaredIn, mismatch } from "./util.ts";
 
 type Reader = Pick<Store, "index" | "blobPath">;
 
@@ -40,7 +40,7 @@ export function vouched(
           !Object.hasOwn(json.optionalDependencies, name));
       if (!peer || !seen.has(id)) left[name] = realOf(packages[id]!);
     }
-    return misdeclared(index ? declaredIn(index, store.blobPath) : {}, left);
+    return index ? misdeclaredIn(index, store.blobPath, left) : misdeclared({}, left);
   };
 }
 

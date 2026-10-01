@@ -18,7 +18,14 @@ import { dirname, join, relative, sep } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { hashOf } from "./hash.ts";
 import { binOf, linkOf, readBin } from "./link.ts";
-import { aliasesOf, linkArgs, misdeclared, mismatch, readLink } from "../src/util.ts";
+import {
+  aliasesOf,
+  linkArgs,
+  misdeclared,
+  misdeclaredIn,
+  mismatch,
+  readLink,
+} from "../src/util.ts";
 import { storeKeys } from "../src/keys.ts";
 import { builtin } from "../src/builtin.ts";
 import { linkTree } from "../src/link.ts";
@@ -1466,6 +1473,21 @@ describe("mismatch", () => {
     expect(misdeclared(declared, { g: "HTTPS://h/g.tgz" })).toBe(undefined);
     expect(misdeclared(declared, { g: "https://h/other.tgz" })).toMatch(/not https/);
     expect(misdeclared(declared, { c: "https://h/c.tgz" })).toMatch(/makes c c, not https/);
+  });
+
+  it("reads a package.json again when the aliases an older upm kept refuse an edge", async () => {
+    const json = join(root, "package.json");
+    await writeFile(json, JSON.stringify({ dependencies: { a: "u/a#v1" } }));
+    // Kept by a upm that did not read git specs: the dependency left out.
+    const files = [{ path: "package.json" }] as FileEntry[];
+    const index = { integrity: "sha512-x", files, unpackedSize: 0, aliases: {} };
+    const read: unknown[] = [];
+    const url = "https://codeload.github.com/u/a/tar.gz/v1";
+    expect(misdeclaredIn(index, () => json, { a: url }, read as never)).toBe(undefined);
+    expect(index.aliases).toEqual({ a: url });
+    expect(read).toEqual([index]); // written back
+    // What the package.json still refuses stands.
+    expect(misdeclaredIn(index, () => json, { a: "evil" }, [])).toMatch(/makes a https/);
   });
 
   it("reads versions as a registry keys them, and nothing more loosely", () => {

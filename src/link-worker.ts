@@ -5,7 +5,7 @@ import type { Shard, ShardResult } from "./link.ts";
 import type { PackageIndex } from "./store.ts";
 import { keepAliases } from "./index-upgrade.ts";
 import { sameIntegrity } from "./integrity.ts";
-import { declaredIn, isIndex, linkArgs, misdeclared, mismatch } from "./util.ts";
+import { isIndex, linkArgs, misdeclaredIn, mismatch } from "./util.ts";
 
 /** An Error does not survive structured clone, so the two fields callers read travel by hand. */
 export interface ShardReply {
@@ -131,11 +131,7 @@ function readIndex({ index: file, integrity, want, edges, blobDir }: Shard): Pac
   const aged: PackageIndex[] = [];
   const wrong =
     (want && mismatch(parsed, want)) ||
-    (edges &&
-      misdeclared(
-        declaredIn(parsed, (at) => `${blobDir}${sep}${at.blob}`, aged),
-        edges,
-      ));
+    (edges && misdeclaredIn(parsed, (at) => `${blobDir}${sep}${at.blob}`, edges, aged));
   const what = want ? `${want.name}@${want.version}` : file;
   if (wrong) throw fail(`${what} cannot be installed: ${wrong}`, "EMISMATCH");
   // Here, on the thread that read it, which has nothing else to do meanwhile.

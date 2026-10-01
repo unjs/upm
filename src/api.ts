@@ -60,7 +60,7 @@ import {
 } from "./run.ts";
 import { cpus, pid } from "./runtime.ts";
 import { parse, satisfies } from "./semver.ts";
-import { bareTarball, isGit, parseDep, parseSpec } from "./spec.ts";
+import { bareTarball, parseDep, parseSpec } from "./spec.ts";
 import type { Spec } from "./spec.ts";
 import {
   inputsHash,
@@ -79,7 +79,7 @@ import { createStore, storeDir } from "./store.ts";
 import type { Store, Tarball } from "./store.ts";
 import type { StoreBackend } from "./store-backend.ts";
 import type { Manifest } from "./types.ts";
-import { describe, replaceFile, take, trace, tracing } from "./util.ts";
+import { describe, isGit, replaceFile, take, trace, tracing } from "./util.ts";
 
 /** Only a type: the module itself is loaded by the commands that read a project. */
 type Workspace = import("./workspaces.ts").Workspace;

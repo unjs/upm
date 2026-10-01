@@ -6,7 +6,7 @@ import { storeKeys } from "./keys.ts";
 import { createLimiter } from "./limit.ts";
 import {
   alive,
-  declaredIn,
+  misdeclaredIn,
   exists,
   linkArgs,
   list,
@@ -394,7 +394,7 @@ export async function linkTree(resolution: Resolution, options: LinkOptions): Pr
         // A tarball dependency's package.json says what it is; nothing else could.
         const wrong =
           (pkg.source === undefined ? mismatch(found, identityOf(pkg)) : undefined) ??
-          misdeclared(declaredIn(found, store.blobPath, aged), edgesOf(pkg));
+          misdeclaredIn(found, store.blobPath, edgesOf(pkg), aged);
         if (wrong) throw fail(`${id} cannot be installed: ${wrong}`, "EMISMATCH");
         held = found;
         return found;

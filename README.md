@@ -181,12 +181,15 @@ upm does not run git. A git dependency on GitHub, GitLab or Bitbucket is install
 the host's archive of its ref, the way a tarball URL is: `upm.lock` keys it by that
 archive URL and pins its bytes. `package.json` keeps the spec as written. These forms
 work: `github:`, `gitlab:` and `bitbucket:` shortcuts, `user/repo` for GitHub,
-`git://`, `git+https://`, `git+ssh://`, `git@host:user/repo` and `https://` URLs ending
-in `.git`. The ref after `#` is a commit, branch or tag, and `HEAD` when left out.
+`git://`, `git+https://`, `git+ssh://`, `git@host:user/repo` and `https://` URLs of those
+hosts ending in `.git`. The ref after `#` is a commit, branch or tag, and `HEAD` when left
+out. A package's own git dependencies install the same way.
 
 Other hosts, `#semver:` ranges and `::path:` subdirectories are refused, as they need a
-clone. `prepare` and other scripts are not run, so a repository that only ships
-sources (no built files committed) installs but may not load. A branch or `HEAD` moves:
+clone. Credentials in a git URL are dropped, so private repositories do not work.
+It holds the whole repository, not what `npm pack` would pick. `prepare` and other scripts
+are not run, so a repository that only ships sources (no built files committed) installs
+but may not load. A branch or `HEAD` moves:
 a fresh machine that fetches it after a push fails with `EINTEGRITY`, so pin a tag or
 commit.
 

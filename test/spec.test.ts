@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { bareTarball, escapeName, isGit, parseDep, parseSpec, tarballSource } from "../src/spec.ts";
+import { bareTarball, escapeName, parseDep, parseSpec, tarballSource } from "../src/spec.ts";
+import { aliasesOf, isGit } from "../src/util.ts";
 
 describe("parseSpec", () => {
   it("bare name becomes the * range", () => {
@@ -457,6 +458,8 @@ describe("git specs", () => {
     ["git+ssh://git@github.com:u/r.git#main", `${gh}/main`],
     ["git+ssh://git@github.com:22/u/r.git", `${gh}/HEAD`],
     ["git@github.com:u/r.git", `${gh}/HEAD`],
+    // Only a url has a port: scp's user can be a number.
+    ["git@github.com:1234/r.git", "https://codeload.github.com/1234/r/tar.gz/HEAD"],
     ["https://github.com/u/r.git#main", `${gh}/main`],
     [
       "gitlab:g/sub/r#v1",
@@ -471,6 +474,28 @@ describe("git specs", () => {
     expect(parseDep("a", spec)).toMatchObject({ raw: `a@${spec}`, type: "tarball", fetchSpec });
   });
 
+  it("leaves an http(s) url ending in .git off a known host a tarball", () => {
+    for (const url of ["https://t.test/u/r.git", "https://t.test/dl?f=a.git"]) {
+      expect(parseDep("a", url)).toMatchObject({ type: "tarball", fetchSpec: url });
+    }
+  });
+
+  it("reads its own archive url back as that url", () => {
+    // A lockfile key: a ref may end in `.git` too.
+    for (const spec of ["u/r#v7.git", "gitlab:g/r#v7.git", "bitbucket:u/r#v7.git"]) {
+      const url = parseDep("a", spec).fetchSpec;
+      expect(parseDep("a", url).fetchSpec).toBe(url);
+    }
+  });
+
+  it("names the package a package.json's git dependency installs as its archive url", () => {
+    const dependencies = { a: "github:u/a", b: "u/b#v1", c: "git+https://t.test/c.git", d: "^1" };
+    expect(aliasesOf({ dependencies })).toEqual({
+      a: "https://codeload.github.com/u/a/tar.gz/HEAD",
+      b: "https://codeload.github.com/u/b/tar.gz/v1",
+    });
+  });
+
   it("splits a CLI argument on the name's @, not the git url's", () => {
     expect(parseSpec("@s/a@git@github.com:u/r.git")).toMatchObject({
       name: "@s/a",
@@ -478,17 +503,19 @@ describe("git specs", () => {
       fetchSpec: `${gh}/HEAD`,
     });
     expect(parseSpec("a@u/r#main").fetchSpec).toBe(`${gh}/main`);
+    expect(parseSpec("a@git@github.com:u/r").fetchSpec).toBe(`${gh}/HEAD`);
   });
 
   it.each([
     ["git+https://example.com/u/r.git", /only from GitHub, GitLab or Bitbucket/],
     ["git+file:///tmp/r", /only from GitHub, GitLab or Bitbucket/],
-    ["https://example.com/u/r.git", /only from GitHub, GitLab or Bitbucket/],
+    ["git+svn://github.com/u/r", /only from GitHub, GitLab or Bitbucket/],
     ["gist:abc123", /only github, gitlab, bitbucket shortcuts install/],
     ["github:u/r#semver:^1.0.0", /only a commit, branch or tag/],
     ["github:u/r#main::path:packages/a", /only a commit, branch or tag/],
     ["github:u", /no user\/repo/],
     ["git+https://github.com/u/r/tree/main", /no user\/repo/],
+    ["git+https://gitlab.com/g/r/-/tree/main", /user\/repo is malformed/],
     ["github:u/r%20x", /user\/repo is malformed/],
     ["github:u/..", /user\/repo is malformed/],
   ])("refuses %s", (spec, message) => {
@@ -514,6 +541,10 @@ describe("git specs", () => {
     "./u/r",
     "https://t.test/a.tgz",
     "https://codeload.github.com/u/r/tar.gz/main",
+    "https://codeload.github.com/u/r/tar.gz/v7.git",
+    "https://t.test/u/r.git",
+    "~/dir",
+    "a@git@github.com:u/r",
   ])("%s is not git", (arg) => {
     expect(isGit(arg)).toBe(false);
   });
