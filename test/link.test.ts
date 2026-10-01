@@ -1488,6 +1488,9 @@ describe("mismatch", () => {
     expect(read).toEqual([index]); // written back
     // What the package.json still refuses stands.
     expect(misdeclaredIn(index, () => json, { a: "evil" }, [])).toMatch(/makes a https/);
+    // Nor do kept aliases give way to a package.json that cannot be read.
+    const lost = { ...index, aliases: { a: "real" } };
+    expect(misdeclaredIn(lost, () => join(root, "gone"), { a: "a" }, [])).toMatch(/makes a real/);
   });
 
   it("reads versions as a registry keys them, and nothing more loosely", () => {

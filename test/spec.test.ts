@@ -475,7 +475,11 @@ describe("git specs", () => {
   });
 
   it("leaves an http(s) url ending in .git off a known host a tarball", () => {
-    for (const url of ["https://t.test/u/r.git", "https://t.test/dl?f=a.git"]) {
+    for (const url of [
+      "https://t.test/u/r.git",
+      "https://t.test/dl?f=a.git",
+      "https://github.com/u/r.git?x=1",
+    ]) {
       expect(parseDep("a", url)).toMatchObject({ type: "tarball", fetchSpec: url });
     }
   });

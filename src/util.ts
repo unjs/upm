@@ -85,7 +85,7 @@ export function isGit(s: string): boolean {
   if (/^https?:\/\//i.test(at)) {
     const url = URL.canParse(at) ? new URL(at) : undefined;
     const known = Object.values(HOSTS).some(([domain]) => domain === url?.hostname);
-    return known && /\.git\/?$/i.test(url!.pathname);
+    return known && !url!.search && /\.git\/?$/i.test(url!.pathname);
   }
   return (
     GIT_URL_RE.test(s) ||
@@ -195,33 +195,39 @@ export function misdeclared(
 /**
  * `aliasesOf` an entry's package.json: kept in its index, else — an index from before they
  * were kept — read from the stored file, set on the index and the index added to `read`, for
- * `keepAliases` to write. One that cannot be read declares nothing, and sets nothing.
+ * `keepAliases` to write. One that cannot be read declares nothing, and sets nothing. `again`
+ * reads the file over kept aliases, which stand when it cannot be read.
  */
 export function declaredIn(
   index: PackageIndex,
   blobPath: (file: FileEntry) => string,
   read?: PackageIndex[],
+  again?: boolean,
 ): Record<string, string> {
-  if (index.aliases) return index.aliases;
+  const kept = index.aliases;
+  if (kept && !again) return kept;
   const file = index.files.find((entry) => entry.path === "package.json");
   let text = "";
   try {
     if (file) text = builtin.fs.readFileSync(blobPath(file), "utf8");
   } catch {
-    return {};
+    return kept ?? {};
   }
   let aliases = {};
   try {
     // Without a BOM, as the unpack's decoder reads it.
     aliases = aliasesOf(JSON.parse(text.replace(/^\uFEFF/, "")));
-  } catch {}
+  } catch {
+    if (kept) return kept;
+  }
   read?.push(index);
   return (index.aliases = aliases);
 }
 
 /**
  * `misdeclared` against what an index's package.json declares. Aliases an older upm kept can
- * miss a spec it did not read, as git, so a failure reads the package.json again before it stands.
+ * miss a spec it did not read, as git, so a failure reads the package.json again before it
+ * stands; one that cannot be read leaves the kept aliases to answer.
  */
 export function misdeclaredIn(
   index: PackageIndex,
@@ -231,9 +237,7 @@ export function misdeclaredIn(
 ): string | undefined {
   const kept = index.aliases !== undefined;
   const wrong = misdeclared(declaredIn(index, blobPath, read), edges);
-  if (!wrong || !kept) return wrong;
-  delete index.aliases;
-  return misdeclared(declaredIn(index, blobPath, read), edges);
+  return wrong && kept ? misdeclared(declaredIn(index, blobPath, read, true), edges) : wrong;
 }
 
 /** A map of names to names, as an index keeps its aliases. */
