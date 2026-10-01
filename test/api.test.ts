@@ -1903,6 +1903,50 @@ describe("link: dependencies", () => {
     expect(await realpath(at)).toBe(await realpath(join(dir, "lib")));
   });
 
+  it("reads the directory again when its package.json changes, or appears", async () => {
+    await writeFile(
+      join(app, "package.json"),
+      JSON.stringify({ dependencies: { x: "link:../x" } }),
+    );
+    await upm.install(options);
+    expect(lines).toContain("x@link:../x links to no directory");
+    const nm = join(app, "node_modules");
+    await expect(readdir(join(nm, ".bin"))).rejects.toThrow();
+
+    // Made after the install: the no-op check sees its package.json.
+    await mkdir(join(dir, "x"));
+    const x = { name: "x", version: "1.0.0", bin: { one: "cli.js" } };
+    await writeFile(join(dir, "x", "package.json"), JSON.stringify(x));
+    await writeFile(join(dir, "x", "cli.js"), "");
+    expect((await upm.install(options)).upToDate).toBe(false);
+    expect(await binOf(join(nm, ".bin", "one"))).toBe("../x/cli.js");
+    expect((await upm.install(options)).upToDate).toBe(true);
+
+    // A bin renamed: the old one goes, the new one comes.
+    await writeFile(
+      join(dir, "x", "package.json"),
+      JSON.stringify({ ...x, bin: { two: "cli.js" } }),
+    );
+    expect((await upm.install(options)).upToDate).toBe(false);
+    expect((await readdir(join(nm, ".bin"))).filter((bin) => !bin.includes("."))).toEqual(["two"]);
+  });
+
+  it("is never a workspace's peer", async () => {
+    const root = { workspaces: ["packages/*"], dependencies: { lib: "link:../lib" } };
+    await writeFile(join(app, "package.json"), JSON.stringify(root));
+    await mkdir(join(app, "packages", "w"), { recursive: true });
+    const w = {
+      name: "w",
+      peerDependencies: { lib: "*" },
+      peerDependenciesMeta: { lib: { optional: true } },
+    };
+    await writeFile(join(app, "packages", "w", "package.json"), JSON.stringify(w));
+    await upm.install(options);
+    const lock = await readJson(join(app, "upm.lock"));
+    expect(lock.workspaces["packages/w"].dependencies).toBeUndefined();
+    expect((await upm.install(options)).upToDate).toBe(true);
+  });
+
   it("adds a path from cwd, saved from package.json", async () => {
     await writeFile(join(app, "package.json"), "{}");
     const was = process.cwd();

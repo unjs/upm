@@ -12,7 +12,7 @@ import type { Resolution, ResolveOptions } from "./resolve.ts";
 import { parse } from "./semver.ts";
 import { tarballSource } from "./spec.ts";
 import { sameStamp, stampOf } from "./state.ts";
-import type { Stamp, TarballStamp } from "./state.ts";
+import type { InstallState, Stamp, TarballStamp } from "./state.ts";
 import type { PackageIndex, Store, Tarball } from "./store.ts";
 import type { Manifest } from "./types.ts";
 import { describe } from "./util.ts";
@@ -150,23 +150,36 @@ export function fromCwd(file: string, fetchSpec: string): string {
 /**
  * A `link:` dependency's version and bins, off its package.json now: the lockfile keeps only
  * the edge, as pnpm's does. A directory without one, or not there yet, links with no bins.
+ * Each package.json's stamp from just before it was read, null when there is none, is what
+ * the no-op install holds them to; `missing` the keys of those that are no directory at all.
  */
-export async function readLinks(dir: string, resolution: Resolution): Promise<void> {
-  const links = Object.values(resolution.packages).filter((pkg) => pkg.link);
+export async function readLinks(
+  dir: string,
+  resolution: Resolution,
+): Promise<{ stamps: NonNullable<InstallState["links"]>; missing: string[] }> {
+  const stamps: NonNullable<InstallState["links"]> = {};
+  const missing: string[] = [];
+  const links = Object.entries(resolution.packages).filter(([, pkg]) => pkg.link);
   await Promise.all(
-    links.map(async (pkg) => {
-      const file = builtin.path.join(dir, pkg.local!, "package.json");
+    links.map(async ([key, pkg]) => {
+      const at = builtin.path.join(dir, pkg.local!);
+      const file = builtin.path.join(at, "package.json");
+      stamps[pkg.local!] = stampOf(file) ?? null;
       const m = await builtin.fsp
         .readFile(file, "utf8")
         .then((text) => JSON.parse(text) as Manifest)
         .catch(() => undefined);
-      if (!m) return;
+      if (!m) {
+        if (!builtin.fs.statSync(at, { throwIfNoEntry: false })?.isDirectory()) missing.push(key);
+        return;
+      }
       if (typeof m.version === "string" && parse(m.version)?.version === m.version) {
         pkg.version = m.version;
       }
       pkg.bin = normalizeBin(m);
     }),
   );
+  return { stamps, missing: missing.sort() };
 }
 
 /** A tarball dependency whose bytes are not the ones the lockfile pinned: say which, and the way out. */

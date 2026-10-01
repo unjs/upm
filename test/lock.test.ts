@@ -1513,6 +1513,10 @@ describe("workspaces", () => {
       });
       expect(toLockfile(out)).toEqual(lock({ lib: "link:../lib" }));
       expect(check(lock({ lib: "^1" })).message).toMatch(/points at lib@link:\.\.\/lib/);
+      // Declared twice, the edge is the one the resolver walks: here the range's.
+      const twice = lock({ lib: "link:../lib" });
+      Object.assign(twice.root.specs, { dependencies: { lib: "^1" } });
+      expect(check(twice).message).toMatch(/points at lib@link:\.\.\/lib/);
       expect(check(lock({ lib: "link:../lib" }, "link:a/../../lib")).message).toMatch(
         /points at lib@link:a\/\.\.\/\.\.\/lib/,
       );

@@ -583,7 +583,13 @@ async function installed(ctx: Context, edit?: Edit, loaded?: Project): Promise<I
     trace("inputs");
     const files = state.tarballs;
     const hoist = settings(ctx).hoist;
-    if (matched && files && sameFiles(dir, files) && treeStanding(dir, state, hoist)) {
+    if (
+      matched &&
+      files &&
+      sameFiles(dir, files) &&
+      sameLinks(dir, state.links) &&
+      treeStanding(dir, state, hoist)
+    ) {
       // Read and hashed, or folders read again, this time: recorded so the next install need not.
       // The lockfile was read after its stamp; package.json before, so it is read again.
       if (!stamped || project.learned) {
@@ -621,8 +627,14 @@ async function installed(ctx: Context, edit?: Edit, loaded?: Project): Promise<I
   // The lockfile holds every platform's builds; this machine installs its own. Checked
   // already: `plan` returns what `readLockfile` parsed or what `formatLockfile` accepted.
   const checked = fromCheckedLockfile(lock, hostsOf(ctx));
+  let linkStamps: InstallState["links"];
   if (Object.values(checked.packages).some((pkg) => pkg.link)) {
-    await (await import("./tarball-deps.ts")).readLinks(dir, checked);
+    const read = await (await import("./tarball-deps.ts")).readLinks(dir, checked);
+    linkStamps = read.stamps;
+    for (const key of read.missing) {
+      const pkg = checked.packages[key]!;
+      if (!(options.production && pkg.dev)) log(`${key} links to no directory`, "warn");
+    }
   }
   trace("checked");
   const resolution = filterPlatform(checked);
@@ -748,6 +760,7 @@ async function installed(ctx: Context, edit?: Edit, loaded?: Project): Promise<I
             stamps: await heldStamps(ctx, project, inputs),
           },
     tarballs: filesOf(ctx, lock),
+    links: linkStamps,
     workspaces: project.proof,
     hold: async () => {
       let waited = false;
@@ -926,6 +939,15 @@ function sameFiles(dir: string, files: Record<string, TarballStamp | null>): boo
     if (stamp?.[4] === undefined || !sameStamp(stampOf(at), stamp.slice(0, 4) as Stamp)) {
       return false;
     }
+  }
+  return true;
+}
+
+/** Whether every `link:` directory's package.json has the stamp it had when an install read it. */
+function sameLinks(dir: string, links: InstallState["links"] = {}): boolean {
+  for (const [path, stamp] of Object.entries(links)) {
+    const now = stampOf(builtin.path.join(dir, path, "package.json"));
+    if (stamp === null ? now !== undefined : !sameStamp(now, stamp)) return false;
   }
   return true;
 }

@@ -685,7 +685,8 @@ export async function resolveTree(
   /**
    * The edge version a peer `name@range` of `from` settles on out of `pool`, if any. A top takes
    * the workspace when it fits, the way its own edges do; a registry package is never offered
-   * one, and the registry versions are what is left.
+   * one, and the registry versions are what is left. A `link:` directory is never a peer: its
+   * version is not known until install, and only its own top's spec may name it.
    */
   function settleOn(
     from: string,
@@ -694,7 +695,7 @@ export async function resolveTree(
     pool: Map<string, ResolvedPackage[]>,
   ): string | undefined {
     const found = pool.get(name) ?? [];
-    const ws = tops.has(from) ? found.find((p) => p.local !== undefined) : undefined;
+    const ws = tops.has(from) ? found.find((p) => p.local !== undefined && !p.link) : undefined;
     if (ws && fits(ws.version, range)) return versionOf(ws);
     const packages = found.filter((p) => p.local === undefined);
     const best = maxSatisfying(

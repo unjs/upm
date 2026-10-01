@@ -73,6 +73,8 @@ export interface LinkOptions {
   };
   /** The local tarballs' stamps, for the state file: see `InstallState.tarballs`. */
   tarballs?: InstallState["tarballs"];
+  /** The `link:` directories' package.json stamps, for the state file: see `InstallState.links`. */
+  links?: InstallState["links"];
   /** Told as each entry is built or found in place. */
   onProgress?: (progress: Progress) => void;
   /** The proof of the workspace set, for the state file: see `InstallState.workspaces`. */
@@ -257,6 +259,7 @@ export async function linkTree(resolution: Resolution, options: LinkOptions): Pr
       store: builtin.path.resolve(store.dir),
       ...(production && { production: true as const }),
       ...(options.tarballs && { tarballs: options.tarballs }),
+      ...(options.links && { links: options.links }),
       ...(inputs && {
         inputs: inputs.hash,
         summary: {
@@ -279,7 +282,9 @@ export async function linkTree(resolution: Resolution, options: LinkOptions): Pr
     // the state learns them, so the next install gets the short check, and hashes no
     // tarball and globs no workspace again.
     const learned = inputs && state.inputs !== inputs.hash;
-    const touched = JSON.stringify(state.tarballs) !== JSON.stringify(options.tarballs);
+    const touched =
+      JSON.stringify(state.tarballs) !== JSON.stringify(options.tarballs) ||
+      JSON.stringify(state.links) !== JSON.stringify(options.links);
     const proven = JSON.stringify(state.workspaces) !== JSON.stringify(options.workspaces);
     if (learned || touched || proven) {
       await writeState(options.dir, stateOf(state.entries, true, read, state.missing));

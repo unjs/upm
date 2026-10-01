@@ -143,7 +143,7 @@ function tarball(s: string, raw: string, where?: string): string | undefined {
     );
   }
   if (!TARBALL_RE.test(clean)) {
-    const why = "only a tarball (.tgz, .tar.gz or .tar) installs from a path";
+    const why = "only a tarball (.tgz, .tar.gz or .tar) installs from a path; link: a directory";
     throw fail(`Invalid path "${path}" of package "${raw}": ${why}`, where);
   }
   return `file:${joinPath("", clean)}`;

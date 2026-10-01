@@ -800,13 +800,16 @@ function links(deps: unknown, at: string, known: object, top?: RootSpecs): void 
   }
 }
 
-/** Whether a top's specs, not yet checked, declare `name` as a `link:` dependency. */
+/**
+ * Whether the spec of `name` the resolver walks in a top's specs, not yet checked, is a `link:`
+ * one: in a name declared twice, the other could not have made the edge.
+ */
 function linked(specs: RootSpecs, name: string): boolean {
   if (!isObject(specs)) return false;
-  return GROUPS.some((group) => {
-    const range = isObject(specs[group]) ? specs[group][name] : undefined;
-    return typeof range === "string" && range.trim().startsWith("link:");
-  });
+  const groups = GROUPS.map((group) => (isObject(specs[group]) ? specs[group] : undefined));
+  const walked = rootEdges(Object.fromEntries(GROUPS.map((g, i) => [g, groups[i]])));
+  const range = walked.find(([n]) => n === name)?.[1];
+  return typeof range === "string" && range.trim().startsWith("link:");
 }
 
 /** A `.bin` name or target that climbs out of its directory would let a lockfile write anywhere. */

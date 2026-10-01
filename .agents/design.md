@@ -64,8 +64,11 @@ A `link:<path>` dependency is a local record like a workspace (`name@link:<path>
 from its directory) but never a top: nothing it declares is walked, no `node_modules` is
 made in it, and its path may climb out of the project. `upm.lock` keeps only the top's edge,
 as pnpm's does, and accepts a `link:` edge to no workspace only where that top's own spec is
-`link:`, so a hand-edited lockfile cannot point a registry range at a directory. Its bins
-and version are read off its `package.json` at install time (`readLinks`), never locked.
+`link:` — the spec the resolver walks, when a name is in two groups — so a hand-edited
+lockfile cannot point a registry range at a directory. Its bins and version are read off its
+`package.json` at install time (`readLinks`), never locked, and the state keeps that file's
+stamp so the no-op install reads it again once it changes. Never a peer: its version is not
+known while resolving.
 
 ## A tarball is keyed by where it is
 

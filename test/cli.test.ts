@@ -1234,13 +1234,13 @@ describe("startup budget", () => {
     // 163,426 with a lockfile's urls off its registries held to the registry's integrity, lazily.
     // 163,833 with a url in a registry's layout held to the package and version it names, `--help`
     // within noise (41/42 and 52/54 ms). 164,881 with a declared bin's CRLF `#!` line fixed on
-    // unpack, `--help` within noise (41.5/44 and 42.3/41.2 ms). 166,800 with `link:`
-    // dependencies, their package.json read lazily, `--help` within noise (45.6/44.2 and
-    // 121/120 ms).
+    // unpack, `--help` within noise (41.5/44 and 42.3/41.2 ms). 167,449 with `link:`
+    // dependencies, their package.json read lazily and its stamp held by the no-op install,
+    // `--help` within noise (41.4/40.6 and 115/118 ms).
     const modules = await reachable();
     const bytes = [...modules.values()].reduce((total, size) => total + size, 0);
     expect(modules.size).toBeLessThanOrEqual(27); // `upm.ts` is the bin, `cli.ts` the program
-    expect(bytes).toBeLessThanOrEqual(166_800);
+    expect(bytes).toBeLessThanOrEqual(167_449);
     // Found through `import()` by the commands that read a project, like the pools: each holds
     // its worker's whole code in the build.
     const lazy = [

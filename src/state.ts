@@ -64,6 +64,12 @@ export interface InstallState {
    * before the lockfile is trusted. Absent from a state an older upm wrote: no proof of anything.
    */
   tarballs?: Record<string, TarballStamp | null>;
+  /**
+   * Every `link:` directory the tree links, by its root-relative path, with its package.json's
+   * stamp from just before the install read its bins, or null when it had none. The no-op
+   * install holds while each is the same. Absent when there are none: no older upm installed one.
+   */
+  links?: Record<string, Stamp | null>;
 }
 
 /** A top's direct links (name -> target) and the bin names it places. */
@@ -270,7 +276,10 @@ function isState(value: unknown): value is InstallState {
             typeof state.stamps.settings === "string")))) &&
     (state.tarballs === undefined ||
       (isRecord(state.tarballs) &&
-        Object.values(state.tarballs).every((stamp) => stamp === null || isTarballStamp(stamp))))
+        Object.values(state.tarballs).every((stamp) => stamp === null || isTarballStamp(stamp)))) &&
+    (state.links === undefined ||
+      (isRecord(state.links) &&
+        Object.values(state.links).every((stamp) => stamp === null || isStamp(stamp))))
     // `workspaces` is checked by its one reader, `listWorkspaces`: nothing else loads it.
   );
 }

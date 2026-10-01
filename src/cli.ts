@@ -105,6 +105,7 @@ Notes
   from while it matches package.json.
   A url or a path to a .tgz is a tarball dependency, locked by where it is. add reads a
   path from the current directory; alone, it names the tarball by its package.json.
+  name@link:<dir> links a directory as it is, its own dependencies not installed.
   With no ${LOCKFILE}, install reads package-lock.json, pnpm-lock.yaml or bun.lock and writes
   nothing; add, remove, dedupe and a stale file are refused. Delete it to switch to upm.
 

@@ -164,8 +164,10 @@ upm add lib@link:../lib               # saves "lib": "link:../lib"
 `node_modules` as it is and links its bins. None of its own dependencies are installed.
 The path is relative to the `package.json` that declares it, so only the root and
 workspaces can use one. It may lead outside the project. `upm.lock` keeps only the link.
-Each install reads the directory's `package.json` for its bins. bun's `link:<name>`
-(a package registered with `bun link`) is not supported.
+Its bins come from the directory's `package.json`, read again whenever that file changes.
+A link to a directory that does not exist is made anyway, with a warning. It is never used
+as another package's peer dependency. bun's `link:<name>` (a package registered with
+`bun link`) is not supported.
 
 ### Override dependencies
 
