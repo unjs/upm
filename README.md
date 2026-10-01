@@ -790,9 +790,9 @@ during an install; that grace period does not guarantee safe concurrent cleanup.
 
 ## Current limits
 
-- **Registry, workspace and tarball dependencies only.** Git works only through a
-  GitHub, GitLab or Bitbucket archive, with no `prepare`. No local directory
-  dependencies.
+- **Registry, workspace, tarball, `link:` and hosted git dependencies only.** Git works
+  only through a GitHub, GitLab or Bitbucket archive, with no `prepare`. A local
+  directory installs only as a `link:`.
 - **Workspaces install as one tree.** No filtered installs or catalogs. A
   `workspace:` spec names a workspace by its own name, not by path or alias.
 - **Limited peer handling.** Missing required peers are installed, shared by their
