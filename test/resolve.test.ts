@@ -3206,6 +3206,25 @@ describe("overrides, review regressions", () => {
     expect(out.packages["plugin@1.0.0"]!.dependencies).toEqual({ host: "file:vendor/host.tgz" });
   });
 
+  it("reads a workspace's own local tarball from it when a rule of the same text misses it", async () => {
+    const { tarball, reads } = bytes({});
+    const ws = { path: "packages/w", manifest: { name: "w", dependencies: { x: "file:x.tgz" } } };
+    const root = { pnpm: { overrides: { "p>x": "file:./x.tgz" } } };
+    const out = await resolve(fixture, root, { tarball, workspaces: [ws] });
+    expect(reads).toEqual(["file:packages/w/x.tgz"]);
+    expect(out.packages["w@link:packages/w"]!.dependencies).toEqual({ x: "file:packages/w/x.tgz" });
+    // One that reaches it is the root's path, though its text is the workspace's own.
+    const over = await resolve(
+      fixture,
+      { overrides: { x: "file:./x.tgz" } },
+      {
+        tarball,
+        workspaces: [ws],
+      },
+    );
+    expect(over.packages["w@link:packages/w"]!.dependencies).toEqual({ x: "file:x.tgz" });
+  });
+
   it("walks a touched alias again by the name in a url with its file under a scope", async () => {
     // Replayed under a locked parent, the alias is walked again from its url alone.
     const aliased = { dependencies: { p: "^1" } };

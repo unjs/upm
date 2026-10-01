@@ -516,14 +516,14 @@ export async function resolveTree(
     given = false,
   ): Promise<void> {
     try {
+      // A range an override gives is the root's, a settled peer's too: a local tarball it names
+      // is a path from the root. Any other is its declaring top's.
+      let base = from;
       if (!given && over?.has(name)) {
         const to = over.edge(from, name, range);
-        if (to === undefined) return;
-        range = to;
-      }
-      // A range an override gives is the root's, a settled peer's too: a local tarball it names
-      // is a path from the root.
-      const base = over?.gives(name, range) ? ROOT : from;
+        if (to === "-") return;
+        if (to !== undefined) [range, base] = [to, ROOT];
+      } else if (given && over?.gives(name, range)) base = ROOT;
       const spec = parseDep(name, range);
       if (spec.type === "tarball") {
         const source = sourceOf(spec.fetchSpec, base);

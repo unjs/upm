@@ -55,15 +55,18 @@ export function overrider(
   const rules = compileOverrides(overrides);
   const changed = changedTargets(before, overrides);
 
-  /** What the rules make of an edge of `from`: the spec it takes, or nothing when a `-` drops it. */
+  /**
+   * The value of the rule over an edge of `from`: the spec it takes, `-` when it drops it, and
+   * nothing when no rule reaches it.
+   */
   function edge(from: string, name: string, range: string): string | undefined {
     const parent = walk.parent(from);
     for (const rule of rules.get(name) ?? []) {
       if (!reaches(rule, parent)) continue;
       if (rule.range && !overlaps(name, range, rule.range)) continue;
-      return rule.value === "-" ? undefined : rule.value;
+      return rule.value;
     }
-    return range;
+    return undefined;
   }
 
   /**
@@ -75,11 +78,10 @@ export function overrider(
     if (!declared) return;
     for (const [name, range] of Object.entries(declared)) {
       const to = edge(key, name, range);
-      if (to !== undefined) declared[name] = to;
-      else {
+      if (to === "-") {
         delete declared[name];
         delete kinds[name];
-      }
+      } else if (to !== undefined) declared[name] = to;
     }
     if (Object.keys(declared).length === 0) delete found.peerDependencies;
   }
