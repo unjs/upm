@@ -1,22 +1,47 @@
 import { describe, expect, it } from "vitest";
-import { splitImport } from "../src/exec.ts";
+import { parseImport } from "../src/exec.ts";
 
-describe("splitImport", () => {
+describe("parseImport", () => {
   it.each([
     ["pkg", "pkg", ""],
     ["npm:pkg", "pkg", ""],
     ["npm:pkg@rc", "pkg@rc", ""],
     ["pkg@^1/sub/file.js", "pkg@^1", "/sub/file.js"],
-    ["pkg/sub@1", "pkg@1", "/sub"],
     ["@org/name", "@org/name", ""],
     ["@org/name@2", "@org/name@2", ""],
     ["@org/name/sub", "@org/name", "/sub"],
-    ["@org/name/sub@next", "@org/name@next", "/sub"],
     ["npm:@org/name@1/sub", "@org/name@1", "/sub"],
-    // An `@` inside the subpath is no version.
+    // A version goes after the name only: an `@` in the subpath is part of it.
+    ["pkg/file@2.js", "pkg", "/file@2.js"],
     ["pkg/@types/x", "pkg", "/@types/x"],
-    ["pkg@1/a@b", "pkg@1", "/a@b"],
-  ])("%s", (specifier, spec, subpath) => {
-    expect(splitImport(specifier)).toEqual({ spec, subpath });
+  ])("%s", (specifier, raw, subpath) => {
+    const { spec, subpath: sub } = parseImport(specifier);
+    expect({ raw: spec.raw, sub }).toEqual({ raw, sub: subpath });
+  });
+
+  it.each([
+    "jsr:@std/path",
+    "node:fs",
+    "https://example.com/x.js",
+    "npm:npm:pkg",
+    "./x.js",
+    "/x.js",
+    "C:\\x.js",
+    "pkg@git+https://github.com/a/b.git",
+    "pkg@github:a/b",
+    "pkg@./x.tgz",
+    "pkg@file:x",
+    "pkg@link:../x",
+    "pkg@workspace:*",
+    "pkg@npm:other@1",
+    "Bad Name",
+    "",
+  ])("refuses %s", (specifier) => {
+    expect(() => parseImport(specifier)).toThrow(
+      expect.objectContaining({
+        code: "EINVALIDSPEC",
+        message: expect.stringContaining("[npm:]name[@version][/subpath]"),
+      }),
+    );
   });
 });

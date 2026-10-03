@@ -1,5 +1,5 @@
 // `upm exec`'s lookups: which installed bin a command means, which bin a package runs, and
-// where a package installs; and `resolvex`'s, which resolves an import from there.
+// where a package installs; and `resolvex`'s: which import it takes and how it resolves it.
 // Its own module, loaded by `exec` and `resolvex` alone: no other command pays for it at startup.
 import { normalizeBin } from "./normalize-bin.ts";
 import { builtin } from "./builtin.ts";
@@ -86,58 +86,110 @@ function fits(spec: Spec, version: unknown): boolean {
 }
 
 /**
- * `pkg`, `npm:pkg@rc`, `pkg@^1/sub` or `@org/name/sub@1` as the spec to install and the subpath
- * to import from it.
+ * `[npm:]name[@version][/subpath]` as the registry spec to install and the subpath to import.
+ * Anything else is refused, `jsr:` and other schemes, paths, git, tarballs and aliases among them.
  */
-export function splitImport(specifier: string): { spec: string; subpath: string } {
+export function parseImport(specifier: string): { spec: Spec; subpath: string } {
   const raw = specifier.startsWith("npm:") ? specifier.slice(4) : specifier;
   // The name is one segment, or two under a scope.
   const end = raw.indexOf("/", raw.startsWith("@") ? raw.indexOf("/") + 1 : 0);
-  if (end < 0) return { spec: raw, subpath: "" };
-  const name = raw.slice(0, end);
-  const subpath = raw.slice(end);
-  const at = subpath.lastIndexOf("@");
-  if (name.includes("@", 1) || at < 0 || subpath.includes("/", at)) return { spec: name, subpath };
-  return { spec: `${name}${subpath.slice(at)}`, subpath: subpath.slice(0, at) };
+  let spec: Spec | undefined;
+  if (!/^[a-z][\w+.-]*:|^[./\\]/i.test(raw)) {
+    try {
+      spec = parseSpec(end < 0 ? raw : raw.slice(0, end));
+    } catch {} // refused below, with the form it takes
+  }
+  // A tag never starts as a path does, but `pkg@./x.tgz` cut at its first `/` would be one.
+  const path = spec?.type === "tag" && /^[.~]/.test(spec.fetchSpec);
+  const registry = spec && !path && ["version", "range", "tag"].includes(spec.type);
+  if (!registry || spec!.name !== spec!.fetchName) {
+    const message = `${specifier} is not a package as [npm:]name[@version][/subpath]`;
+    throw Object.assign(new Error(message), { code: "EINVALIDSPEC" });
+  }
+  return { spec: spec!, subpath: end < 0 ? "" : raw.slice(end) };
+}
+
+/**
+ * The directory an import is resolved from: `from` as a directory, or a module's path or
+ * `file://` url, else `dir`.
+ */
+export function startDir(from: string | URL | undefined, dir: string): string {
+  const { path } = builtin;
+  if (from === undefined) return path.resolve(dir);
+  const file = typeof from === "string" && !from.startsWith("file:");
+  const at = file ? path.resolve(from) : builtin.url.fileURLToPath(from);
+  return builtin.fs.statSync(at, { throwIfNoEntry: false })?.isFile() ? path.dirname(at) : at;
 }
 
 /**
  * Whether an import from `dir` finds the spec's package in a version it takes. Node takes the
- * nearest `node_modules` that has the name, so only that one is asked.
+ * nearest `node_modules` directory of the name, whatever is in it, so only that one is asked.
  */
 export async function hasPackage(dir: string, spec: Spec): Promise<boolean> {
   const { dirname, join } = builtin.path;
   for (let at = dir; ; at = dirname(at)) {
-    const file = join(at, "node_modules", spec.name, "package.json");
-    const pkg = await readJson(file).catch(() => undefined);
-    if (pkg) return fits(spec, (pkg as { version?: unknown }).version);
+    const home = join(at, "node_modules", spec.name);
+    if (builtin.fs.existsSync(home)) {
+      const pkg = await readJson(join(home, "package.json")).catch(() => undefined);
+      return pkg !== undefined && fits(spec, (pkg as { version?: unknown }).version);
+    }
     if (dirname(at) === at) return false;
   }
 }
 
+type Resolve = (id: string, dir: string) => string;
+let resolveIn: Resolve | undefined;
+
 /**
- * The url `id` resolves to from a module in `dir`, as node resolves an import. A resolve hook
- * points a name of our own at it, so no file is written for it to start from.
+ * How this runtime resolves `id` as an import from a module in `dir`, found and tried before
+ * anything is installed: Node.js 22.15+ through a resolve hook, Bun with its own resolver.
  */
-export function resolveFrom(id: string, dir: string): string {
-  const { registerHooks } = builtin.module;
-  if (typeof registerHooks !== "function") {
-    throw Object.assign(new Error("resolvex and importx need Node.js 22.15+ (registerHooks)"), {
+export async function resolver(): Promise<Resolve> {
+  if (resolveIn) return resolveIn;
+  const unsupported = () =>
+    Object.assign(new Error("resolvex and importx need Node.js 22.15+ or Bun"), {
       code: "ENOBUILTIN",
     });
+  const bun = (globalThis as { Bun?: { resolveSync(id: string, dir: string): string } }).Bun;
+  const { registerHooks } = builtin.module;
+  let found: Resolve;
+  if (bun) {
+    found = (id, dir) => builtin.url.pathToFileURL(bun.resolveSync(id, dir)).href;
+  } else if (typeof registerHooks === "function") {
+    // A module of its own: an app that bundles upm to CommonJS leaves upm no `import.meta`. Its
+    // url is no literal, or a bundler would make it a chunk with `import.meta` in it again.
+    const code = "export default (id) => import.meta.resolve(id)";
+    const helper = new URL(`data:text/javascript,${code}`).href;
+    const resolve: (id: string) => string = (await import(helper)).default;
+    found = (id, dir) => {
+      // A name of our own for the hook to point at `id`, new each time: node keeps what a
+      // name resolved to.
+      const name = `upm-resolvex:${globalThis.crypto.randomUUID()}`;
+      const parentURL = builtin.url.pathToFileURL(`${dir}${builtin.path.sep}`).href;
+      let hooked = false;
+      const hooks = registerHooks({
+        resolve: (specifier, context, next) => {
+          if (specifier !== name) return next(specifier, context);
+          hooked = true;
+          return next(id, { ...context, parentURL });
+        },
+      });
+      try {
+        const url = resolve(name);
+        if (hooked) return url;
+      } catch (error) {
+        if (hooked) throw error;
+      } finally {
+        hooks.deregister();
+      }
+      throw unsupported();
+    };
+    // Deno has `registerHooks`, but its `import.meta.resolve` never calls them.
+    found("node:path", builtin.os.tmpdir());
+  } else {
+    throw unsupported();
   }
-  const parentURL = builtin.url.pathToFileURL(`${dir}${builtin.path.sep}`).href;
-  // Each call a name of its own: node keeps what a name resolved to.
-  const name = `upm-resolvex:${globalThis.crypto.randomUUID()}`;
-  const hooks = registerHooks({
-    resolve: (specifier, context, next) =>
-      specifier === name ? next(id, { ...context, parentURL }) : next(specifier, context),
-  });
-  try {
-    return import.meta.resolve(name);
-  } finally {
-    hooks.deregister();
-  }
+  return (resolveIn = found);
 }
 
 /** A file, or a link to one: a directory of that name is no bin. */

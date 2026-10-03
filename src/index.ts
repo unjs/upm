@@ -53,6 +53,7 @@ export type {
   RegistryAccess,
   RemoveOptions,
   RemoveResult,
+  ResolvexOptions,
   RunOptions,
   RunResult,
   ScriptList,

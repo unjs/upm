@@ -139,6 +139,11 @@ export type ErrorCode =
    * installed as: a lockfile naming another package's integrity, say.
    */
   | "EMISMATCH"
+  /**
+   * The runtime lacks what the call needs: a Node.js builtin, or for `resolvex` and `importx`,
+   * Node.js 22.15+ or Bun.
+   */
+  | "ENOBUILTIN"
   /** The registry answered with an error, or could not be reached in time. */
   | "EREGISTRY"
   | "ENETWORK"
@@ -299,9 +304,17 @@ export interface ExecOptions extends ProjectOptions, RegistryAccess, StoreAccess
   experimental?: Experimental;
 }
 
-export interface ImportxOptions extends ProjectOptions, RegistryAccess, StoreAccess {
+export interface ResolvexOptions extends ProjectOptions, RegistryAccess, StoreAccess {
+  /**
+   * Where the import is resolved from: a directory, or a module's path or `file://` url, such
+   * as `import.meta.url`. Default: `dir`, else cwd. Without `dir`, the project root, and with it
+   * the `.npmrc` read and where packages install, is found by npm's walk up from there.
+   */
+  from?: string | URL;
   experimental?: Experimental;
 }
+
+export interface ImportxOptions extends ResolvexOptions {}
 
 export interface ExecResult {
   /** The command's exit code. */
@@ -1422,22 +1435,24 @@ export async function exec(command: string, options: ExecOptions = {}): Promise<
 
 /**
  * The `file://` url an import of a package resolves to, installed if needed as `exec` installs.
- * The specifier is `pkg`, `npm:pkg@rc`, `pkg@^1/sub` or `@org/name/sub@1`. A name without a
- * version resolves to what the nearest `node_modules` above `dir` (default cwd) has, and a version
- * or range to what is there when it fits; a tag always asks the registry. Needs Node.js 22.15+.
+ * The specifier is `[npm:]name[@version][/subpath]`: `pkg`, `npm:pkg@rc`, `@org/name@^1/sub`. A
+ * name without a version resolves to what the nearest `node_modules` above `from` has, and a
+ * version or range to what is there when it fits; a tag always asks the registry. Resolved as
+ * Node.js resolves an import, with its default conditions. Needs Node.js 22.15+ or Bun.
  */
-export async function resolvex(specifier: string, options: ImportxOptions = {}): Promise<string> {
-  const cwd = builtin.path.resolve(options.dir ?? globalThis.process.cwd());
-  const { execHome, hasPackage, resolveFrom, splitImport } = await import("./exec.ts");
-  const { spec, subpath } = splitImport(specifier);
-  const own = parseSpec(spec);
-  const id = own.name + subpath;
-  if (await hasPackage(cwd, own)) return resolveFrom(id, cwd);
-  return resolveFrom(id, await execProject(options, [spec], execHome));
+export async function resolvex(specifier: string, options: ResolvexOptions = {}): Promise<string> {
+  const { execHome, hasPackage, parseImport, resolver, startDir } = await import("./exec.ts");
+  const { spec, subpath } = parseImport(specifier);
+  const resolve = await resolver();
+  const start = startDir(options.from, options.dir ?? globalThis.process.cwd());
+  const id = spec.name + subpath;
+  if (await hasPackage(start, spec)) return resolve(id, start);
+  const dir = options.dir ?? (await (await import("./workspaces.ts")).findRoot(start)).dir;
+  return resolve(id, await execProject({ ...options, dir }, [spec.raw], execHome));
 }
 
 /** A package's module, as `import()` gives it: what `resolvex` finds, imported. */
-export async function importx<T = any>(
+export async function importx<T = Record<string, any>>(
   specifier: string,
   options: ImportxOptions = {},
 ): Promise<T> {
