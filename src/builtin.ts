@@ -12,9 +12,11 @@ export interface Builtin {
   readonly dns: typeof import("node:dns");
   readonly fs: typeof import("node:fs");
   readonly fsp: typeof import("node:fs/promises");
+  readonly module: typeof import("node:module");
   readonly os: typeof import("node:os");
   readonly path: typeof import("node:path");
   readonly stream: typeof import("node:stream");
+  readonly url: typeof import("node:url");
   readonly util: typeof import("node:util");
   readonly workers: typeof import("node:worker_threads");
   readonly zlib: typeof import("node:zlib");
@@ -26,9 +28,11 @@ const MODULES: Record<keyof Builtin, string> = {
   dns: "node:dns",
   fs: "node:fs",
   fsp: "node:fs/promises",
+  module: "node:module",
   os: "node:os",
   path: "node:path",
   stream: "node:stream",
+  url: "node:url",
   util: "node:util",
   workers: "node:worker_threads",
   zlib: "node:zlib",

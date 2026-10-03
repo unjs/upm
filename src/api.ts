@@ -299,6 +299,10 @@ export interface ExecOptions extends ProjectOptions, RegistryAccess, StoreAccess
   experimental?: Experimental;
 }
 
+export interface ImportxOptions extends ProjectOptions, RegistryAccess, StoreAccess {
+  experimental?: Experimental;
+}
+
 export interface ExecResult {
   /** The command's exit code. */
   code: number;
@@ -1388,7 +1392,6 @@ async function installFirst(ctx: Context): Promise<void> {
 export async function exec(command: string, options: ExecOptions = {}): Promise<ExecResult> {
   const { args = [], packages, call } = options;
   if (call && args.length > 0) throw fail("exec takes a call line or args, not both", "EOPTION");
-  const log = options.log ?? (() => {});
   const cwd = builtin.path.resolve(options.dir ?? globalThis.process.cwd());
   const run = (line: string, dirs: string[]) =>
     runShell(line, cwd, withPath([...dirs, ...binDirs(cwd)]));
@@ -1408,12 +1411,7 @@ export async function exec(command: string, options: ExecOptions = {}): Promise<
   }
   const own = packages === undefined ? parseSpec(command) : undefined;
   if (packages?.length === 0) throw fail("exec lists no package to install", "EOPTION");
-  // The install's own progress is about a directory the caller never chose; its warnings stay.
-  const quiet = (message: string, level: LogLevel) => level !== "info" && log(message, level);
-  const ctx = await open({ ...options, log: quiet });
-  const { dir, specs } = await execProject(ctx, packages ?? [command], execHome(ctx.root!));
-  const installed = await installTree(ctx);
-  if (!installed.upToDate) log(`installed ${specs.join(", ")}`, "info");
+  const dir = await execProject(options, packages ?? [command], execHome);
   const file = builtin.path.join(dir, "node_modules", own?.name ?? "", "package.json");
   const bins = [builtin.path.join(dir, "node_modules", ".bin")];
   if (call) return { code: await run(command, bins), installed: dir };
@@ -1423,14 +1421,42 @@ export async function exec(command: string, options: ExecOptions = {}): Promise<
 }
 
 /**
- * Where `specs` install under `home`, made the context's root; the config stays the one `open`
- * read. The registries are in the name: the same versions there can be other bytes.
+ * The `file://` url an import of a package resolves to, installed if needed as `exec` installs.
+ * The specifier is `pkg`, `npm:pkg@rc`, `pkg@^1/sub` or `@org/name/sub@1`. A name without a
+ * version resolves to what the nearest `node_modules` above `dir` (default cwd) has, and a version
+ * or range to what is there when it fits; a tag always asks the registry. Needs Node.js 22.15+.
+ */
+export async function resolvex(specifier: string, options: ImportxOptions = {}): Promise<string> {
+  const cwd = builtin.path.resolve(options.dir ?? globalThis.process.cwd());
+  const { execHome, hasPackage, resolveFrom, splitImport } = await import("./exec.ts");
+  const { spec, subpath } = splitImport(specifier);
+  const own = parseSpec(spec);
+  const id = own.name + subpath;
+  if (await hasPackage(cwd, own)) return resolveFrom(id, cwd);
+  return resolveFrom(id, await execProject(options, [spec], execHome));
+}
+
+/** A package's module, as `import()` gives it: what `resolvex` finds, imported. */
+export async function importx<T = any>(
+  specifier: string,
+  options: ImportxOptions = {},
+): Promise<T> {
+  return import(await resolvex(specifier, options));
+}
+
+/**
+ * `specs` installed in a project of their own under the root's `home`, which is returned. The
+ * registries are in the name: the same versions there can be other bytes.
  */
 async function execProject(
-  ctx: Context,
+  options: ImportxOptions,
   specs: string[],
-  home: string,
-): Promise<{ dir: string; specs: string[] }> {
+  home: (root: string) => string,
+): Promise<string> {
+  const log = options.log ?? (() => {});
+  // The install's own progress is about a directory the caller never chose; its warnings stay.
+  const quiet = (message: string, level: LogLevel) => level !== "info" && log(message, level);
+  const ctx = await open({ ...options, log: quiet });
   const parsed = specs.map((raw) => parseSpec(raw));
   const local = parsed.find((spec) => ["workspace", "link", "tarball"].includes(spec.type));
   if (local) throw fail(`exec installs registry packages, not ${local.raw}`, "EINVALIDSPEC");
@@ -1464,7 +1490,7 @@ async function execProject(
   const { registry, scopes } = settings(ctx);
   const scoped = Object.entries(scopes).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
   const key = await shortHash(JSON.stringify([registry, scoped, text]));
-  const dir = join(home, key);
+  const dir = join(home(ctx.root!), key);
   const file = join(dir, "package.json");
   if ((await builtin.fsp.readFile(file, "utf8").catch(() => undefined)) !== text) {
     // Through a rename: another run of the same versions may be reading it.
@@ -1476,7 +1502,10 @@ async function execProject(
   ctx.root = dir;
   ctx.found = undefined;
   ctx.inside = undefined;
-  return { dir, specs: sorted.map(([name, range]) => `${name}@${range}`) };
+  if (!(await installTree(ctx)).upToDate) {
+    log(`installed ${sorted.map(([name, range]) => `${name}@${range}`).join(", ")}`, "info");
+  }
+  return dir;
 }
 
 /** A package a script runs in: the workspaces picked, or cwd's own package.json. */

@@ -1,6 +1,6 @@
 // `upm exec`'s lookups: which installed bin a command means, which bin a package runs, and
-// where a package installs.
-// Its own module, loaded by `exec` alone, so no other command pays for it at startup.
+// where a package installs; and `resolvex`'s, which resolves an import from there.
+// Its own module, loaded by `exec` and `resolvex` alone: no other command pays for it at startup.
 import { normalizeBin } from "./normalize-bin.ts";
 import { builtin } from "./builtin.ts";
 import { binDirs } from "./run.ts";
@@ -56,13 +56,6 @@ export async function localBin(dir: string, command: string): Promise<string[] |
   try {
     spec = parseSpec(command);
   } catch {} // not a package, and install will say so
-  const fits = (version: unknown): boolean => {
-    if (spec === undefined) return false;
-    if (spec.raw === spec.name) return true;
-    if (typeof version !== "string") return false;
-    const ranged = spec.type === "version" || spec.type === "range";
-    return ranged && spec.name === spec.fetchName && satisfies(version, spec.fetchSpec);
-  };
   // On Windows a bin is its shims, and the `.cmd` one is what cmd runs.
   const win = globalThis.process.platform === "win32";
   for (const bins of binDirs(dir)) {
@@ -72,7 +65,7 @@ export async function localBin(dir: string, command: string): Promise<string[] |
     const pkg = await readJson(join(dirname(bins), spec.name, "package.json")).catch(
       () => undefined,
     );
-    if (!pkg || !fits((pkg as { version?: unknown }).version)) continue;
+    if (!pkg || !fits(spec, (pkg as { version?: unknown }).version)) continue;
     let own: string;
     try {
       own = pickBin(pkg, spec.name);
@@ -82,6 +75,69 @@ export async function localBin(dir: string, command: string): Promise<string[] |
     if (await isFile(shim(own))) return [shim(own)];
   }
   return undefined;
+}
+
+/** As npm: a bare name takes what is installed, a version or range what fits, a tag nothing. */
+function fits(spec: Spec, version: unknown): boolean {
+  if (spec.raw === spec.name) return true;
+  if (typeof version !== "string") return false;
+  const ranged = spec.type === "version" || spec.type === "range";
+  return ranged && spec.name === spec.fetchName && satisfies(version, spec.fetchSpec);
+}
+
+/**
+ * `pkg`, `npm:pkg@rc`, `pkg@^1/sub` or `@org/name/sub@1` as the spec to install and the subpath
+ * to import from it.
+ */
+export function splitImport(specifier: string): { spec: string; subpath: string } {
+  const raw = specifier.startsWith("npm:") ? specifier.slice(4) : specifier;
+  // The name is one segment, or two under a scope.
+  const end = raw.indexOf("/", raw.startsWith("@") ? raw.indexOf("/") + 1 : 0);
+  if (end < 0) return { spec: raw, subpath: "" };
+  const name = raw.slice(0, end);
+  const subpath = raw.slice(end);
+  const at = subpath.lastIndexOf("@");
+  if (name.includes("@", 1) || at < 0 || subpath.includes("/", at)) return { spec: name, subpath };
+  return { spec: `${name}${subpath.slice(at)}`, subpath: subpath.slice(0, at) };
+}
+
+/**
+ * Whether an import from `dir` finds the spec's package in a version it takes. Node takes the
+ * nearest `node_modules` that has the name, so only that one is asked.
+ */
+export async function hasPackage(dir: string, spec: Spec): Promise<boolean> {
+  const { dirname, join } = builtin.path;
+  for (let at = dir; ; at = dirname(at)) {
+    const file = join(at, "node_modules", spec.name, "package.json");
+    const pkg = await readJson(file).catch(() => undefined);
+    if (pkg) return fits(spec, (pkg as { version?: unknown }).version);
+    if (dirname(at) === at) return false;
+  }
+}
+
+/**
+ * The url `id` resolves to from a module in `dir`, as node resolves an import. A resolve hook
+ * points a name of our own at it, so no file is written for it to start from.
+ */
+export function resolveFrom(id: string, dir: string): string {
+  const { registerHooks } = builtin.module;
+  if (typeof registerHooks !== "function") {
+    throw Object.assign(new Error("resolvex and importx need Node.js 22.15+ (registerHooks)"), {
+      code: "ENOBUILTIN",
+    });
+  }
+  const parentURL = builtin.url.pathToFileURL(`${dir}${builtin.path.sep}`).href;
+  // Each call a name of its own: node keeps what a name resolved to.
+  const name = `upm-resolvex:${globalThis.crypto.randomUUID()}`;
+  const hooks = registerHooks({
+    resolve: (specifier, context, next) =>
+      specifier === name ? next(id, { ...context, parentURL }) : next(specifier, context),
+  });
+  try {
+    return import.meta.resolve(name);
+  } finally {
+    hooks.deregister();
+  }
 }
 
 /** A file, or a link to one: a directory of that name is no bin. */

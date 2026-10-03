@@ -269,7 +269,7 @@ lifecycle scripts for a fairer comparison.
 The commands are also available as functions from `upm`:
 
 ```js
-import { add, install, lock, resolve, run } from "upm";
+import { add, importx, install, lock, resolve, resolvex, run } from "upm";
 
 // Install from the lockfile, failing if it is out of date
 const result = await install({
@@ -296,6 +296,10 @@ const { code, results } = await run("build", {
   workspaces: "all",
   install: true, // install the tree first, as `upm run` does
 }); // { code: 0, results: [{ name: "app", path, file, code: 0 }] }
+
+// Import a package at runtime, installing it if needed
+const { parse } = await importx("npm:yaml@2"); // also "pkg", "pkg@rc", "@org/name/sub@1"
+const url = await resolvex("yaml/util@2"); // "file:///.../yaml/dist/util.js", not imported
 
 // Other exports
 import {
@@ -324,6 +328,14 @@ Functions return data and do not print their own messages. Use `log` for progres
 warnings, and debug messages, and `onProgress` (install, add, remove, dedupe, lock) for
 counts to draw a progress bar from. `run` and `exec` still share the child's
 terminal input and output.
+
+`importx` imports a package as `upx` runs one: a name without a version, or a version
+or range that fits, comes from the nearest `node_modules` above `dir` (default cwd).
+Anything else installs where `upx` installs, once per version; a tag or range asks the
+registry each time. A subpath goes after the name or its version (`pkg@1/sub`, `pkg/sub@1`).
+It resolves the import as Node.js does from that directory, with its default conditions.
+`resolvex` takes the same specifier and options and returns the `file://` url instead,
+without running the module. Both need Node.js 22.15+.
 
 Errors have a `code` you can handle. The exported `ErrorCode` type lists common
 codes; filesystem and worker errors may have others. Options under `experimental`

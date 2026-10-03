@@ -1150,6 +1150,77 @@ describe("exec", () => {
       expect(json).toMatchObject({ code: 2, stderr: expect.stringContaining("before view") });
     },
   );
+
+  describe("importx", () => {
+    /**
+     * Prints the default export of what `importx` gave for the specifier, from `work`, or what
+     * `resolvex` gave.
+     */
+    async function importx(specifier: string, fn = "importx") {
+      const file = join(dir, "importx.mjs");
+      const index = pathToFileURL(fileURLToPath(new URL("../src/index.ts", import.meta.url)));
+      const code = [
+        `import { importx, resolvex } from ${JSON.stringify(index.href)};`,
+        "const [fn, specifier, store, registry] = process.argv.slice(2);",
+        "const log = (message) => console.error(message);",
+        "const options = { store, registry, log };",
+        "if (fn === 'resolvex') console.log(await resolvex(specifier, options));",
+        "else console.log(JSON.stringify((await importx(specifier, options)).default));",
+      ];
+      await writeFile(file, code.join("\n"));
+      const args = [fn, specifier, join(dir, "store"), registry];
+      return upm(file, args, {}, [], join(dir, "work"));
+    }
+    const resolvex = (specifier: string) => importx(specifier, "resolvex");
+
+    it("installs a package once per version, then imports it or a file of it", async () => {
+      expect(await importx("hi@1.0.0")).toEqual({
+        code: 0,
+        stdout: '"hi"\n',
+        stderr: "installed hi@1.0.0\n",
+      });
+      requests = [];
+      // A file of it, the version after the subpath or after the name, `npm:` or not.
+      for (const specifier of ["hi/hi.js@1.0.0", "npm:hi@1.0.0/hi.js"]) {
+        const { stdout, stderr } = await importx(specifier);
+        expect(JSON.parse(stdout.split("\n")[0]!)).toMatchObject({ at: "hi@1.0.0" });
+        expect(stderr).toBe("");
+      }
+      // Resolved, it is the file's real url, as node gives it, and none of its code runs.
+      const [project] = await readdir(join(dir, "home", ".upm", "exec"));
+      const at = join(dir, "home", ".upm", "exec", project!, "node_modules", "hi", "hi.js");
+      expect(await resolvex("hi/hi.js@1.0.0")).toEqual({
+        code: 0,
+        stdout: `${pathToFileURL(await realpath(at)).href}\n`,
+        stderr: "",
+      });
+      expect(requests).toEqual([]);
+      expect(await readdir(join(dir, "home", ".upm", "exec"))).toHaveLength(1);
+      expect(await importx("npm:hi@latest")).toMatchObject({ code: 0, stdout: '"hi"\n' });
+      expect(requests).toEqual(["/hi", "/hi/-/hi-1.1.0.tgz"]);
+      expect((await importx("hi@2")).stderr).toContain("ETARGET");
+    });
+
+    it("imports a package already installed above the directory when it fits", async () => {
+      const hi = join(dir, "node_modules", "hi");
+      await mkdir(hi, { recursive: true });
+      await writeFile(join(hi, "package.json"), JSON.stringify({ name: "hi", version: "1.0.0" }));
+      await writeFile(join(hi, "index.js"), 'module.exports = "local";\n');
+      expect(await importx("hi")).toEqual({ code: 0, stdout: '"local"\n', stderr: "" });
+      expect(await importx("hi@^1.0.0")).toMatchObject({ stdout: '"local"\n' });
+      const local = pathToFileURL(join(hi, "index.js")).href;
+      expect(await resolvex("npm:hi")).toMatchObject({ code: 0, stdout: `${local}\n` });
+      expect(requests).toEqual([]);
+      // A version it is not, or a tag, installs.
+      expect(await importx("hi@1.1.0")).toMatchObject({ stdout: '"hi"\n' });
+      expect(await importx("hi@latest")).toMatchObject({ stdout: '"hi"\n' });
+      // Node takes the nearest package of the name, so a nearer one that does not fit installs.
+      const near = join(dir, "work", "node_modules", "hi");
+      await mkdir(near, { recursive: true });
+      await writeFile(join(near, "package.json"), JSON.stringify({ name: "hi", version: "0.1.0" }));
+      expect(await importx("hi@1.0.0")).toMatchObject({ stdout: '"hi"\n' });
+    });
+  });
 });
 
 describe("startup budget", () => {
@@ -1239,11 +1310,12 @@ describe("startup budget", () => {
     // `--help` within noise (41.4/40.6 and 115/118 ms). 169,658 with git specs read as their
     // host's archive url, `--help` cached within noise (41.8/41.7 ms), uncached 112/114.3 ms.
     // 169,833 with an optional pin named for another os read from the abbreviated document,
-    // `--help` within noise (25.2/25.5 and 72.6/69.8 ms).
+    // `--help` within noise (25.2/25.5 and 72.6/69.8 ms). 170,178 with `importx` and
+    // `resolvex`, `--help` within noise (69.4/67.6 ms).
     const modules = await reachable();
     const bytes = [...modules.values()].reduce((total, size) => total + size, 0);
     expect(modules.size).toBeLessThanOrEqual(27); // `upm.ts` is the bin, `cli.ts` the program
-    expect(bytes).toBeLessThanOrEqual(169_833);
+    expect(bytes).toBeLessThanOrEqual(170_178);
     // Found through `import()` by the commands that read a project, like the pools: each holds
     // its worker's whole code in the build.
     const lazy = [
