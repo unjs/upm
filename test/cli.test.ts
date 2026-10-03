@@ -1245,14 +1245,6 @@ describe("exec", () => {
         expect(await resolvex("hi", { from: at })).toMatchObject({ stdout: `${local}\n` });
       }
     });
-
-    it("installs nothing where the runtime cannot resolve from a directory", async () => {
-      const prelude = "(await import('node:module')).default.registerHooks = undefined;";
-      const { code, stderr } = await importx("hi@1.0.0", "resolvex", {}, prelude);
-      expect(code).toBe(1);
-      expect(stderr).toContain("need Node.js 22.15+ or Bun");
-      expect(requests).toEqual([]);
-    });
   });
 });
 
@@ -1343,12 +1335,12 @@ describe("startup budget", () => {
     // `--help` within noise (41.4/40.6 and 115/118 ms). 169,658 with git specs read as their
     // host's archive url, `--help` cached within noise (41.8/41.7 ms), uncached 112/114.3 ms.
     // 169,833 with an optional pin named for another os read from the abbreviated document,
-    // `--help` within noise (25.2/25.5 and 72.6/69.8 ms). 170,280 with `importx` and
-    // `resolvex`, `--help` within noise (70.5/71.1 ms).
+    // `--help` within noise (25.2/25.5 and 72.6/69.8 ms). 170,542 with `importx` and
+    // `resolvex`, `--help` within noise (68.7/67.3 ms).
     const modules = await reachable();
     const bytes = [...modules.values()].reduce((total, size) => total + size, 0);
     expect(modules.size).toBeLessThanOrEqual(27); // `upm.ts` is the bin, `cli.ts` the program
-    expect(bytes).toBeLessThanOrEqual(170_280);
+    expect(bytes).toBeLessThanOrEqual(170_542);
     // Found through `import()` by the commands that read a project, like the pools: each holds
     // its worker's whole code in the build.
     const lazy = [

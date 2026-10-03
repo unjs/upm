@@ -137,6 +137,18 @@ async function* read<T>(stream: ReadableStream<T>): AsyncGenerator<T> {
 /** This process, for temp names. Off Node there is one, so 0; the random token keeps names apart. */
 export const pid = globalThis.process?.pid ?? 0;
 
+/** A path as a `file://` url. Off Node, a posix path, as a shimmed `fs` has. */
+export function toFileURL(path: string): string {
+  if (has("node:url")) return builtin.url.pathToFileURL(path).href;
+  return new URL(`file://${encodeURI(path).replace(/[?#]/g, encodeURIComponent)}`).href;
+}
+
+/** A `file://` url as a path. Off Node, a posix path, as a shimmed `fs` has. */
+export function fromFileURL(url: string | URL): string {
+  if (has("node:url")) return builtin.url.fileURLToPath(url);
+  return decodeURIComponent(new URL(url).pathname);
+}
+
 /** A pause. The global `setTimeout` is the one call both runtimes share. */
 export const sleep = (ms: number): Promise<void> => new Promise((done) => setTimeout(done, ms));
 

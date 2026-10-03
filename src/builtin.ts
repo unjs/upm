@@ -12,7 +12,6 @@ export interface Builtin {
   readonly dns: typeof import("node:dns");
   readonly fs: typeof import("node:fs");
   readonly fsp: typeof import("node:fs/promises");
-  readonly module: typeof import("node:module");
   readonly os: typeof import("node:os");
   readonly path: typeof import("node:path");
   readonly stream: typeof import("node:stream");
@@ -28,7 +27,6 @@ const MODULES: Record<keyof Builtin, string> = {
   dns: "node:dns",
   fs: "node:fs",
   fsp: "node:fs/promises",
-  module: "node:module",
   os: "node:os",
   path: "node:path",
   stream: "node:stream",

@@ -1,8 +1,10 @@
 // `upm exec`'s lookups: which installed bin a command means, which bin a package runs, and
-// where a package installs; and `resolvex`'s: which import it takes and how it resolves it.
+// where a package installs; and `resolvex`'s: which import it takes and the file it lands on.
 // Its own module, loaded by `exec` and `resolvex` alone: no other command pays for it at startup.
 import { normalizeBin } from "./normalize-bin.ts";
 import { builtin } from "./builtin.ts";
+import { exportsTarget } from "./exports.ts";
+import { fromFileURL, toFileURL } from "./runtime.ts";
 import { binDirs } from "./run.ts";
 import { satisfies } from "./semver.ts";
 import { parseSpec } from "./spec.ts";
@@ -114,82 +116,73 @@ export function parseImport(specifier: string): { spec: Spec; subpath: string } 
  * `file://` url, else `dir`.
  */
 export function startDir(from: string | URL | undefined, dir: string): string {
-  const { path } = builtin;
+  const { fs, path } = builtin;
   if (from === undefined) return path.resolve(dir);
   const file = typeof from === "string" && !from.startsWith("file:");
-  const at = file ? path.resolve(from) : builtin.url.fileURLToPath(from);
-  return builtin.fs.statSync(at, { throwIfNoEntry: false })?.isFile() ? path.dirname(at) : at;
+  const at = file ? path.resolve(from) : fromFileURL(from);
+  return fs.existsSync(at) && fs.statSync(at).isFile() ? path.dirname(at) : at;
 }
 
+/** A directory's `file://` url, ending in `/`: what an import from a file in it resolves from. */
+export const dirURL = (dir: string): string => toFileURL(`${dir}${builtin.path.sep}`);
+
 /**
- * Whether an import from `dir` finds the spec's package in a version it takes. Node takes the
- * nearest `node_modules` directory of the name, whatever is in it, so only that one is asked.
+ * The nearest `node_modules` directory of the name above `dir`, and its package.json when it
+ * has one: Node.js takes that directory, whatever is in it.
  */
-export async function hasPackage(dir: string, spec: Spec): Promise<boolean> {
+async function nearest(dir: string, name: string): Promise<{ home: string; pkg?: object }> {
   const { dirname, join } = builtin.path;
   for (let at = dir; ; at = dirname(at)) {
-    const home = join(at, "node_modules", spec.name);
+    const home = join(at, "node_modules", name);
     if (builtin.fs.existsSync(home)) {
-      const pkg = await readJson(join(home, "package.json")).catch(() => undefined);
-      return pkg !== undefined && fits(spec, (pkg as { version?: unknown }).version);
+      return { home, pkg: await readJson(join(home, "package.json")).catch(() => undefined) };
     }
-    if (dirname(at) === at) return false;
+    if (dirname(at) === at) throw fail(`${name} is not installed above ${dir}`, "ENOEXPORT");
   }
 }
 
-type Resolve = (id: string, dir: string) => string;
-let resolveIn: Resolve | undefined;
+/** Whether an import from `dir` finds the spec's package in a version it takes. */
+export async function hasPackage(dir: string, spec: Spec): Promise<boolean> {
+  const { pkg } = await nearest(dir, spec.name).catch(() => ({ pkg: undefined }));
+  return pkg !== undefined && fits(spec, (pkg as { version?: unknown }).version);
+}
 
 /**
- * How this runtime resolves `id` as an import from a module in `dir`, found and tried before
- * anything is installed: Node.js 22.15+ through a resolve hook, Bun with its own resolver.
+ * `resolvex`'s own resolution of `id`, `name` or `name/subpath`, imported from the directory
+ * `parentURL`: as Node.js resolves it, for the package's `exports` with Node.js's conditions for
+ * an import, else its `main` or `index.js`, to the file's real path. Not read: `imports`, a
+ * package importing itself by name, and the `browser` and `module` fields.
  */
-export async function resolver(): Promise<Resolve> {
-  if (resolveIn) return resolveIn;
-  const unsupported = () =>
-    Object.assign(new Error("resolvex and importx need Node.js 22.15+ or Bun"), {
-      code: "ENOBUILTIN",
-    });
-  const bun = (globalThis as { Bun?: { resolveSync(id: string, dir: string): string } }).Bun;
-  const { registerHooks } = builtin.module;
-  let found: Resolve;
-  if (bun) {
-    found = (id, dir) => builtin.url.pathToFileURL(bun.resolveSync(id, dir)).href;
-  } else if (typeof registerHooks === "function") {
-    // A module of its own: an app that bundles upm to CommonJS leaves upm no `import.meta`. Its
-    // url is no literal, or a bundler would make it a chunk with `import.meta` in it again.
-    const code = "export default (id) => import.meta.resolve(id)";
-    const helper = new URL(`data:text/javascript,${code}`).href;
-    const resolve: (id: string) => string = (await import(helper)).default;
-    found = (id, dir) => {
-      // A name of our own for the hook to point at `id`, new each time: node keeps what a
-      // name resolved to.
-      const name = `upm-resolvex:${globalThis.crypto.randomUUID()}`;
-      const parentURL = builtin.url.pathToFileURL(`${dir}${builtin.path.sep}`).href;
-      let hooked = false;
-      const hooks = registerHooks({
-        resolve: (specifier, context, next) => {
-          if (specifier !== name) return next(specifier, context);
-          hooked = true;
-          return next(id, { ...context, parentURL });
-        },
-      });
-      try {
-        const url = resolve(name);
-        if (hooked) return url;
-      } catch (error) {
-        if (hooked) throw error;
-      } finally {
-        hooks.deregister();
-      }
-      throw unsupported();
-    };
-    // Deno has `registerHooks`, but its `import.meta.resolve` never calls them.
-    found("node:path", builtin.os.tmpdir());
+export async function resolveImport(id: string, parentURL: string): Promise<string> {
+  const { join } = builtin.path;
+  // The name is one segment, or two under a scope.
+  const end = id.indexOf("/", id.startsWith("@") ? id.indexOf("/") + 1 : 0);
+  const name = end < 0 ? id : id.slice(0, end);
+  const subpath = end < 0 ? "." : `.${id.slice(end)}`;
+  const { home, pkg = {} } = await nearest(fromFileURL(parentURL), name);
+  const { exports, main } = pkg as { exports?: unknown; main?: unknown };
+  let found: string | undefined;
+  if (exports !== undefined) {
+    const target = exportsTarget(exports, subpath);
+    if (target === undefined) throw fail(`${name} does not export ${subpath}`, "ENOEXPORT");
+    found = join(home, target);
+  } else if (subpath !== ".") {
+    found = join(home, subpath);
   } else {
-    throw unsupported();
+    // As Node.js looks for `main` from an import.
+    const ends = ["", ".js", ".json", ".node", "/index.js", "/index.json", "/index.node"];
+    const tries = typeof main === "string" && main ? ends.map((end) => main + end) : [];
+    for (const file of [...tries, "index.js", "index.json", "index.node"]) {
+      if (await isFile(join(home, file))) {
+        found = join(home, file);
+        break;
+      }
+    }
   }
-  return (resolveIn = found);
+  if (found === undefined || !(await isFile(found))) {
+    throw fail(`${id} names no file in ${home}`, "ENOEXPORT");
+  }
+  return toFileURL(await builtin.fsp.realpath(found));
 }
 
 /** A file, or a link to one: a directory of that name is no bin. */
@@ -222,6 +215,6 @@ export async function readJson(file: string): Promise<object> {
   return value;
 }
 
-function fail(message: string, code: "ENOBIN" | "EMANIFEST"): Error {
+function fail(message: string, code: "ENOBIN" | "EMANIFEST" | "ENOEXPORT"): Error {
   return Object.assign(new Error(message), { code });
 }

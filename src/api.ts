@@ -139,11 +139,13 @@ export type ErrorCode =
    * installed as: a lockfile naming another package's integrity, say.
    */
   | "EMISMATCH"
-  /**
-   * The runtime lacks what the call needs: a Node.js builtin, or for `resolvex` and `importx`,
-   * Node.js 22.15+ or Bun.
-   */
+  /** The runtime has no Node.js builtin the call needs. */
   | "ENOBUILTIN"
+  /**
+   * `resolvex` found no file for the import: the package does not export it, or the file that
+   * `exports` or `main` names is missing.
+   */
+  | "ENOEXPORT"
   /** The registry answered with an error, or could not be reached in time. */
   | "EREGISTRY"
   | "ENETWORK"
@@ -311,6 +313,12 @@ export interface ResolvexOptions extends ProjectOptions, RegistryAccess, StoreAc
    * the `.npmrc` read and where packages install, is found by npm's walk up from there.
    */
   from?: string | URL;
+  /**
+   * Resolves the import once the package is in place: given `name` or `name/subpath` and the
+   * `file://` url of the directory to import it from, ending in `/`, the module's url. Default:
+   * upm's own, Node.js's rules for `exports` with its conditions for an import, else `main`.
+   */
+  resolve?: (id: string, parentURL: string) => string | Promise<string>;
   experimental?: Experimental;
 }
 
@@ -1437,18 +1445,19 @@ export async function exec(command: string, options: ExecOptions = {}): Promise<
  * The `file://` url an import of a package resolves to, installed if needed as `exec` installs.
  * The specifier is `[npm:]name[@version][/subpath]`: `pkg`, `npm:pkg@rc`, `@org/name@^1/sub`. A
  * name without a version resolves to what the nearest `node_modules` above `from` has, and a
- * version or range to what is there when it fits; a tag always asks the registry. Resolved as
- * Node.js resolves an import, with its default conditions. Needs Node.js 22.15+ or Bun.
+ * version or range to what is there when it fits; a tag always asks the registry.
  */
 export async function resolvex(specifier: string, options: ResolvexOptions = {}): Promise<string> {
-  const { execHome, hasPackage, parseImport, resolver, startDir } = await import("./exec.ts");
+  const { dirURL, execHome, hasPackage, parseImport, resolveImport, startDir } =
+    await import("./exec.ts");
   const { spec, subpath } = parseImport(specifier);
-  const resolve = await resolver();
   const start = startDir(options.from, options.dir ?? globalThis.process.cwd());
-  const id = spec.name + subpath;
-  if (await hasPackage(start, spec)) return resolve(id, start);
-  const dir = options.dir ?? (await (await import("./workspaces.ts")).findRoot(start)).dir;
-  return resolve(id, await execProject({ ...options, dir }, [spec.raw], execHome));
+  let at = start;
+  if (!(await hasPackage(start, spec))) {
+    const dir = options.dir ?? (await (await import("./workspaces.ts")).findRoot(start)).dir;
+    at = await execProject({ ...options, dir }, [spec.raw], execHome);
+  }
+  return await (options.resolve ?? resolveImport)(spec.name + subpath, dirURL(at));
 }
 
 /** A package's module, as `import()` gives it: what `resolvex` finds, imported. */

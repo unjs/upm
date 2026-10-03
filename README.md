@@ -337,10 +337,20 @@ fails with `EINVALIDSPEC`. A name without a version, or a version or range that 
 comes from the nearest `node_modules` above `from`: a directory, or a module's path or
 `file://` url (default `dir`, else cwd). Anything else installs where `upx` installs, in
 the project found above `from`, once per version; a tag or range asks the registry each
-time. The import resolves as Node.js resolves one from `from`, with its default conditions.
-`resolvex` takes the same arguments and returns the `file://` url instead, without running
-the module. Both need Node.js 22.15+ or Bun, and fail with `ENOBUILTIN` before installing
-anything elsewhere.
+time. `resolvex` takes the same arguments and returns the `file://` url instead, without
+running the module.
+
+upm resolves the import itself, as Node.js does for a package's `exports` with Node.js's
+conditions for an import (`node`, `import`, `module-sync`, `default`), else its `main` or
+`index.js`, to the file's real path; a file it does not export fails with `ENOEXPORT`. It
+does not read `imports`, nor the `browser` and `module` fields. Pass `resolve` to resolve
+another way, such as with a `browser` condition or with exsolve's `resolveModuleURL`:
+
+```js
+await resolvex("pkg", {
+  resolve: (id, parentURL) => myResolve(id, parentURL), // returns the module's url
+});
+```
 
 Errors have a `code` you can handle. The exported `ErrorCode` type lists common
 codes; filesystem and worker errors may have others. Options under `experimental`

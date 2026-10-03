@@ -21,6 +21,13 @@ compatibility. Keep this page about open work, not completed implementation step
   never. A tag that moves often (`upm publish` runs npm's `latest`) leaves one per version.
   Needs a retention rule (last use, count) and a prune test that keeps a running command's
   project. Start at `execHome` in `src/exec.ts` and `execProject` in `src/api.ts`.
+- **`resolvex`'s own resolution covers packages, not all of Node.js's:** `exportsTarget`
+  (`src/exports.ts`) and `resolveImport` (`src/exec.ts`) read `exports` and `main`. Not read:
+  `imports`, a package importing itself by name, `--conditions`, and Node.js's checks on a
+  target's segments (`..`, `node_modules`). `importx` loads through the runtime's own
+  `import()`, so in a tab, where `fs` is a shim, it needs a loader that reads the file instead,
+  such as a `Blob` url. Compare against Node.js with `import.meta.resolve(id, parent)` under
+  `--experimental-import-meta-resolve`; without the flag Node.js drops the parent.
 - **Switching package managers:** unrelated real directories in an old `node_modules`
   can survive and remain importable. Use a clean `node_modules` when switching today.
   Define an explicit migration or refusal policy rather than deleting user files silently.
