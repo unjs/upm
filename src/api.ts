@@ -139,6 +139,13 @@ export type ErrorCode =
    * installed as: a lockfile naming another package's integrity, say.
    */
   | "EMISMATCH"
+  /** The runtime has no Node.js builtin the call needs. */
+  | "ENOBUILTIN"
+  /**
+   * `resolvex` found no file for the import: the package does not export it, or the file that
+   * `exports` or `main` names is missing.
+   */
+  | "ENOEXPORT"
   /** The registry answered with an error, or could not be reached in time. */
   | "EREGISTRY"
   | "ENETWORK"
@@ -298,6 +305,24 @@ export interface ExecOptions extends ProjectOptions, RegistryAccess, StoreAccess
   call?: boolean;
   experimental?: Experimental;
 }
+
+export interface ResolvexOptions extends ProjectOptions, RegistryAccess, StoreAccess {
+  /**
+   * Where the import is resolved from: a directory, or a module's path or `file://` url, such
+   * as `import.meta.url`. Default: `dir`, else cwd. Without `dir`, the project root, and with it
+   * the `.npmrc` read and where packages install, is found by npm's walk up from there.
+   */
+  from?: string | URL;
+  /**
+   * Resolves the import once the package is in place: given `name` or `name/subpath` and the
+   * `file://` url of the directory to import it from, ending in `/`, the module's url. Default:
+   * upm's own, Node.js's rules for `exports` with its conditions for an import, else `main`.
+   */
+  resolve?: (id: string, parentURL: string) => string | Promise<string>;
+  experimental?: Experimental;
+}
+
+export interface ImportxOptions extends ResolvexOptions {}
 
 export interface ExecResult {
   /** The command's exit code. */
@@ -1388,7 +1413,6 @@ async function installFirst(ctx: Context): Promise<void> {
 export async function exec(command: string, options: ExecOptions = {}): Promise<ExecResult> {
   const { args = [], packages, call } = options;
   if (call && args.length > 0) throw fail("exec takes a call line or args, not both", "EOPTION");
-  const log = options.log ?? (() => {});
   const cwd = builtin.path.resolve(options.dir ?? globalThis.process.cwd());
   const run = (line: string, dirs: string[]) =>
     runShell(line, cwd, withPath([...dirs, ...binDirs(cwd)]));
@@ -1408,12 +1432,7 @@ export async function exec(command: string, options: ExecOptions = {}): Promise<
   }
   const own = packages === undefined ? parseSpec(command) : undefined;
   if (packages?.length === 0) throw fail("exec lists no package to install", "EOPTION");
-  // The install's own progress is about a directory the caller never chose; its warnings stay.
-  const quiet = (message: string, level: LogLevel) => level !== "info" && log(message, level);
-  const ctx = await open({ ...options, log: quiet });
-  const { dir, specs } = await execProject(ctx, packages ?? [command], execHome(ctx.root!));
-  const installed = await installTree(ctx);
-  if (!installed.upToDate) log(`installed ${specs.join(", ")}`, "info");
+  const dir = await execProject(options, packages ?? [command], execHome);
   const file = builtin.path.join(dir, "node_modules", own?.name ?? "", "package.json");
   const bins = [builtin.path.join(dir, "node_modules", ".bin")];
   if (call) return { code: await run(command, bins), installed: dir };
@@ -1423,14 +1442,45 @@ export async function exec(command: string, options: ExecOptions = {}): Promise<
 }
 
 /**
- * Where `specs` install under `home`, made the context's root; the config stays the one `open`
- * read. The registries are in the name: the same versions there can be other bytes.
+ * The `file://` url an import of a package resolves to, installed if needed as `exec` installs.
+ * The specifier is `[npm:]name[@version][/subpath]`: `pkg`, `npm:pkg@rc`, `@org/name@^1/sub`. A
+ * name without a version resolves to what the nearest `node_modules` above `from` has, and a
+ * version or range to what is there when it fits; a tag always asks the registry.
+ */
+export async function resolvex(specifier: string, options: ResolvexOptions = {}): Promise<string> {
+  const { dirURL, execHome, hasPackage, parseImport, resolveImport, startDir } =
+    await import("./exec.ts");
+  const { spec, subpath } = parseImport(specifier);
+  const start = startDir(options.from, options.dir ?? globalThis.process.cwd());
+  let at = start;
+  if (!(await hasPackage(start, spec))) {
+    const dir = options.dir ?? (await (await import("./workspaces.ts")).findRoot(start)).dir;
+    at = await execProject({ ...options, dir }, [spec.raw], execHome);
+  }
+  return await (options.resolve ?? resolveImport)(spec.name + subpath, dirURL(at));
+}
+
+/** A package's module, as `import()` gives it: what `resolvex` finds, imported. */
+export async function importx<T = Record<string, any>>(
+  specifier: string,
+  options: ImportxOptions = {},
+): Promise<T> {
+  return import(await resolvex(specifier, options));
+}
+
+/**
+ * `specs` installed in a project of their own under the root's `home`, which is returned. The
+ * registries are in the name: the same versions there can be other bytes.
  */
 async function execProject(
-  ctx: Context,
+  options: ImportxOptions,
   specs: string[],
-  home: string,
-): Promise<{ dir: string; specs: string[] }> {
+  home: (root: string) => string,
+): Promise<string> {
+  const log = options.log ?? (() => {});
+  // The install's own progress is about a directory the caller never chose; its warnings stay.
+  const quiet = (message: string, level: LogLevel) => level !== "info" && log(message, level);
+  const ctx = await open({ ...options, log: quiet });
   const parsed = specs.map((raw) => parseSpec(raw));
   const local = parsed.find((spec) => ["workspace", "link", "tarball"].includes(spec.type));
   if (local) throw fail(`exec installs registry packages, not ${local.raw}`, "EINVALIDSPEC");
@@ -1464,7 +1514,7 @@ async function execProject(
   const { registry, scopes } = settings(ctx);
   const scoped = Object.entries(scopes).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
   const key = await shortHash(JSON.stringify([registry, scoped, text]));
-  const dir = join(home, key);
+  const dir = join(home(ctx.root!), key);
   const file = join(dir, "package.json");
   if ((await builtin.fsp.readFile(file, "utf8").catch(() => undefined)) !== text) {
     // Through a rename: another run of the same versions may be reading it.
@@ -1476,7 +1526,10 @@ async function execProject(
   ctx.root = dir;
   ctx.found = undefined;
   ctx.inside = undefined;
-  return { dir, specs: sorted.map(([name, range]) => `${name}@${range}`) };
+  if (!(await installTree(ctx)).upToDate) {
+    log(`installed ${sorted.map(([name, range]) => `${name}@${range}`).join(", ")}`, "info");
+  }
+  return dir;
 }
 
 /** A package a script runs in: the workspaces picked, or cwd's own package.json. */
