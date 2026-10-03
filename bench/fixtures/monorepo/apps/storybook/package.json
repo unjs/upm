@@ -8,10 +8,10 @@
     "@acme/ui-dialog": "*",
     "@acme/ui-icons": "*",
     "@acme/ui-theme": "*",
-    "@storybook/react-vite": "10.6.0",
+    "@storybook/react-vite": "10.6.1",
     "react": "19.3.0",
     "react-dom": "19.3.0",
-    "storybook": "10.6.0",
+    "storybook": "10.6.1",
     "vite": "8.3.1"
   }
 }
