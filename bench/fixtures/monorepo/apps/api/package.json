@@ -9,12 +9,12 @@
     "@acme/logger": "*",
     "@fastify/cors": "11.3.0",
     "fastify": "5.12.5",
-    "pino": "10.3.1",
+    "pino": "10.4.0",
     "zod": "4.6.5"
   },
   "devDependencies": {
     "@acme/tsconfig": "*",
-    "@types/node": "26.6.3",
+    "@types/node": "26.6.4",
     "tsx": "4.23.15"
   }
 }
