@@ -17,6 +17,8 @@ import { InstallButton } from "./install-button.tsx";
 import type { InstalledFile } from "../lib/install.ts";
 import type { Lines } from "../lib/route.ts";
 import { toBase64 } from "upm/src/runtime.ts";
+import { SBOM } from "upm/src/sbom.ts";
+import type { Platform } from "upm/src/resolve.ts";
 import { Markdown, MarkdownSkeleton, type Link } from "./markdown.tsx";
 import { PackageMeta, sourceUrl } from "./package.tsx";
 import { ErrorBox, IconButton, Icon, Waiting } from "./ui.tsx";
@@ -43,6 +45,7 @@ export function Editor(props: {
   examples: string[];
   onRun: (spec: string) => void;
   onInstall: () => void;
+  onSbomTarget: (target?: Platform) => void;
 }) {
   const { view, files, selected, lines, onLines, picked } = props;
   if (!view && props.starting) return <MarkdownSkeleton />;
@@ -60,6 +63,11 @@ export function Editor(props: {
     return <Lockfile resolved={view.resolved} picked={picked} lines={lines} onLines={onLines} />;
   }
   const file = files?.get(selected);
+  if (selected === SBOM && file) {
+    return (
+      <Sbom view={view} file={file} lines={lines} onLines={onLines} onTarget={props.onSbomTarget} />
+    );
+  }
   if (files && file) {
     const manifest = view.manifest instanceof Error ? undefined : view.manifest;
     const root = treePath(view.name);
@@ -240,7 +248,6 @@ function Lockfile(props: {
   onLines: (lines: Lines | undefined) => void;
 }) {
   const { resolved, picked } = props;
-  const [copied, setCopied] = useState(false);
   if (!resolved) return <Waiting live>Resolving · {picked} picked</Waiting>;
   if (resolved instanceof Error) {
     return (
@@ -256,39 +263,112 @@ function Lockfile(props: {
         <Crumbs
           path={LOCK}
           meta={`${formatBytes(text.length)} · json`}
-          actions={
-            <>
-              <IconButton
-                icon="copy"
-                title="Copy"
-                onClick={() => {
-                  void navigator.clipboard.writeText(text);
-                  setCopied(true);
-                  setTimeout(() => setCopied(false), 1200);
-                }}
-              >
-                {copied ? "copied" : "copy"}
-              </IconButton>
-              <IconButton
-                icon="download"
-                title="Download"
-                onClick={() => {
-                  const a = document.createElement("a");
-                  a.href = URL.createObjectURL(new Blob([text], { type: "application/json" }));
-                  a.download = LOCK;
-                  a.click();
-                  URL.revokeObjectURL(a.href);
-                }}
-              >
-                download
-              </IconButton>
-            </>
-          }
+          actions={<FileActions path={LOCK} content={() => text} />}
         />
       }
     >
       <Code text={text} lang="json" lines={props.lines} onLines={props.onLines} />
     </Frame>
+  );
+}
+
+function Sbom({
+  view,
+  file,
+  lines,
+  onLines,
+  onTarget,
+}: {
+  view: View;
+  file: InstalledFile;
+  lines?: Lines;
+  onLines: (lines: Lines | undefined) => void;
+  onTarget: (target?: Platform) => void;
+}) {
+  const shown = useMemo(() => preview(SBOM, file.data), [file]);
+  const target = view.sbomTarget;
+  return (
+    <Frame
+      crumbs={
+        <Crumbs
+          path={SBOM}
+          meta={`${formatBytes(file.size)} · json · resolved tree`}
+          actions={
+            <>
+              <select
+                aria-label="SBOM target"
+                value={target ? [target.os, target.cpu, target.libc].filter(Boolean).join("/") : ""}
+                disabled={view.installed === true}
+                onChange={(e) => {
+                  const [os, cpu, libc] = e.currentTarget.value.split("/");
+                  onTarget(os && cpu ? { os, cpu, libc } : undefined);
+                }}
+                className="h-6 max-w-40 rounded bg-(--editor-bg) px-1 text-xs outline-none focus:ring-1 focus:ring-amber-500 dark:bg-zinc-900"
+              >
+                <option value="">All platforms</option>
+                <option value="linux/x64/glibc">Linux x64 · glibc</option>
+                <option value="linux/arm64/glibc">Linux arm64 · glibc</option>
+                <option value="linux/x64/musl">Linux x64 · musl</option>
+                <option value="linux/arm64/musl">Linux arm64 · musl</option>
+                <option value="darwin/x64">macOS x64</option>
+                <option value="darwin/arm64">macOS arm64</option>
+                <option value="win32/x64">Windows x64</option>
+                <option value="win32/arm64">Windows arm64</option>
+                <option value="linux/wasm32/glibc">WASM inspection</option>
+              </select>
+              {!view.sbomError && (
+                <FileActions path={SBOM} content={() => new TextDecoder().decode(file.data)} />
+              )}
+            </>
+          }
+        />
+      }
+    >
+      {view.sbomError ? (
+        <div className="mx-auto max-w-2xl p-8">
+          <ErrorBox error={view.sbomError} title="Could not export this target" />
+        </div>
+      ) : (
+        <Code {...shown} lines={lines} onLines={onLines} />
+      )}
+    </Frame>
+  );
+}
+
+function FileActions({ path, content }: { path: string; content: () => string }) {
+  const [label, setLabel] = useState("copy");
+  return (
+    <>
+      <IconButton
+        icon="copy"
+        title="Copy"
+        onClick={() => {
+          const show = (text: string) => {
+            setLabel(text);
+            setTimeout(() => setLabel("copy"), 1200);
+          };
+          navigator.clipboard.writeText(content()).then(
+            () => show("copied"),
+            () => show("failed"),
+          );
+        }}
+      >
+        <span className={path === SBOM ? "hidden md:inline" : undefined}>{label}</span>
+      </IconButton>
+      <IconButton
+        icon="download"
+        title="Download"
+        onClick={() => {
+          const a = document.createElement("a");
+          a.href = URL.createObjectURL(new Blob([content()], { type: "application/json" }));
+          a.download = path;
+          a.click();
+          URL.revokeObjectURL(a.href);
+        }}
+      >
+        <span className={path === SBOM ? "hidden md:inline" : undefined}>download</span>
+      </IconButton>
+    </>
   );
 }
 

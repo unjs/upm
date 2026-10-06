@@ -1,7 +1,8 @@
 // The app as an IDE: top bar, sidebar views, the editor, a bottom panel and a status bar.
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { ResolvedPackage } from "upm/resolver";
-import { runsOn } from "upm/src/resolve.ts";
+import { runsOn, type Platform, type Resolution } from "upm/src/resolve.ts";
+import { createSbom, SBOM } from "upm/src/sbom.ts";
 import type { TarEntry } from "upm/src/tar.ts";
 import {
   createClient,
@@ -57,6 +58,8 @@ export interface View {
   dependencies?: Record<string, string>;
   /** upm's install of it in this tab: true while it runs. */
   installed?: Installed | Error | true;
+  sbomTarget?: Platform;
+  sbomError?: Error;
   /** When the install was asked for, to draw its time while it runs. */
   installStarted?: number;
   /** Its warnings, as upm logs them. */
@@ -192,7 +195,7 @@ export function App({ ready }: { ready?: Promise<unknown> }) {
         resolved.then(
           (done) =>
             run.current === id &&
-            install(id, query.dependencies, registry, next.fetch, done.lockfile, file),
+            install(id, query.name, query.dependencies, registry, next.fetch, done, file),
           () => {},
         );
       };
@@ -216,10 +219,11 @@ export function App({ ready }: { ready?: Promise<unknown> }) {
   /** upm's own install of a run's dependencies, in this tab. */
   function install(
     id: number,
+    name: string,
     dependencies: Record<string, string>,
     registry: string,
     logged: typeof fetch,
-    lockfile?: string,
+    resolved: Resolved,
     file?: string,
   ) {
     const warnings: string[] = [];
@@ -234,16 +238,17 @@ export function App({ ready }: { ready?: Promise<unknown> }) {
       (message, level) => {
         if (level === "warn") warnings.push(message);
       },
-      lockfile,
+      resolved.lockfile,
       logged,
     )
       .then(
         (installed) => {
+          if (run.current !== id) return;
+          installed.files.set(SBOM, sbomFile(resolved.resolution, name));
           last.current = { id, installed };
           update({ installed });
           // The tree keeps its paths through the install, so what was open still is. A linked
           // file in `.upm` may be under another hash now: its package's deps changed since.
-          if (run.current !== id) return;
           const moved = file && !installed.files.has(file) && rehashed(installed.files, file);
           if (file && !installed.files.has(file) && !moved) setLines(undefined);
           setSelected((now) =>
@@ -362,6 +367,23 @@ export function App({ ready }: { ready?: Promise<unknown> }) {
     submit(view.spec, registryUrl, undefined, true, pinned ? selected : undefined);
     setSidebar(true);
   };
+  const chooseSbomTarget = (target?: Platform) => {
+    const resolved = view?.resolved;
+    if (!view || !installed || !resolved || resolved instanceof Error) return;
+    try {
+      const file = sbomFile(resolved.resolution, view.name, target);
+      const next = { ...installed, files: new Map(installed.files) };
+      next.files.set(SBOM, file);
+      last.current = { id: view.id, installed: next };
+      setView({ ...view, installed: next, sbomTarget: target, sbomError: undefined });
+    } catch (error) {
+      setView({
+        ...view,
+        sbomTarget: target,
+        sbomError: error instanceof Error ? error : new Error(String(error)),
+      });
+    }
+  };
   /** A file the user opens: it goes in the url. */
   const pick = (path: string) => {
     setSelected(path);
@@ -421,7 +443,9 @@ export function App({ ready }: { ready?: Promise<unknown> }) {
 
       {/* Margins grow with the page; the sidebar floats on the right at full height, the editor
           runs to the left edge and the panel sits below it. */}
-      <div className="relative flex min-h-0 flex-1 pb-3 max-sm:flex-col sm:flex-row-reverse">
+      <div
+        className={`relative flex min-h-0 flex-1 pb-3 ${sidebar ? "max-sm:flex-col sm:flex-row-reverse" : "flex-col"}`}
+      >
         <Sidebar
           reveal={reveal}
           open={sidebar}
@@ -457,7 +481,7 @@ export function App({ ready }: { ready?: Promise<unknown> }) {
         />
 
         {/* The breadcrumb and the panel float over the editor's ends, which scroll under them. */}
-        <div ref={column} className="relative min-h-0 min-w-0 flex-1 max-sm:mr-3">
+        <div ref={column} className="relative min-h-0 min-w-0 flex-1">
           <main className="h-full">
             <Breadcrumb
               value={{
@@ -483,6 +507,7 @@ export function App({ ready }: { ready?: Promise<unknown> }) {
                 examples={EXAMPLES}
                 onRun={submit}
                 onInstall={installNow}
+                onSbomTarget={chooseSbomTarget}
               />
             </Breadcrumb>
           </main>
@@ -522,6 +547,13 @@ export function App({ ready }: { ready?: Promise<unknown> }) {
       />
     </div>
   );
+}
+
+function sbomFile(resolution: Resolution, name: string, target?: Platform): InstalledFile {
+  const data = new TextEncoder().encode(
+    `${JSON.stringify(createSbom(resolution, name, { target }), null, 2)}\n`,
+  );
+  return { path: SBOM, mode: 0o644, size: data.length, data };
 }
 
 function progressOf(installing: boolean): number | "pending" {

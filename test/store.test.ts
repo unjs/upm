@@ -9,6 +9,7 @@ import {
   rename,
   rm,
   stat,
+  symlink,
   utimes,
   writeFile,
 } from "node:fs/promises";
@@ -16,11 +17,12 @@ import { createServer } from "node:http";
 import type { ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
-import { basename, dirname, join } from "node:path";
+import fs from "node:fs";
+import { basename, dirname, join, sep } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { fromShasum } from "../src/integrity.ts";
 import { hashOf } from "./hash.ts";
-import { createStore } from "../src/store.ts";
+import { createStore, projectStore } from "../src/store.ts";
 import { indexKey } from "../src/store-backend.ts";
 import type { BackendIndex, StoreBackend } from "../src/store-backend.ts";
 import { makeTarball } from "./tarball.ts";
@@ -1387,5 +1389,110 @@ describe("tarballs with no integrity yet, and on disk", () => {
     await expect(store.adopt({ path: join(dir, "folder.tgz") })).rejects.toMatchObject({
       code: "EINVAL",
     });
+  });
+});
+
+describe("projectStore", () => {
+  // `mnt` stands for a mount of its own: a link in or out of it is refused, as across two.
+  let env: Record<string, string | undefined>;
+  let mnt: string;
+  let project: string;
+  // By real path, as the kernel sees a link through a symlink.
+  const inside = (path: unknown) => {
+    const real = fs.realpathSync(dirname(String(path)));
+    return real === mnt || real.startsWith(`${mnt}${sep}`);
+  };
+  const crossing = () => {
+    const link = fs.linkSync;
+    return vi.spyOn(fs, "linkSync").mockImplementation((from, to) => {
+      // A missing source is told first, as link(2) does: a fresh home has no store yet.
+      if (fs.existsSync(from) && inside(from) !== inside(to)) {
+        throw Object.assign(new Error("cross-device link"), { code: "EXDEV" });
+      }
+      link(from, to);
+    });
+  };
+
+  beforeEach(async () => {
+    env = { HOME: process.env.HOME, USERPROFILE: process.env.USERPROFILE };
+    env.UPM_STORE = process.env.UPM_STORE;
+    delete process.env.UPM_STORE;
+    process.env.HOME = process.env.USERPROFILE = join(dir, "home");
+    await mkdir(join(dir, "mnt", "a", "project"), { recursive: true });
+    mnt = fs.realpathSync(join(dir, "mnt")); // macOS's tmpdir is under a symlink
+    project = join(mnt, "a", "project");
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    for (const [name, value] of Object.entries(env)) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+  });
+
+  const home = () => join(dir, "home", ".upm", "store");
+
+  it("keeps ~/.upm/store when it can hardlink into the project", async () => {
+    expect(projectStore(project)).toEqual({ dir: home() });
+    expect(await readdir(project)).toEqual([]);
+  });
+
+  it("makes .upm-store at the top of the project's mount when it cannot", async () => {
+    crossing();
+    const store = join(mnt, ".upm-store");
+    expect(projectStore(project)).toEqual({ dir: store, created: true });
+    expect(await readdir(home())).toEqual([".link"]);
+    expect(await readFile(join(store, ".gitignore"), "utf8")).toBe("*\n");
+    // Made once, so said once.
+    expect(projectStore(project)).toEqual({ dir: store });
+    // The probes leave nothing behind.
+    expect(await readdir(project)).toEqual([]);
+    expect(await readdir(mnt)).toEqual([".upm-store", "a"]);
+  });
+
+  it("probes from node_modules when the project has one", async () => {
+    await mkdir(join(project, "node_modules"));
+    const link = crossing();
+    expect(projectStore(project).dir).toBe(join(mnt, ".upm-store"));
+    expect(String(link.mock.calls.at(-1)![1])).not.toContain(project);
+    const probed = link.mock.calls.map(([, to]) => dirname(String(to)));
+    expect(probed).toContain(join(project, "node_modules"));
+    expect(await readdir(join(project, "node_modules"))).toEqual([]);
+  });
+
+  it("walks the real path of a project reached through a symlink", async () => {
+    crossing();
+    const alias = join(dir, "alias");
+    await symlink(project, alias, "junction");
+    expect(projectStore(alias).dir).toBe(join(mnt, ".upm-store"));
+  });
+
+  it.skipIf(process.platform === "win32")(
+    "passes over a directory others can write to, and a store others can",
+    async () => {
+      crossing();
+      await chmod(mnt, 0o777);
+      expect(projectStore(project).dir).toBe(join(mnt, "a", ".upm-store"));
+      await chmod(mnt, 0o755);
+      await mkdir(join(mnt, ".upm-store"));
+      await chmod(join(mnt, ".upm-store"), 0o777);
+      expect(projectStore(project).dir).toBe(join(mnt, "a", ".upm-store"));
+    },
+  );
+
+  it("never probes a store that was set", () => {
+    const link = vi.spyOn(fs, "linkSync");
+    expect(projectStore(project, join(dir, "given"))).toEqual({ dir: join(dir, "given") });
+    process.env.UPM_STORE = join(dir, "env");
+    expect(projectStore(project)).toEqual({ dir: join(dir, "env") });
+    expect(link).not.toHaveBeenCalled();
+  });
+
+  it("keeps ~/.upm/store when the disk has no hardlinks at all", () => {
+    vi.spyOn(fs, "linkSync").mockImplementation(() => {
+      throw Object.assign(new Error("not permitted"), { code: "EPERM" });
+    });
+    expect(projectStore(project)).toEqual({ dir: home() });
   });
 });

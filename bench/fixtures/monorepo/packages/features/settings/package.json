@@ -7,7 +7,7 @@
     "@acme/ui-button": "*",
     "@acme/ui-dialog": "*",
     "@acme/utils": "*",
-    "@tanstack/react-query": "5.104.0",
+    "@tanstack/react-query": "5.104.1",
     "zod": "4.6.5"
   },
   "devDependencies": {

@@ -415,7 +415,7 @@ network. If `package.json` has changed, the copy is ignored and the install reso
 there were no `node_modules`. `upm lock` and `--frozen-lockfile` never read the copy.
 
 Registry documents that upm reads while resolving are kept in the store's `metadata`
-directory, under paths named after the registry and package
+directory (`~/.upm/store`'s, unless a store is set), under paths named after the registry and package
 (`metadata/registry.npmjs.org/@scope/name/`), so deleting a directory forgets those
 documents. A full document is kept cut down to the fields upm reads, and each notes where its
 versions are, so a pick parses only the versions it looks at. A kept document is used
@@ -709,7 +709,7 @@ setting has no form there.
 |                                                       | `npm_config_userconfig`                    | Path of the user config file, instead of `~/.npmrc`.                                                               |
 | `globalconfig` (user config only)                     | `npm_config_globalconfig`                  | Path of the global config file.                                                                                    |
 | `prefix` (user config only)                           | `npm_config_prefix`, `PREFIX`              | The global config file is `<prefix>/etc/npmrc`.                                                                    |
-|                                                       | `UPM_STORE`                                | Shared store directory. Defaults to `~/.upm/store`; `--store` takes priority.                                      |
+|                                                       | `UPM_STORE`                                | Shared store directory. Defaults to `~/.upm/store`, else `.upm-store` on the project's mount; `--store` wins.      |
 |                                                       | `UPM_LINK_POOL`                            | Same as `--experimental-link-pool`: `off`, `on` or `<size>[,<packages>[,<files>]]`.                                |
 |                                                       | `UPM_RESOLVE_POOL`                         | Experimental: threads that read the registry. `off`, `on` or a count up to 16.                                     |
 |                                                       | `UPM_DEBUG`                                | `1` or `on` prints debug messages to stderr, as `--verbose`.                                                       |
@@ -780,8 +780,15 @@ The shared file cache lives at `~/.upm/store`. Change it with `UPM_STORE` or
 `--store <path>`; the command-line option takes priority.
 
 Files are stored by content and hardlinked into each project's
-`node_modules/.upm`. Hardlinks let projects share the same bytes on disk. upm
-falls back to copying when hardlinks are not available, such as across filesystems.
+`node_modules/.upm`. Hardlinks let projects share the same bytes on disk. A hardlink
+cannot cross filesystems or mount points, such as another drive or a container's
+bind mount. When `~/.upm/store` cannot reach a project that way and no store is set,
+upm uses `.upm-store` in the topmost directory on the project's mount it can write
+to, as pnpm does, and says so once when it creates it. A directory every user can
+write to, such as `/tmp`, or a `.upm-store` another user owns is passed over. The packages
+are downloaded into that store once, so an `--offline` install there needs them first.
+upm falls back to copying when hardlinks are not available at all. `upm prune` cleans
+the store the project uses.
 
 **Do not edit installed package files.** Cached files are read-only because a write
 through a shared hardlink can damage the same file in other projects too.

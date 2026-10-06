@@ -195,6 +195,103 @@ export function storeDir(dir?: string): string {
   );
 }
 
+/**
+ * The store for the project at `root`: `dir` or `UPM_STORE` as given, else `~/.upm/store` while
+ * its files can be hardlinked into the project. A link cannot cross filesystems, nor the mount
+ * points of one (a container's bind mounts), and copying every file took twice the time and a
+ * full copy per project. Then, `.upm-store` in the topmost directory above the
+ * project that a link from the project reaches. `created` says this call made that store.
+ */
+export function projectStore(root: string, dir?: string): { dir: string; created?: boolean } {
+  const given = dir || globalThis.process?.env.UPM_STORE;
+  if (given) return { dir: given };
+  const { dirname, join } = builtin.path;
+  const { existsSync, linkSync, mkdirSync, realpathSync, statSync, unlinkSync, writeFileSync } =
+    builtin.fs;
+  const home = storeDir();
+  // Where the links go. Not the root when it can be helped: a dev server may be watching it.
+  const nm = join(root, "node_modules");
+  const at = existsSync(nm) ? nm : root;
+  // Not crypto: it loads WebCrypto, a cost a no-op install would see.
+  const name = `.upm-link-${Math.random().toString(36).slice(2, 10)}`;
+  const link = (from: string, into: string): string | undefined => {
+    const to = join(into, name);
+    try {
+      linkSync(from, to);
+    } catch (error) {
+      return (error as { code?: string }).code ?? "EUNKNOWN";
+    }
+    try {
+      unlinkSync(to);
+    } catch {}
+    return undefined;
+  };
+  const probe = join(home, ".link");
+  let failed = link(probe, at);
+  if (failed === "ENOENT") {
+    try {
+      mkdirSync(home, { recursive: true });
+      writeFileSync(probe, "", { flag: "a" });
+    } catch {
+      return { dir: home };
+    }
+    failed = link(probe, at);
+  }
+  // Only another mount is helped by another store: a disk with no hardlinks at all copies.
+  if (failed !== "EXDEV") return { dir: home };
+  let real: string;
+  try {
+    // Through a symlink, the walk would climb the link's side of it.
+    real = realpathSync(root);
+  } catch {
+    return { dir: home };
+  }
+  const own = join(at === root ? real : join(real, "node_modules"), `${name}-own`);
+  try {
+    writeFileSync(own, "");
+  } catch {
+    return { dir: home };
+  }
+  // A plain install trusts what the store holds, so never one that others can write: not under
+  // a directory all users write to, such as `/tmp`, nor one another user made. POSIX only.
+  const uid = globalThis.process?.getuid?.();
+  const safe = (each: string): boolean => {
+    if (uid === undefined) return true;
+    try {
+      if (statSync(each).mode & 0o002) return false;
+      const found = statSync(join(each, ".upm-store"), { throwIfNoEntry: false });
+      return !found || (found.uid === uid && !(found.mode & 0o002));
+    } catch {
+      return false;
+    }
+  };
+  let top: string | undefined;
+  try {
+    const above = [real];
+    for (let up = dirname(real); up !== above[0]; up = dirname(up)) above.unshift(up);
+    top = above.find((each) => link(own, each) === undefined && safe(each));
+  } finally {
+    try {
+      unlinkSync(own);
+    } catch {}
+  }
+  // None safe, or `node_modules` alone is on its own mount: a store there would go with the tree.
+  if (top === undefined) return { dir: home };
+  const store = join(top, ".upm-store");
+  if (existsSync(store)) return { dir: store };
+  try {
+    mkdirSync(store);
+  } catch (error) {
+    const code = (error as { code?: string }).code;
+    return code === "EEXIST" ? { dir: store } : { dir: home };
+  }
+  try {
+    // It may be inside the project, when the project is the top of its mount.
+    writeFileSync(join(store, ".gitignore"), "*\n");
+  } catch {}
+  return { dir: store, created: true };
+}
+
 export function createStore(options: StoreOptions = {}): Store {
   const dir = storeDir(options.dir);
   const request = options.fetch ?? fetching();

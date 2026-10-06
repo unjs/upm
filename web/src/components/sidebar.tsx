@@ -28,12 +28,13 @@ export function Sidebar(props: {
 
   return (
     <>
-      {/* On a small screen the toggle has its own line above the editor, and keeps it while the
-          open sidebar floats over the page. */}
+      {/* The mobile toggle stays at the bottom right, above the sidebar's fade. */}
       <div
-        className={`flex shrink-0 justify-end pr-2 max-sm:pb-1 sm:pr-5 lg:pr-9 xl:pr-15 ${open ? "sm:hidden" : ""}`}
+        className={`${open ? "hidden max-sm:flex" : "flex"} shrink-0 justify-end pr-3 max-sm:absolute max-sm:right-0 max-sm:bottom-3 max-sm:z-30 sm:pr-6 lg:pr-10 xl:pr-16`}
       >
-        <Toggle open={false} onClick={() => setOpen(true)} />
+        <div className={`self-start p-1.5 ${open ? "border border-transparent" : ISLAND}`}>
+          <Toggle open={open} onClick={() => setOpen(!open)} />
+        </div>
       </div>
       {/* A click beside the floating sidebar closes it. */}
       {open && <div className="absolute inset-0 z-20 sm:hidden" onClick={() => setOpen(false)} />}
@@ -41,7 +42,7 @@ export function Sidebar(props: {
       {/* Both views stay mounted, so folding keeps their scroll, selection and expansion. */}
       <aside
         style={{ width }}
-        className={`relative box-content max-w-[75vw] shrink-0 flex-col pr-3 pl-3 sm:pr-6 lg:pr-10 xl:pr-16 max-sm:absolute max-sm:top-0 max-sm:right-0 max-sm:bottom-3 max-sm:z-20 max-sm:flex max-sm:origin-top-right max-sm:transition-[opacity,scale,visibility] max-sm:duration-200 max-sm:ease-out max-sm:motion-reduce:transition-none ${open ? "flex" : "hidden max-sm:invisible max-sm:scale-95 max-sm:opacity-0"}`}
+        className={`relative box-content max-w-[75vw] shrink-0 flex-col pr-3 pl-3 sm:pr-6 lg:pr-10 xl:pr-16 max-sm:absolute max-sm:top-0 max-sm:right-0 max-sm:bottom-3 max-sm:z-20 max-sm:flex max-sm:duration-200 max-sm:ease-out max-sm:motion-reduce:transition-none ${open ? "flex max-sm:transition-opacity" : "hidden max-sm:pointer-events-none max-sm:invisible max-sm:opacity-0 max-sm:transition-[opacity,visibility]"}`}
       >
         {/* The sash sits in the gap beside the island. */}
         <div ref={ref} className={`flex min-h-0 flex-1 flex-col ${ISLAND}`}>
@@ -49,8 +50,12 @@ export function Sidebar(props: {
             title="Explorer"
             open={files}
             toggle={() => setFiles(!files)}
-            // Where the closed sidebar keeps its toggle.
-            trailing={<Toggle open onClick={() => setOpen(false)} />}
+            // Where the closed sidebar keeps its toggle on larger screens.
+            trailing={
+              <span className="max-sm:hidden">
+                <Toggle open onClick={() => setOpen(false)} />
+              </span>
+            }
           >
             {props.explorer}
           </Section>
@@ -77,6 +82,8 @@ export function Sidebar(props: {
           >
             {props.dependencies}
           </Section>
+          {/* Keeps the floating toggle clear of both panes. */}
+          <div className="mt-auto h-11 shrink-0 sm:hidden" />
         </div>
         <Sash
           place="inset-y-0 left-0 w-3"
@@ -96,7 +103,7 @@ function Toggle({ open, onClick }: { open: boolean; onClick: () => void }) {
       type="button"
       title={open ? "Hide the sidebar" : "Show the sidebar"}
       onClick={onClick}
-      className="flex size-8 shrink-0 items-center justify-center rounded-lg text-zinc-400 hover:bg-zinc-200/60 hover:text-zinc-800 dark:hover:bg-zinc-800 dark:hover:text-zinc-200"
+      className="flex size-8 shrink-0 items-center justify-center rounded-lg text-zinc-500 hover:bg-zinc-200/60 hover:text-zinc-800 dark:text-zinc-400 dark:hover:bg-zinc-800 dark:hover:text-zinc-200"
     >
       <Icon name="sidebar" className="size-4" />
     </button>
