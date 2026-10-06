@@ -1239,11 +1239,13 @@ describe("startup budget", () => {
     // `--help` within noise (41.4/40.6 and 115/118 ms). 169,658 with git specs read as their
     // host's archive url, `--help` cached within noise (41.8/41.7 ms), uncached 112/114.3 ms.
     // 169,833 with an optional pin named for another os read from the abbreviated document,
-    // `--help` within noise (25.2/25.5 and 72.6/69.8 ms).
+    // `--help` within noise (25.2/25.5 and 72.6/69.8 ms). 171,573 with a store on the project's
+    // mount when `~/.upm/store` cannot hardlink there, `--help` within noise (70.6/68.6 and
+    // 117.1/110.8 ms), a no-op install too (76.4/76.1 ms).
     const modules = await reachable();
     const bytes = [...modules.values()].reduce((total, size) => total + size, 0);
     expect(modules.size).toBeLessThanOrEqual(27); // `upm.ts` is the bin, `cli.ts` the program
-    expect(bytes).toBeLessThanOrEqual(169_833);
+    expect(bytes).toBeLessThanOrEqual(171_573);
     // Found through `import()` by the commands that read a project, like the pools: each holds
     // its worker's whole code in the build.
     const lazy = [

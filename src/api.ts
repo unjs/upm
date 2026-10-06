@@ -75,7 +75,7 @@ import {
   writeTreeLock,
 } from "./state.ts";
 import type { InstallState, Inputs, Stamp, TarballStamp } from "./state.ts";
-import { createStore, storeDir } from "./store.ts";
+import { createStore, projectStore, storeDir } from "./store.ts";
 import type { Store, Tarball } from "./store.ts";
 import type { StoreBackend } from "./store-backend.ts";
 import type { Manifest } from "./types.ts";
@@ -184,7 +184,10 @@ export interface RegistryAccess {
 }
 
 export interface StoreAccess {
-  /** Content-addressed store directory. Default: `UPM_STORE`, then `~/.upm/store`. */
+  /**
+   * Content-addressed store directory. Default: `UPM_STORE`, then `~/.upm/store`, or
+   * `.upm-store` on the project's mount when `~/.upm/store` cannot hardlink into it.
+   */
   store?: string;
   /** Shared storage behind the store. */
   storeBackend?: StoreBackend;
@@ -458,6 +461,8 @@ interface Context {
   newer?: Map<string, number>;
   /** What this command's resolve kept its versions from: none of its own picks are there. */
   prior?: Lockfile["packages"];
+  /** The store, picked for the root on first use (`storeOf`). */
+  store?: string;
 }
 
 /** The options checked, before anything is read. */
@@ -1000,7 +1005,7 @@ function settingsIn(ctx: Context): Omit<Inputs, "lock" | "manifest" | "workspace
     hoist,
     // The store the install uses, defaults included: `inputsHash` resolves it, and a default
     // resolved from "" would be the cwd.
-    store: storeDir(ctx.options.store),
+    store: storeOf(ctx),
     hosts: [registry, scopes],
     platform: currentPlatform(),
   };
@@ -1282,7 +1287,7 @@ async function removing(names: string[], options: RemoveOptions): Promise<Remove
 export async function prune(options: PruneOptions = {}): Promise<PruneResult> {
   const ctx = await open(options);
   const dir = ctx.root!;
-  const store = createStore({ dir: options.store });
+  const store = createStore({ dir: storeOf(ctx) });
   const state = await readState(dir);
   const entries = state ? await sweepEntries(dir, new Set(state.entries)) : undefined;
   const { blobs, indexes, bytes } = await pruneStore(store.dir);
@@ -1476,6 +1481,8 @@ async function execProject(
   ctx.root = dir;
   ctx.found = undefined;
   ctx.inside = undefined;
+  // `~/.upm/exec` may be on another mount than the project.
+  ctx.store = undefined;
   return { dir, specs: sorted.map(([name, range]) => `${name}@${range}`) };
 }
 
@@ -1994,10 +2001,24 @@ function settings(ctx: Context): Config {
   return (ctx.config ??= readConfig(ctx.root ?? globalThis.process.cwd(), ctx.options));
 }
 
+/** The store for the root, picked once: see `projectStore`. */
+function storeOf(ctx: Context): string {
+  if (ctx.store !== undefined) return ctx.store;
+  const root = ctx.root ?? globalThis.process.cwd();
+  const picked = projectStore(root, ctx.options.store);
+  if (picked.created) {
+    const home = storeDir();
+    const using = `${home} cannot hardlink into ${root}; using ${picked.dir}`;
+    ctx.log(`${using} (UPM_STORE chooses the store)`, "warn");
+  }
+  return (ctx.store = picked.dir);
+}
+
 /** The store, downloading with the config's credentials, or never under `offline`. */
 function openStore(ctx: Context, verify?: boolean): Store {
   const { auth, offline, before } = settings(ctx);
-  const { store: dir, storeBackend: backend } = ctx.options;
+  const { storeBackend: backend } = ctx.options;
+  const dir = storeOf(ctx);
   const backendFailed = (error: unknown) => ctx.log(`store backend: ${describe(error)}`, "warn");
   const { noThreads } = ctx;
   // `--verify` hashes what it checks; a refill after a failed link trusts untouched times.
@@ -2111,6 +2132,8 @@ async function openRegistry(
   const { offline, preferOffline } = settings(ctx);
   const mode = offline ? "only" : preferOffline ? "prefer" : "revalidate";
   const { createDocumentCache, metadataDir } = await import("./metadata.ts");
+  // Never the store on the project's mount (`storeOf`): documents are read, not linked, and one
+  // cache serves every mount, a command outside a project too.
   const metadata = { dir: metadataDir(storeDir(ctx.options.store)), mode } as const;
   const loaded = await import("./registry-pool.ts").catch(() => undefined);
   if (!loaded && size !== 0) ctx.noThreads();

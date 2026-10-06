@@ -497,6 +497,55 @@ describe("api", () => {
     }
   });
 
+  it("stores on the project's mount when ~/.upm/store cannot hardlink into it", async () => {
+    await writeFile(join(dir, "package.json"), '{"name":"demo","dependencies":{"nanoid":"^5"}}');
+    const { store: _store, ...noStore } = base;
+    const home = await mkdtemp(join(tmpdir(), "upm-home-"));
+    const env = {
+      HOME: process.env.HOME,
+      USERPROFILE: process.env.USERPROFILE,
+      UPM_STORE: process.env.UPM_STORE,
+    };
+    delete process.env.UPM_STORE;
+    process.env.HOME = process.env.USERPROFILE = home;
+    // The project dir stands for a mount of its own: no link crosses its edge. By real path, as
+    // the kernel sees it: macOS's tmpdir is under a symlink.
+    const mount = await realpath(dir);
+    const inside = (path: unknown) =>
+      builtin.fs.realpathSync(dirname(String(path))).startsWith(mount);
+    const link = builtin.fs.linkSync;
+    vi.spyOn(builtin.fs, "linkSync").mockImplementation((from, to) => {
+      if (builtin.fs.existsSync(from) && inside(from) !== inside(to)) {
+        throw Object.assign(new Error("cross-device link"), { code: "EXDEV" });
+      }
+      link(from, to);
+    });
+    try {
+      // Registry documents are read, not linked: they stay in ~/.upm/store.
+      expect(await upm.resolve(["nanoid@^5"], noStore)).toHaveLength(1);
+      expect(await readdir(dir)).not.toContain(".upm-store");
+      const result = await upm.install(noStore);
+      const store = join(mount, ".upm-store");
+      expect((await readJson(join(dir, "node_modules", ".upm.json"))).store).toBe(store);
+      expect(result.stats).toMatchObject({ copied: 0 });
+      expect(result.stats.linked).toBeGreaterThan(0);
+      expect(lines.filter((line) => line.includes("cannot hardlink"))).toEqual([
+        `${join(home, ".upm", "store")} cannot hardlink into ${dir}; using ${store} (UPM_STORE chooses the store)`,
+      ]);
+      expect(await readdir(join(home, ".upm", "store"))).toEqual([".link", "metadata"]);
+      // Said once: the second install and a prune find the store there.
+      expect((await upm.install(noStore)).upToDate).toBe(true);
+      expect(await upm.prune(noStore)).toMatchObject({ content: { files: 0, packages: 0 } });
+      expect(lines.filter((line) => line.includes("cannot hardlink"))).toHaveLength(1);
+    } finally {
+      for (const [name, value] of Object.entries(env)) {
+        if (value === undefined) delete process.env[name];
+        else process.env[name] = value;
+      }
+      await rm(home, { recursive: true, force: true });
+    }
+  });
+
   it("writes no lockfile when asked not to", async () => {
     await writeFile(join(dir, "package.json"), JSON.stringify({ dependencies: { nanoid: "^5" } }));
     const lock = await upm.lock({ ...base, write: false });

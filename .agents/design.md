@@ -231,6 +231,20 @@ creates `<file>.taking` removes a dead file, and only while it is still the one 
 that remove the same dead file would let two installs hold it. The store has no lock: an
 install that loses content to a prune fails its link and refills.
 
+## The store must reach the project by hardlink
+
+A hardlink cannot cross a filesystem or a mount point, even two bind mounts of one disk, and
+the linker then copies every file: about twice the link time and a full copy per project. So
+with no store set, `projectStore` (`src/store.ts`) tries one link from `~/.upm/store` into the
+project and, on `EXDEV` only, picks `.upm-store` in the topmost directory a link from the
+project reaches. Other refusals mean a disk with no hardlinks, which another
+store does not fix. A plain install trusts the store's content, so a directory others can
+write to (`/tmp`) or a `.upm-store` another user owns is passed over. The store is in the
+install state's inputs: moving it downloads every tarball again and relinks the tree once,
+and an offline install fails until then. Registry documents stay in `~/.upm/store`: they are
+read, not linked, and a command picking two stores would split them. A set store (`--store`,
+`UPM_STORE`, or `run`'s from the state) is never probed.
+
 ## Optimization must keep the same answer
 
 Metadata parsing shortcuts must select the real registry member, never a lookalike

@@ -83,7 +83,8 @@ Options
   --production         skip dev-only packages
   --registry <url>     override the registry
   -s, --silent         no progress, run banner or install summary (also -q, --loglevel)
-  --store <dir>        package store directory
+  --store <dir>        package store directory (default ~/.upm/store, or .upm-store
+                       on the project's mount when ~/.upm/store cannot hardlink there)
   --verbose            print debug messages (also UPM_DEBUG=1 or on)
   --verify             install: check file contents, links, bins and peers
   -w, --workspace <name|path>
