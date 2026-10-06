@@ -443,7 +443,9 @@ export function App({ ready }: { ready?: Promise<unknown> }) {
 
       {/* Margins grow with the page; the sidebar floats on the right at full height, the editor
           runs to the left edge and the panel sits below it. */}
-      <div className="relative flex min-h-0 flex-1 pb-3 max-sm:flex-col sm:flex-row-reverse">
+      <div
+        className={`relative flex min-h-0 flex-1 pb-3 ${sidebar ? "max-sm:flex-col sm:flex-row-reverse" : "flex-col"}`}
+      >
         <Sidebar
           reveal={reveal}
           open={sidebar}
@@ -479,7 +481,7 @@ export function App({ ready }: { ready?: Promise<unknown> }) {
         />
 
         {/* The breadcrumb and the panel float over the editor's ends, which scroll under them. */}
-        <div ref={column} className="relative min-h-0 min-w-0 flex-1 max-sm:mr-3">
+        <div ref={column} className="relative min-h-0 min-w-0 flex-1">
           <main className="h-full">
             <Breadcrumb
               value={{

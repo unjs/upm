@@ -41,7 +41,7 @@ export function Panel(props: {
       ref={ref}
       // Maximized, it takes all the height and shrinks only by what the content above can't give up.
       style={{ height: maximized ? "100%" : height }}
-      className={`relative mt-3 flex flex-col pl-3 sm:pl-6 lg:pl-10 xl:pl-16 ${maximized ? "" : "max-h-[80%] shrink-0"}`}
+      className={`relative mt-3 flex flex-col pl-3 max-sm:pr-3 sm:pl-6 lg:pl-10 xl:pl-16 ${maximized ? "" : "max-h-[80%] shrink-0"}`}
     >
       <Sash
         vertical
@@ -74,7 +74,7 @@ export function Panel(props: {
             <IconButton icon="close" title="Close panel (Ctrl+`)" onClick={props.onClose} />
           </span>
         </div>
-        <div className="min-h-0 flex-1 overflow-auto">
+        <div className="min-h-0 flex-1 overflow-auto max-sm:pb-12">
           {tab === "requests" ? (
             <Requests requests={requests} />
           ) : tab === "storage" ? (
