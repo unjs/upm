@@ -510,7 +510,7 @@ describe("api", () => {
     process.env.HOME = process.env.USERPROFILE = home;
     // The project dir stands for a mount of its own: no link crosses its edge. By real path, as
     // the kernel sees it: macOS's tmpdir is under a symlink.
-    const mount = await realpath(dir);
+    const mount = builtin.fs.realpathSync(dir); // as projectStore: it keeps Windows short names
     const inside = (path: unknown) =>
       builtin.fs.realpathSync(dirname(String(path))).startsWith(mount);
     const link = builtin.fs.linkSync;
