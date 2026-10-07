@@ -15,7 +15,7 @@ import { LOCK, linked, treePath } from "./files.tsx";
 import { bindInstall, installCard } from "./install.ts";
 import { InstallButton } from "./install-button.tsx";
 import type { InstalledFile } from "../lib/install.ts";
-import type { Lines } from "../lib/route.ts";
+import { allowedSource, type Lines } from "../lib/route.ts";
 import { toBase64 } from "upm/src/runtime.ts";
 import { SBOM } from "upm/src/sbom.ts";
 import type { Platform } from "upm/src/resolve.ts";
@@ -85,7 +85,7 @@ export function Editor(props: {
         install={
           readme && (
             <InstallCard
-              spec={view.name}
+              spec={addSpec(view)}
               meta={<PackageMeta view={view} onInstall={props.onInstall} />}
             >
               <InstallButton view={view} onInstall={props.onInstall} />
@@ -205,6 +205,12 @@ function FileView(props: {
  * `meta`, then `children` beside a button that shows the commands that install upm and add this
  * package, as wide as the README under it.
  */
+/** What `upm add` takes for the run: its name, or the tarball url it was given. */
+function addSpec(view: View): string {
+  const range = view.dependencies?.[view.name];
+  return range && allowedSource(range) ? range : view.name;
+}
+
 function InstallCard(props: { spec: string; meta: ReactNode; children: ReactNode }) {
   const ref = useRef<HTMLDivElement>(null);
   const [open, setOpen] = useState(commandsOpen);

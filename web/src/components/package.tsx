@@ -92,9 +92,19 @@ export function PackageMeta({ view, onInstall }: { view: View; onInstall: () => 
             <h1 className="font-mono text-xl font-semibold break-all text-zinc-900 dark:text-zinc-100">
               {view.name}
             </h1>
-            <span className="font-mono text-sm text-amber-600 dark:text-amber-500">
-              {top.version}
-            </span>
+            {/* A tarball url's version is its package.json's, which says little: its ref says more. */}
+            {allowedSource(top.resolved) ? (
+              <span
+                title={`${top.version}, from ${top.resolved}`}
+                className="font-mono text-sm text-amber-600 dark:text-amber-500"
+              >
+                {top.resolved.slice(top.resolved.lastIndexOf("@"))}
+              </span>
+            ) : (
+              <span className="font-mono text-sm text-amber-600 dark:text-amber-500">
+                {top.version}
+              </span>
+            )}
             {manifest?.license && <Badge>{manifest.license}</Badge>}
             {manifest?.deprecated && <Badge tone="red">deprecated</Badge>}
           </div>
