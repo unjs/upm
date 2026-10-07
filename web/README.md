@@ -38,7 +38,8 @@ would write.
 
 Besides registry specs, the box takes a tarball url on an allowed host (`SOURCES` in
 `src/lib/route.ts`; only `pkg.pr.new` for now), with or without `https://`, as in
-`pkg.pr.new/nitro@be2edec`. The host's path names the package, the tarball's `package.json` gives
+`pkg.pr.new/nitro@be2edec`. With no ref, or `@latest`, a pkg.pr.new url means `@main`, the newest
+build of that branch. The host's path names the package, the tarball's `package.json` gives
 its version and dependencies, and the integrity is the hash of its bytes. Each host must allow the
 page with CORS. A tarball dependency from any other host fails the resolve.
 

@@ -16,20 +16,28 @@ export function specOf(pathname: string): string {
   return decodeURIComponent(pathname.slice(start)).replace(/\/$/, "");
 }
 
-/** A spec's path; a scope's `@` and `/` stay readable. An allowed url is its own path. */
+/**
+ * A spec's path; a scope's `@` and `/` stay readable. An allowed url is its own path, as typed
+ * but without `https:/`.
+ */
 export function pathOf(spec: string): string {
-  const source = sourceOf(spec);
-  const path = source ? source.url.slice("https:/".length) : NPM + encodeURIComponent(spec);
-  return path.replace(/%40/g, "@").replace(/%2F/gi, "/");
+  const path = sourceOf(spec) ? `/${spec.replace(/^https:\/\//i, "")}` : NPM + spec;
+  return encodeURIComponent(path).replace(/%40/g, "@").replace(/%2F/gi, "/");
 }
 
 /**
  * Hosts the app fetches a tarball from by its url, and how each one's path names the package.
  * Only these: the page reads the bytes, so the host has to allow it with CORS.
  */
-const SOURCES: Record<string, RegExp> = {
-  // `/<name>@<ref>` or `/<owner>/<repo>/<name>@<ref>`, where the name may have a scope.
-  "pkg.pr.new": /^\/(?:[^@/][^/]*\/[^/]+\/)?((?:@[^/]+\/)?[^/@]+)@[^/]+$/,
+const SOURCES: Record<string, (path: string) => { name: string; path: string } | undefined> = {
+  // `/<name>@<ref>` or `/<owner>/<repo>/<name>@<ref>`, where the name may have a scope. No ref,
+  // or `latest`, is the newest build of `main`.
+  "pkg.pr.new": (path) => {
+    const match = /^(\/(?:[^@/][^/]*\/[^/]+\/)?((?:@[^/]+\/)?[^/@]+))(?:@([^/]+))?$/.exec(path);
+    if (!match) return undefined;
+    const ref = !match[3] || match[3] === "latest" ? "main" : match[3];
+    return { name: match[2]!, path: `${match[1]}@${ref}` };
+  },
 };
 
 export const SOURCE_HOSTS = Object.keys(SOURCES);
@@ -52,8 +60,8 @@ export function sourceOf(spec: string): { name: string; url: string } | undefine
   if (!URL.canParse(text)) return undefined;
   const url = new URL(text);
   if (!isSource(url) || url.username || url.search || url.hash) return undefined;
-  const name = SOURCES[url.host]!.exec(decodeURIComponent(url.pathname))?.[1];
-  return name ? { name, url: url.href } : undefined;
+  const found = SOURCES[url.host]!(decodeURIComponent(url.pathname));
+  return found && { name: found.name, url: new URL(found.path, url).href };
 }
 
 /** A range of lines, first and last, from 1. */
