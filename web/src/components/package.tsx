@@ -2,6 +2,7 @@
 import { useMemo } from "react";
 import type { View } from "../app.tsx";
 import type { FullManifest } from "../lib/client.ts";
+import { allowedSource } from "../lib/route.ts";
 import { formatBytes } from "./code.tsx";
 import { Downloads } from "./downloads.tsx";
 import { tally } from "./files.tsx";
@@ -109,11 +110,13 @@ export function PackageMeta({ view, onInstall }: { view: View; onInstall: () => 
       <ul className="flex flex-wrap gap-x-4 text-xs">
         {manifest?.homepage && <Link icon="home" href={manifest.homepage} />}
         {repo && <RepoLink href={repo} />}
-        <Link
-          icon="npm"
-          label="npm"
-          href={`https://www.npmjs.com/package/${top.name}/v/${top.version}`}
-        />
+        {!allowedSource(top.resolved) && (
+          <Link
+            icon="npm"
+            label="npm"
+            href={`https://www.npmjs.com/package/${top.name}/v/${top.version}`}
+          />
+        )}
       </ul>
       <Tags words={facts} />
       <Tags words={totals} />

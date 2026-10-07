@@ -19,6 +19,7 @@ import {
   SUN,
   TOGGLE,
 } from "./hero.ts";
+import { allowedSource } from "../lib/route.ts";
 import { repoUrl } from "./package.tsx";
 import { suggest } from "./suggest.ts";
 import { Icon, type IconName } from "./ui.tsx";
@@ -96,11 +97,13 @@ export function TopBar(props: {
                 href={repo}
               />
             )}
-            <Link
-              icon="package"
-              title="npm"
-              href={`https://www.npmjs.com/package/${top.name}/v/${top.version}`}
-            />
+            {!allowedSource(top.resolved) && (
+              <Link
+                icon="package"
+                title="npm"
+                href={`https://www.npmjs.com/package/${top.name}/v/${top.version}`}
+              />
+            )}
           </span>
         )}
         <button title="Resolve (Enter)" aria-label="Explore" className={BUTTON}>

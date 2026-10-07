@@ -10,9 +10,43 @@ export function specOf(pathname: string): string {
   return decodeURIComponent(pathname.slice(NPM.length)).replace(/\/$/, "");
 }
 
-/** A spec's path; a scope's `@` and `/` stay readable. */
+/** A spec's path; a scope's `@` and `/` stay readable, and an allowed url drops its `https://`. */
 export function pathOf(spec: string): string {
+  if (sourceOf(spec)) spec = spec.replace(/^https:\/\//i, "");
   return NPM + encodeURIComponent(spec).replace(/%40/g, "@").replace(/%2F/gi, "/");
+}
+
+/**
+ * Hosts the app fetches a tarball from by its url, and how each one's path names the package.
+ * Only these: the page reads the bytes, so the host has to allow it with CORS.
+ */
+const SOURCES: Record<string, RegExp> = {
+  // `/<name>@<ref>` or `/<owner>/<repo>/<name>@<ref>`, where the name may have a scope.
+  "pkg.pr.new": /^\/(?:[^@/][^/]*\/[^/]+\/)?((?:@[^/]+\/)?[^/@]+)@[^/]+$/,
+};
+
+export const SOURCE_HOSTS = Object.keys(SOURCES);
+
+/** Whether `url` is an https tarball on an allowed host. */
+export function allowedSource(url: string): boolean {
+  return URL.canParse(url) && isSource(new URL(url));
+}
+
+function isSource(url: URL): boolean {
+  return url.protocol === "https:" && Object.hasOwn(SOURCES, url.host);
+}
+
+/**
+ * A tarball url on an allowed host and the package its path names, from `https://<host>/…` or
+ * just `<host>/…`. Undefined for any other spec.
+ */
+export function sourceOf(spec: string): { name: string; url: string } | undefined {
+  const text = /^https:\/\//i.test(spec) ? spec : `https://${spec}`;
+  if (!URL.canParse(text)) return undefined;
+  const url = new URL(text);
+  if (!isSource(url) || url.username || url.search || url.hash) return undefined;
+  const name = SOURCES[url.host]!.exec(decodeURIComponent(url.pathname))?.[1];
+  return name ? { name, url: url.href } : undefined;
 }
 
 /** A range of lines, first and last, from 1. */

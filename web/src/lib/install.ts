@@ -8,6 +8,7 @@ import type { TarEntry } from "upm/src/tar.ts";
 import { blobKey, indexKey } from "upm/src/store-backend.ts";
 import type { BackendIndex } from "upm/src/store-backend.ts";
 import { opfsBackend, persist } from "./opfs.ts";
+import { allowedSource } from "./route.ts";
 
 const PROJECT = "/project";
 const HOME = "/home/user";
@@ -139,15 +140,16 @@ export function installInTab(
     const quiet = (message: string, level: string) => {
       if (!message.startsWith("worker threads unavailable")) log(message, level);
     };
-    // upm takes no `fetch`: it calls the global one, so that is swapped for the run. Its registry
-    // threads have their own, but with the walk's lockfile they never start. One run at a time,
-    // so no other install swaps it meanwhile.
+    // upm takes no `fetch`: it calls the global one, so that is swapped for the run, for the
+    // registry and the allowed tarball hosts. Its registry threads have their own, but with the
+    // walk's lockfile they never start. One run at a time, so no other install swaps it meanwhile.
     const page = globalThis.fetch;
     const origin = new URL(registry).origin;
     if (logged) {
       globalThis.fetch = (input, init) => {
         const url = input instanceof Request ? input.url : String(input);
-        return (new URL(url, location.href).origin === origin ? logged : page)(input, init);
+        const own = new URL(url, location.href).origin === origin || allowedSource(url);
+        return (own ? logged : page)(input, init);
       };
     }
     let result: InstallResult;

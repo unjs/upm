@@ -12,9 +12,11 @@ import {
 } from "upm/resolver";
 import { createVerifier } from "upm/src/integrity.ts";
 import { integrityOf } from "upm/src/resolve.ts";
+import { createHasher, toBase64 } from "upm/src/runtime.ts";
 import { extractTar, type TarEntry } from "upm/src/tar.ts";
 import { storedFiles } from "./install.ts";
 import { cachedFetch } from "./opfs.ts";
+import { SOURCE_HOSTS, allowedSource, sourceOf } from "./route.ts";
 
 export const DEFAULT_REGISTRY = "https://registry.npmjs.org";
 
@@ -167,6 +169,8 @@ export function createClient(registryUrl: string, onChange: () => void): Client 
   const registry = createRegistry({ registry: registryUrl, fetch: cachedFetch(logged) });
   // Each pick's size as its manifest says, by tarball url: an estimate of the install to come.
   const sizes = new Map<string, Size>();
+  // Tarball urls read, for the run and its walk.
+  const sources = new Map<string, Promise<Tarball>>();
   const pick = registry.pick!;
   registry.pick = async (spec, pinned, options) => {
     const m = await pick(spec, pinned, options);
@@ -183,10 +187,17 @@ export function createClient(registryUrl: string, onChange: () => void): Client 
     fetch: logged,
 
     run(raw, after) {
-      const spec = parseSpec(raw.trim());
-      if (spec.type === "workspace" || spec.type === "tarball") {
-        throw new Error(`Only registry specs here, not ${spec.type}: ${raw}`);
+      // A bare url on an allowed host is named by its path, as `name@url` would name it.
+      const bare = sourceOf(raw.trim());
+      const spec = parseSpec(bare ? `${bare.name}@${bare.url}` : raw.trim());
+      if (
+        spec.type === "workspace" ||
+        (spec.type === "tarball" && !allowedSource(spec.fetchSpec))
+      ) {
+        const hosts = SOURCE_HOSTS.join(", ");
+        throw new Error(`Only registry specs here, or a tarball url on ${hosts}, not: ${raw}`);
       }
+      if (spec.type === "tarball") return runSource(spec.name, spec.fetchSpec, after);
       const range =
         spec.name === spec.fetchName ? spec.fetchSpec : `npm:${spec.fetchName}@${spec.fetchSpec}`;
       const dependencies = { [spec.name]: range };
@@ -202,18 +213,7 @@ export function createClient(registryUrl: string, onChange: () => void): Client 
           dependencies: m.dependencies ?? {},
         };
       })();
-      let resolved: Promise<Resolved> | undefined;
-      const resolve: Run["resolve"] = (onPick) =>
-        (resolved ??= (async () => {
-          const start = performance.now();
-          const resolution = await resolveTree(
-            { name: "project", version: "0.0.0", dependencies },
-            { registry, onPick: (pkg, from) => onPick(pkg, from, sizes.get(pkg.resolved)) },
-          );
-          const ms = performance.now() - start;
-          const lockfile = formatLockfile(toLockfile(resolution, registry.baseFor));
-          return { resolution, ms, lockfile };
-        })());
+      const resolve = resolver(dependencies);
       // What an earlier install left in the store answers both, with no request.
       const stored = top.then((pkg) => (pkg.integrity ? storedFiles(pkg.integrity) : undefined));
       // The record's name is what it installs as; an alias is asked for by its real name.
@@ -227,11 +227,12 @@ export function createClient(registryUrl: string, onChange: () => void): Client 
       // npm packs the README near the start, so it shows well before a large tarball is in.
       let found!: (entry: TarEntry | undefined) => void;
       const readme = new Promise<TarEntry | undefined>((resolve) => (found = resolve));
-      const tarball = top.then((pkg) =>
-        fetchTarball(pkg.resolved, pkg.integrity, stored, (entry) => {
-          if (/^readme\.(md|markdown)$/i.test(entry.path)) found(entry);
-        }),
-      );
+      const tarball = top.then((pkg) => {
+        if (!pkg.integrity) throw new Error(`${pkg.resolved} has no integrity`);
+        return fetchTarball(pkg.resolved, pkg.integrity, stored, (entry) => {
+          if (isReadme(entry)) found(entry);
+        });
+      });
       tarball.then(
         () => found(undefined),
         () => found(undefined),
@@ -240,6 +241,76 @@ export function createClient(registryUrl: string, onChange: () => void): Client 
       return { name: spec.name, dependencies, top, manifest, tarball, readme, resolve };
     },
   };
+
+  /**
+   * A run of a tarball url on an allowed host. Its bytes come first: the version, integrity and
+   * dependencies are all in them. Not looked for in the store, which is keyed by the integrity.
+   */
+  function runSource(name: string, url: string, after?: Promise<unknown>): Run {
+    const dependencies = { [name]: url };
+    let found!: (entry: TarEntry | undefined) => void;
+    const readme = new Promise<TarEntry | undefined>((resolve) => (found = resolve));
+    const tarball = (async () => {
+      await after;
+      return readSource(url, (entry) => {
+        if (isReadme(entry)) found(entry);
+      });
+    })();
+    tarball.then(
+      () => found(undefined),
+      () => found(undefined),
+    );
+    const manifest = tarball.then((t) => sourceManifest(url, t));
+    const top = manifest.then((m): Top => ({
+      name,
+      version: m.version,
+      resolved: url,
+      integrity: m.dist.integrity!,
+      dependencies: m.dependencies ?? {},
+    }));
+    for (const promise of [top, manifest, tarball]) promise.catch(() => {});
+    return { name, dependencies, top, manifest, tarball, readme, resolve: resolver(dependencies) };
+  }
+
+  /** Walks the whole tree from `dependencies`, on the first call; later calls get the same walk. */
+  function resolver(dependencies: Record<string, string>): Run["resolve"] {
+    let resolved: Promise<Resolved> | undefined;
+    return (onPick) =>
+      (resolved ??= (async () => {
+        const start = performance.now();
+        const resolution = await resolveTree(
+          { name: "project", version: "0.0.0", dependencies },
+          {
+            registry,
+            onPick: (pkg, from) => onPick(pkg, from, sizes.get(pkg.resolved)),
+            tarball: async (source) => sourceManifest(source, await readSource(source)),
+          },
+        );
+        const ms = performance.now() - start;
+        const lockfile = formatLockfile(toLockfile(resolution, registry.baseFor));
+        return { resolution, ms, lockfile };
+      })());
+  }
+
+  /** A tarball url's files, once per url: a run's own and the walk's share one download. */
+  function readSource(url: string, onEntry: (entry: TarEntry) => void = () => {}) {
+    let hit = sources.get(url);
+    if (!hit) {
+      hit = allowedSource(url)
+        ? fetchTarball(url, undefined, undefined, onEntry)
+        : Promise.reject(new Error(`Only tarballs on ${SOURCE_HOSTS.join(", ")} here, not ${url}`));
+      sources.set(url, hit);
+    }
+    return hit;
+  }
+
+  /** A tarball url's package.json, as the resolver reads a tarball dependency. */
+  function sourceManifest(url: string, tarball: Tarball): FullManifest {
+    const m = manifestOf(tarball.files);
+    if (!m) throw new Error(`${url} has no package.json`);
+    if (typeof m.version !== "string") throw new Error(`${url} has no version`);
+    return { ...m, dist: { tarball: url, integrity: tarball.integrity } };
+  }
 
   /**
    * The package's own package.json, as the panel shows it. What only the registry adds is not
@@ -265,17 +336,17 @@ export function createClient(registryUrl: string, onChange: () => void): Client 
     }
   }
 
+  /** A tarball's files, checked against `integrity`, or hashed to learn it when there is none. */
   async function fetchTarball(
     url: string,
-    integrity: string,
-    fromStore: Promise<TarEntry[] | undefined>,
+    integrity: string | undefined,
+    fromStore: Promise<TarEntry[] | undefined> | undefined,
     onEntry: (entry: TarEntry) => void,
   ): Promise<Tarball> {
-    if (!integrity) throw new Error(`${url} has no integrity`);
     const start = performance.now();
     // The store is keyed by integrity and every file by its own hash: nothing to check again.
     const stored = await fromStore;
-    if (stored) {
+    if (stored && integrity) {
       stored.sort((a, b) => a.path.localeCompare(b.path));
       return {
         url,
@@ -289,7 +360,7 @@ export function createClient(registryUrl: string, onChange: () => void): Client 
     const response = await logged(url);
     if (!response.ok || !response.body)
       throw new Error(`Registry returned ${response.status} for ${url}`);
-    const verifier = createVerifier(integrity);
+    const verifier = integrity ? createVerifier(integrity) : createHasher("sha512");
     const reader = response.body.getReader();
     let bytes = 0;
     const read = async () => {
@@ -309,8 +380,18 @@ export function createClient(registryUrl: string, onChange: () => void): Client 
     }
     // The archive can end before the bytes do; the integrity covers them all.
     while (await read());
-    await verifier.verify();
+    if ("verify" in verifier) await verifier.verify();
+    else integrity = `sha512-${toBase64(await verifier.digest())}`;
     files.sort((a, b) => a.path.localeCompare(b.path));
-    return { url, integrity, bytes, stored: false, files, ms: performance.now() - start };
+    return {
+      url,
+      integrity: integrity!,
+      bytes,
+      stored: false,
+      files,
+      ms: performance.now() - start,
+    };
   }
 }
+
+const isReadme = (entry: TarEntry) => /^readme\.(md|markdown)$/i.test(entry.path);
