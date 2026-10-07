@@ -1,19 +1,26 @@
-// Routes: `/` is the landing, `/docs` the README, `/npm/<spec>` the app for a spec, where
-// `?file=<tree path>&line=<n>[-<m>]` opens a file at its lines.
-// Any other `/<spec>` redirects to `/npm/<spec>`.
+// Routes: `/` is the landing, `/docs` the README, `/npm/<spec>` the app for a spec and
+// `/<host>/<path>` for a tarball url on an allowed host, where `?file=<tree path>&line=<n>[-<m>]`
+// opens a file at its lines. Any other `/<spec>` redirects to `/npm/<spec>`.
 
 export const NPM = "/npm/";
 export const DOCS = /^\/docs\/?$/;
 
-/** The spec in a `/npm/<spec>` path. */
-export function specOf(pathname: string): string {
-  return decodeURIComponent(pathname.slice(NPM.length)).replace(/\/$/, "");
+/** Whether `pathname` is the app's: a `/npm/<spec>` or an allowed host's url without `https:/`. */
+export function isApp(pathname: string): boolean {
+  return pathname.startsWith(NPM) || Object.hasOwn(SOURCES, pathname.split("/")[1]!);
 }
 
-/** A spec's path; a scope's `@` and `/` stay readable, and an allowed url drops its `https://`. */
+/** The spec in an app path. */
+export function specOf(pathname: string): string {
+  const start = pathname.startsWith(NPM) ? NPM.length : 1;
+  return decodeURIComponent(pathname.slice(start)).replace(/\/$/, "");
+}
+
+/** A spec's path; a scope's `@` and `/` stay readable. An allowed url is its own path. */
 export function pathOf(spec: string): string {
-  if (sourceOf(spec)) spec = spec.replace(/^https:\/\//i, "");
-  return NPM + encodeURIComponent(spec).replace(/%40/g, "@").replace(/%2F/gi, "/");
+  const source = sourceOf(spec);
+  const path = source ? source.url.slice("https:/".length) : NPM + encodeURIComponent(spec);
+  return path.replace(/%40/g, "@").replace(/%2F/gi, "/");
 }
 
 /**

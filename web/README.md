@@ -12,7 +12,8 @@ upm's site, built from `../src` (no build of upm needed). Three routes, one `ind
   on one and small on the other. `src/router.ts` moves between the two in place, in a view
   transition, so the logo and the box move into the app's top bar and back (the
   logo link, or the browser's back and forward). The app's run waits for the animation.
-- `/npm/<spec>` is the app for a spec, e.g. `/npm/@nuxt/kit` or `/npm/vue@^3`. Any other
+- `/npm/<spec>` is the app for a spec, e.g. `/npm/@nuxt/kit` or `/npm/vue@^3`. A tarball url on
+  an allowed host is its own path, without `https:/`: `/pkg.pr.new/nitro@be2edec`. Any other
   `/<spec>` path and old `?q=<spec>` links redirect there.
 
 `src/` holds the entries and the app's state (`app.tsx`), `src/components/` the UI, and

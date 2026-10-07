@@ -1,6 +1,6 @@
 // Moves between the landing, the app and the docs in place. All open with the logo, so a view
 // transition morphs one into the other, both ways.
-import { DOCS, NPM } from "./lib/route.ts";
+import { DOCS, isApp } from "./lib/route.ts";
 
 interface Page {
   /** Returns how to take the page down, if it needs to. */
@@ -13,7 +13,7 @@ let unmount: (() => void) | void;
 let latest = 0;
 
 function load(path: string): Promise<Page> {
-  if (path.startsWith(NPM)) return import("./play.tsx");
+  if (isApp(path)) return import("./play.tsx");
   if (DOCS.test(path)) return import("./docs.ts");
   return import("./landing.ts");
 }
@@ -33,7 +33,7 @@ export async function route(morph = false) {
   };
   if (!morph || !document.startViewTransition) return show();
   // Which size the logo ends at, for src/style.css. Only the landing shows it large.
-  document.documentElement.dataset.to = path.startsWith(NPM) || DOCS.test(path) ? "small" : "large";
+  document.documentElement.dataset.to = isApp(path) || DOCS.test(path) ? "small" : "large";
   // The app's run starts once the animation ends; its work on this thread would drop frames.
   const transition = document.startViewTransition(() => show(transition.finished.catch(() => {})));
 }
