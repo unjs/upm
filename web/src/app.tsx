@@ -29,7 +29,17 @@ import {
   type Target,
 } from "./lib/install.ts";
 import { Panel, type PanelTab, type Problem } from "./components/panel.tsx";
-import { EXAMPLES, normalSpec, openOf, pathOf, searchOf, specOf, type Lines } from "./lib/route.ts";
+import {
+  ARCHES,
+  EXAMPLES,
+  normalSpec,
+  openOf,
+  pathOf,
+  searchOf,
+  specOf,
+  targetOf,
+  type Lines,
+} from "./lib/route.ts";
 import { StatusBar } from "./components/statusbar.tsx";
 import { Sidebar } from "./components/sidebar.tsx";
 import { TopBar } from "./components/topbar.tsx";
@@ -38,7 +48,7 @@ import { TopBar } from "./components/topbar.tsx";
 const insecure = fillCrypto();
 
 /** What ./lib/node.ts's shim says it is unless told otherwise: the builds a browser can run. */
-export const WASM: Target = { arch: "wasm32", libc: "glibc" };
+const WASM = targetOf(ARCHES[0]!);
 
 /** One query as it lands: each part is undefined while pending, an Error when it failed. */
 export interface View {
@@ -71,9 +81,6 @@ export interface View {
 
 export function App({ ready }: { ready?: Promise<unknown> }) {
   const [registryUrl, setRegistryUrl] = useState(DEFAULT_REGISTRY);
-  // A ref too: a change starts its run in the same handler, before the state lands.
-  const [target, setTarget] = useState(WASM);
-  const targetRef = useRef(target);
   const [spec, setSpec] = useState(() => specOf(location.pathname));
   // A shared link's run starts after the first draw (and the landing's transition): not the welcome.
   const [shared] = useState(() => !!spec.trim());
@@ -82,6 +89,9 @@ export function App({ ready }: { ready?: Promise<unknown> }) {
   const [selected, setSelected] = useState("");
   // A shared link's file and lines, opened once its run has them.
   const [linked] = useState(() => openOf(location.search));
+  // A ref too: a change starts its run in the same handler, before the state lands.
+  const [target, setTarget] = useState(linked.target);
+  const targetRef = useRef(target);
   const [lines, setLines] = useState(linked.lines);
   // Whether the open file goes in the url: one picked, not the README a run opens on.
   const [pinned, setPinned] = useState(!!linked.file);
@@ -328,9 +338,9 @@ export function App({ ready }: { ready?: Promise<unknown> }) {
     history.replaceState(
       null,
       "",
-      pathOf(shownSpec) + searchOf(pinned ? selected : undefined, lines),
+      pathOf(shownSpec) + searchOf(pinned ? selected : undefined, lines, target),
     );
-  }, [shownSpec, pinned, selected, lines]);
+  }, [shownSpec, pinned, selected, lines, target]);
 
   const requests = client?.requests ?? [];
   const picked = [...picks.current.values()].reduce((sum, list) => sum + list.length, 0);

@@ -6,6 +6,7 @@ import type { Resolution } from "upm/resolver";
 import type { View } from "../app.tsx";
 import { DEFAULT_REGISTRY, type RequestEntry, type Resolved } from "../lib/client.ts";
 import type { Target } from "../lib/install.ts";
+import { ARCHES, archOf, targetOf } from "../lib/route.ts";
 import { formatBytes } from "./code.tsx";
 import { formatMs, type PanelTab, type Problem } from "./panel.tsx";
 import { Badge, Icon, Pulse } from "./ui.tsx";
@@ -138,9 +139,6 @@ export function StatusBar(props: {
   );
 }
 
-/** wasm32 first, the default and the builds a browser can run; then the Linux arches Node runs on. */
-const ARCHES = ["wasm32", "x64", "arm64", "arm", "ia32", "ppc64", "s390x", "riscv64", "loong64"];
-
 /** The arch and libc the install runs as, to see what it costs there. */
 function Arch({ target, setTarget }: { target: Target; setTarget: (target: Target) => void }) {
   return (
@@ -153,21 +151,13 @@ function Arch({ target, setTarget }: { target: Target; setTarget: (target: Targe
       <Icon name="cpu" className="size-3" />
       <select
         aria-label="Install arch"
-        value={`${target.arch}/${target.libc}`}
-        onChange={(e) => {
-          const [arch, libc] = e.currentTarget.value.split("/");
-          setTarget({ arch: arch!, libc: libc as Target["libc"] });
-        }}
+        value={archOf(target)}
+        onChange={(e) => setTarget(targetOf(e.currentTarget.value))}
         className="cursor-pointer appearance-none bg-transparent outline-none"
       >
         {ARCHES.map((arch) => (
-          <option key={arch} value={`${arch}/glibc`}>
-            {arch}
-          </option>
-        ))}
-        {ARCHES.slice(1).map((arch) => (
-          <option key={`${arch}-musl`} value={`${arch}/musl`}>
-            {arch} musl
+          <option key={arch} value={arch}>
+            {arch.replace("-", " ")}
           </option>
         ))}
       </select>

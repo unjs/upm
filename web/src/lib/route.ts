@@ -1,6 +1,9 @@
 // Routes: `/` is the landing, `/docs` the README, `/npm/<spec>` the app for a spec and
 // `/<host>/<path>` for a tarball url on an allowed host, where `?file=<tree path>&line=<n>[-<m>]`
-// opens a file at its lines. Any other `/<spec>` redirects to `/npm/<spec>`.
+// opens a file at its lines and `?arch=<arch>` installs as that arch. Any other `/<spec>`
+// redirects to `/npm/<spec>`.
+
+import type { Target } from "./install.ts";
 
 export const NPM = "/npm/";
 export const DOCS = /^\/docs\/?$/;
@@ -87,23 +90,45 @@ export function sourceOf(spec: string): Source | undefined {
 /** A range of lines, first and last, from 1. */
 export type Lines = [from: number, to: number];
 
-/** The open file and its picked lines, as a `/npm/<spec>` path's query keeps them. */
-export function openOf(search: string): { file?: string; lines?: Lines } {
-  const query = new URLSearchParams(search);
-  const file = query.get("file") || undefined;
-  const match = /^(\d+)(?:-(\d+))?$/.exec(query.get("line") ?? "");
-  if (!file || !match) return { file };
-  const from = Number(match[1]);
-  const to = Number(match[2] ?? from);
-  return from > 0 ? { file, lines: [Math.min(from, to), Math.max(from, to)] } : { file };
+/**
+ * The arches the install can run as, as `?arch=` spells them: wasm32 first, the default and the
+ * builds a browser can run, then the Linux builds sharp, rolldown and oxc-parser all publish.
+ */
+export const ARCHES = ["wasm32", "x64", "x64-musl", "arm64", "arm64-musl", "arm", "ppc64", "s390x"];
+
+export function targetOf(arch: string): Target {
+  const [cpu, libc] = arch.split("-");
+  return { arch: cpu!, libc: libc === "musl" ? "musl" : "glibc" };
 }
 
-/** The query for an open file; its path's `/` and `@` stay readable. */
-export function searchOf(file: string | undefined, lines?: Lines): string {
-  if (!file) return "";
-  const path = encodeURIComponent(file).replace(/%40/g, "@").replace(/%2F/gi, "/");
-  const line = !lines ? "" : lines[0] === lines[1] ? lines[0] : `${lines[0]}-${lines[1]}`;
-  return `?file=${path}${line && `&line=${line}`}`;
+export function archOf(target: Target): string {
+  return target.libc === "musl" ? `${target.arch}-musl` : target.arch;
+}
+
+/** The open file, its picked lines and the install's arch, as a `/npm/<spec>` path's query keeps them. */
+export function openOf(search: string): { file?: string; lines?: Lines; target: Target } {
+  const query = new URLSearchParams(search);
+  const arch = query.get("arch") ?? "";
+  const target = targetOf(ARCHES.includes(arch) ? arch : ARCHES[0]!);
+  const file = query.get("file") || undefined;
+  const match = /^(\d+)(?:-(\d+))?$/.exec(query.get("line") ?? "");
+  if (!file || !match) return { file, target };
+  const from = Number(match[1]);
+  const to = Number(match[2] ?? from);
+  const lines: Lines = [Math.min(from, to), Math.max(from, to)];
+  return from > 0 ? { file, lines, target } : { file, target };
+}
+
+/** The query for an open file and an arch other than wasm32; the path's `/` and `@` stay readable. */
+export function searchOf(file: string | undefined, lines?: Lines, target?: Target): string {
+  const parts: string[] = [];
+  if (file) {
+    parts.push(`file=${encodeURIComponent(file).replace(/%40/g, "@").replace(/%2F/gi, "/")}`);
+    if (lines) parts.push(`line=${lines[0] === lines[1] ? lines[0] : `${lines[0]}-${lines[1]}`}`);
+  }
+  const arch = target && archOf(target);
+  if (arch && arch !== ARCHES[0]) parts.push(`arch=${arch}`);
+  return parts.length ? `?${parts.join("&")}` : "";
 }
 
 /** Specs worth a try, offered on both pages: build and UI, then full-stack frameworks, then servers, then upm itself. */

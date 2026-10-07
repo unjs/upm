@@ -61,8 +61,9 @@ Once that resolve is in, upm's own `install` runs in the tab: `src/lib/node.ts` 
 `worker_threads` every pool runs on the one thread. The Explorer then shows the project
 (`node_modules/.upm`, the links, `upm.lock`) and the content store. The platform is Linux wasm32
 with glibc, so of the optional platform builds the tab gets the wasm ones, the only ones a
-browser can run. The status bar's arch picker installs as another Linux arch and libc instead,
-to show what an install costs there; the OS stays Linux, since upm reads Windows and macOS
+browser can run. The status bar's arch picker (`?arch=`) installs as another Linux arch and libc
+instead, those that sharp, rolldown and oxc-parser all publish, to show what an install costs
+there; the OS stays Linux, since upm reads Windows and macOS
 filesystem rules from it as it loads. upm calls the global `fetch`, so while it runs, the tab swaps in one that sends
 the registry's requests (the install's downloads) through the Requests panel too.
 
