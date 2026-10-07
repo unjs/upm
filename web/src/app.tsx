@@ -26,6 +26,7 @@ import {
   manifestOf,
   type Installed,
   type InstalledFile,
+  type Target,
 } from "./lib/install.ts";
 import { Panel, type PanelTab, type Problem } from "./components/panel.tsx";
 import { EXAMPLES, normalSpec, openOf, pathOf, searchOf, specOf, type Lines } from "./lib/route.ts";
@@ -36,8 +37,8 @@ import { TopBar } from "./components/topbar.tsx";
 // Off https and localhost, WebCrypto is missing: fill it in before anything hashes.
 const insecure = fillCrypto();
 
-/** The platform ./lib/node.ts's shim says it is: the install skips other platforms' builds. */
-const PLATFORM = { os: "linux", cpu: "wasm32", libc: "glibc" };
+/** What ./lib/node.ts's shim says it is unless told otherwise: the builds a browser can run. */
+export const WASM: Target = { arch: "wasm32", libc: "glibc" };
 
 /** One query as it lands: each part is undefined while pending, an Error when it failed. */
 export interface View {
@@ -56,6 +57,8 @@ export interface View {
   resolved?: Resolved | Error;
   /** What the resolve installs: set once the run starts. */
   dependencies?: Record<string, string>;
+  /** The arch and libc the install runs as: it skips other platforms' builds. */
+  target: Target;
   /** upm's install of it in this tab: true while it runs. */
   installed?: Installed | Error | true;
   sbomTarget?: Platform;
@@ -68,6 +71,9 @@ export interface View {
 
 export function App({ ready }: { ready?: Promise<unknown> }) {
   const [registryUrl, setRegistryUrl] = useState(DEFAULT_REGISTRY);
+  // A ref too: a change starts its run in the same handler, before the state lands.
+  const [target, setTarget] = useState(WASM);
+  const targetRef = useRef(target);
   const [spec, setSpec] = useState(() => specOf(location.pathname));
   // A shared link's run starts after the first draw (and the landing's transition): not the welcome.
   const [shared] = useState(() => !!spec.trim());
@@ -142,6 +148,7 @@ export function App({ ready }: { ready?: Promise<unknown> }) {
         name: query.name,
         started: performance.now(),
         dependencies: query.dependencies,
+        target: targetRef.current,
       });
       const first = treePath(query.name, "package.json");
       const root = treePath(query.name);
@@ -179,6 +186,7 @@ export function App({ ready }: { ready?: Promise<unknown> }) {
         },
         (error: Error) => update({ tarball: error }),
       );
+      const runTarget = targetRef.current;
       let started = false;
       startInstall.current = () => {
         if (run.current !== id || started) return;
@@ -197,7 +205,16 @@ export function App({ ready }: { ready?: Promise<unknown> }) {
         resolved.then(
           (done) =>
             run.current === id &&
-            install(id, query.name, query.dependencies, registry, next.fetch, done, file),
+            install(
+              id,
+              query.name,
+              query.dependencies,
+              registry,
+              next.fetch,
+              done,
+              runTarget,
+              file,
+            ),
           () => {},
         );
       };
@@ -214,7 +231,14 @@ export function App({ ready }: { ready?: Promise<unknown> }) {
         );
       }
     } catch (error) {
-      setView({ id, spec: raw, name: raw, started: performance.now(), top: error as Error });
+      setView({
+        id,
+        spec: raw,
+        name: raw,
+        started: performance.now(),
+        target: targetRef.current,
+        top: error as Error,
+      });
     }
   }
 
@@ -226,6 +250,7 @@ export function App({ ready }: { ready?: Promise<unknown> }) {
     registry: string,
     logged: typeof fetch,
     resolved: Resolved,
+    target: Target,
     file?: string,
   ) {
     const warnings: string[] = [];
@@ -242,6 +267,7 @@ export function App({ ready }: { ready?: Promise<unknown> }) {
       },
       resolved.lockfile,
       logged,
+      target,
     )
       .then(
         (installed) => {
@@ -333,7 +359,9 @@ export function App({ ready }: { ready?: Promise<unknown> }) {
   // Until the install lands, what the registry says it will write here. A libc read that lands
   // later drops a pick, so it is summed again each draw.
   const estimate =
-    installed || view?.installed instanceof Error ? undefined : estimateOf(sized.current);
+    installed || view?.installed instanceof Error
+      ? undefined
+      : estimateOf(sized.current, view?.target ?? WASM);
   // upm's own counts, as the CLI's bar draws them, on the install's clock. Pending while there
   // is nothing to count yet: the resolve, and the install's first downloads.
   const busy =
@@ -368,6 +396,12 @@ export function App({ ready }: { ready?: Promise<unknown> }) {
     if (!view) return;
     submit(view.spec, registryUrl, undefined, true, pinned ? selected : undefined);
     setSidebar(true);
+  };
+  /** A run that installed, or was asked to, installs again as the new target. */
+  const chooseTarget = (next: Target) => {
+    targetRef.current = next;
+    setTarget(next);
+    if (view?.requested) reinstall();
   };
   const chooseSbomTarget = (target?: Platform) => {
     const resolved = view?.resolved;
@@ -541,6 +575,8 @@ export function App({ ready }: { ready?: Promise<unknown> }) {
         panel={panel}
         togglePanel={togglePanel}
         opfs={opfs}
+        target={target}
+        setTarget={chooseTarget}
         registry={registryUrl}
         setRegistry={(url) => {
           setRegistryUrl(url);
@@ -564,10 +600,11 @@ function progressOf(installing: boolean): number | "pending" {
 }
 
 /** What the picks that run here unpack to, as the registry says. */
-function estimateOf(sized: { pkg: ResolvedPackage; size: Size }[]): Size {
+function estimateOf(sized: { pkg: ResolvedPackage; size: Size }[], target: Target): Size {
+  const platform = { os: "linux", cpu: target.arch, libc: target.libc };
   const sum = { files: 0, bytes: 0 };
   for (const { pkg, size } of sized) {
-    if (!runsOn(pkg, PLATFORM)) continue;
+    if (!runsOn(pkg, platform)) continue;
     sum.files += size.files;
     sum.bytes += size.bytes;
   }

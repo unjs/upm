@@ -1,10 +1,11 @@
 // The status bar. Left: the panel switches, problems, requests then storage, and a deprecation. Right:
-// the run's state, what it found, the package then its tree, then the download total and the
-// registry.
+// the run's state, what it found, the package then its tree, then the download total, the
+// install's arch and the registry.
 import { useMemo, useState, type ReactNode } from "react";
 import type { Resolution } from "upm/resolver";
 import type { View } from "../app.tsx";
 import { DEFAULT_REGISTRY, type RequestEntry, type Resolved } from "../lib/client.ts";
+import type { Target } from "../lib/install.ts";
 import { formatBytes } from "./code.tsx";
 import { formatMs, type PanelTab, type Problem } from "./panel.tsx";
 import { Badge, Icon, Pulse } from "./ui.tsx";
@@ -17,6 +18,8 @@ export function StatusBar(props: {
   panel: PanelTab | undefined;
   togglePanel: (tab: PanelTab) => void;
   opfs: number | undefined;
+  target: Target;
+  setTarget: (target: Target) => void;
   registry: string;
   setRegistry: (url: string) => void;
 }) {
@@ -127,10 +130,48 @@ export function StatusBar(props: {
               {formatBytes(bytes)}
             </Item>
           )}
+          <Arch target={props.target} setTarget={props.setTarget} />
           <Registry url={props.registry} setUrl={props.setRegistry} />
         </div>
       </div>
     </footer>
+  );
+}
+
+/** wasm32 first, the default and the builds a browser can run; then the Linux arches Node runs on. */
+const ARCHES = ["wasm32", "x64", "arm64", "arm", "ia32", "ppc64", "s390x", "riscv64", "loong64"];
+
+/** The arch and libc the install runs as, to see what it costs there. */
+function Arch({ target, setTarget }: { target: Target; setTarget: (target: Target) => void }) {
+  return (
+    <label
+      title={
+        "Install as Linux on this arch and libc, to see what an install costs there.\nwasm32 gets the builds this tab can run. Changing it installs again."
+      }
+      className="flex h-6 items-center gap-1 px-2 hover:bg-zinc-200/70 dark:hover:bg-zinc-800"
+    >
+      <Icon name="cpu" className="size-3" />
+      <select
+        aria-label="Install arch"
+        value={`${target.arch}/${target.libc}`}
+        onChange={(e) => {
+          const [arch, libc] = e.currentTarget.value.split("/");
+          setTarget({ arch: arch!, libc: libc as Target["libc"] });
+        }}
+        className="cursor-pointer appearance-none bg-transparent outline-none"
+      >
+        {ARCHES.map((arch) => (
+          <option key={arch} value={`${arch}/glibc`}>
+            {arch}
+          </option>
+        ))}
+        {ARCHES.slice(1).map((arch) => (
+          <option key={`${arch}-musl`} value={`${arch}/musl`}>
+            {arch} musl
+          </option>
+        ))}
+      </select>
+    </label>
   );
 }
 

@@ -11,6 +11,12 @@ import { opfsBackend, persist } from "./opfs.ts";
 import { allowedSource } from "./route.ts";
 
 const PROJECT = "/project";
+
+/** The Linux the install says it runs on: it installs that arch's and libc's optional builds. */
+export interface Target {
+  arch: string;
+  libc: "glibc" | "musl";
+}
 const HOME = "/home/user";
 
 /** A file of the installed tree, or a symlink: then `data` is its target. */
@@ -32,10 +38,10 @@ export interface Installed {
 let running: Promise<unknown> = Promise.resolve();
 let shim: typeof import("./node.ts") | undefined;
 
-/** The shim in place as this tab's `process`, loaded on first use. */
-async function ready(): Promise<typeof import("./node.ts")> {
+/** The shim in place as this tab's `process`, loaded on first use; `target` retargets it. */
+async function ready(target?: Target): Promise<typeof import("./node.ts")> {
   shim ??= await import("./node.ts");
-  shim.installShim({ cwd: PROJECT, home: HOME });
+  shim.installShim({ cwd: PROJECT, home: HOME, ...target });
   if (typeof globalThis.process?.getBuiltinModule !== "function") {
     throw new Error("This page has a `process` of its own, so upm's cannot be put in place");
   }
@@ -122,9 +128,10 @@ export function installInTab(
   log: (message: string, level: string) => void,
   lockfile?: string,
   logged?: typeof fetch,
+  target?: Target,
 ): Promise<Installed> {
   const run = running.then(async () => {
-    const node = await ready();
+    const node = await ready(target);
     const storeBackend = await opfsBackend();
     if (!storeBackend?.set) log("the store is in memory only: OPFS cannot be written here", "warn");
     node.fs.rmSync(PROJECT, { recursive: true, force: true });
