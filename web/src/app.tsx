@@ -28,7 +28,7 @@ import {
   type InstalledFile,
 } from "./lib/install.ts";
 import { Panel, type PanelTab, type Problem } from "./components/panel.tsx";
-import { EXAMPLES, openOf, pathOf, searchOf, specOf, type Lines } from "./lib/route.ts";
+import { EXAMPLES, normalSpec, openOf, pathOf, searchOf, specOf, type Lines } from "./lib/route.ts";
 import { StatusBar } from "./components/statusbar.tsx";
 import { Sidebar } from "./components/sidebar.tsx";
 import { TopBar } from "./components/topbar.tsx";
@@ -114,6 +114,8 @@ export function App({ ready }: { ready?: Promise<unknown> }) {
     file?: string,
   ) {
     if (!raw.trim()) return;
+    // A url on an allowed host shows in one form, however it was pasted.
+    raw = normalSpec(raw.trim());
     setSpec(raw);
     history.replaceState(null, "", pathOf(raw.trim()));
     // The README opens as soon as the tarball's stream yields it: load its renderer alongside.

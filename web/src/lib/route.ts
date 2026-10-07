@@ -16,29 +16,48 @@ export function specOf(pathname: string): string {
   return decodeURIComponent(pathname.slice(start)).replace(/\/$/, "");
 }
 
-/**
- * A spec's path; a scope's `@` and `/` stay readable. An allowed url is its own path, as typed
- * but without `https:/`.
- */
+/** A spec's path; a scope's `@` and `/` stay readable. An allowed url is its own path. */
 export function pathOf(spec: string): string {
-  const path = sourceOf(spec) ? `/${spec.replace(/^https:\/\//i, "")}` : NPM + spec;
+  const source = sourceOf(spec);
+  const path = source ? `/${source.spec}` : NPM + spec;
   return encodeURIComponent(path).replace(/%40/g, "@").replace(/%2F/gi, "/");
+}
+
+/** An allowed url in the form the box and the path show it; any other spec as it is. */
+export function normalSpec(spec: string): string {
+  return sourceOf(spec)?.spec ?? spec;
 }
 
 /**
  * Hosts the app fetches a tarball from by its url, and how each one's path names the package.
  * Only these: the page reads the bytes, so the host has to allow it with CORS.
  */
-const SOURCES: Record<string, (path: string) => { name: string; path: string } | undefined> = {
-  // `/<name>@<ref>` or `/<owner>/<repo>/<name>@<ref>`, where the name may have a scope. No ref,
-  // or `latest`, is the newest build of `main`.
+const SOURCES: Record<string, (path: string) => Source | undefined> = {
+  // `/<name>@<ref>`, `/<owner>/<repo>/<name>@<ref>`, where the name may have a scope, or
+  // `/<owner>/<repo>@<ref>` for the package named as the repo. `/~/<owner>/<repo>` is the repo's
+  // page on the site, read as the last. No ref, or `latest`, is the newest build of `main`.
   "pkg.pr.new": (path) => {
-    const match = /^(\/(?:[^@/][^/]*\/[^/]+\/)?((?:@[^/]+\/)?[^/@]+))(?:@([^/]+))?$/.exec(path);
+    const match =
+      /^\/(?:~\/)?(?:([^@/~][^@/]*\/([^@/]+))(\/(?:@[^@/]+\/)?[^@/]+)?|((?:@[^@/]+\/)?[^@/]+))(?:@([^/]+))?\/?$/.exec(
+        path,
+      );
     if (!match) return undefined;
-    const ref = !match[3] || match[3] === "latest" ? "main" : match[3];
-    return { name: match[2]!, path: `${match[1]}@${ref}` };
+    const [, repo, repoName, inRepo, name, ref] = match;
+    const at = `/${repo ? repo + (inRepo ?? "") : name}`;
+    return {
+      name: inRepo?.slice(1) ?? repoName ?? name!,
+      spec: ref ? `${at}@${ref}` : at,
+      url: `${at}@${!ref || ref === "latest" ? "main" : ref}`,
+    };
   },
 };
+
+/** A url's package, and its path in the form shown (`spec`) and fetched (`url`). */
+interface Source {
+  name: string;
+  spec: string;
+  url: string;
+}
 
 export const SOURCE_HOSTS = Object.keys(SOURCES);
 
@@ -53,15 +72,16 @@ function isSource(url: URL): boolean {
 
 /**
  * A tarball url on an allowed host and the package its path names, from `https://<host>/…` or
- * just `<host>/…`. Undefined for any other spec.
+ * just `<host>/…`, with the `<host>/…` form to show. Undefined for any other spec.
  */
-export function sourceOf(spec: string): { name: string; url: string } | undefined {
+export function sourceOf(spec: string): Source | undefined {
   const text = /^https:\/\//i.test(spec) ? spec : `https://${spec}`;
   if (!URL.canParse(text)) return undefined;
   const url = new URL(text);
   if (!isSource(url) || url.username || url.search || url.hash) return undefined;
   const found = SOURCES[url.host]!(decodeURIComponent(url.pathname));
-  return found && { name: found.name, url: new URL(found.path, url).href };
+  if (!found) return undefined;
+  return { name: found.name, spec: url.host + found.spec, url: new URL(found.url, url).href };
 }
 
 /** A range of lines, first and last, from 1. */
