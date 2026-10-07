@@ -1,9 +1,9 @@
 // Routes: `/` is the landing, `/docs` the README, `/npm/<spec>` the app for a spec and
 // `/<host>/<path>` for a tarball url on an allowed host, where `?file=<tree path>&line=<n>[-<m>]`
-// opens a file at its lines and `?arch=<arch>` installs as that arch. Any other `/<spec>`
+// opens a file at its lines and `?platform=<name>` installs as that platform. Any other `/<spec>`
 // redirects to `/npm/<spec>`.
 
-import type { Target } from "./install.ts";
+import type { Platform } from "upm/src/resolve.ts";
 
 export const NPM = "/npm/";
 export const DOCS = /^\/docs\/?$/;
@@ -91,43 +91,53 @@ export function sourceOf(spec: string): Source | undefined {
 export type Lines = [from: number, to: number];
 
 /**
- * The arches the install can run as, as `?arch=` spells them: wasm32 first, the default and the
- * builds a browser can run, then the Linux builds sharp, rolldown and oxc-parser all publish.
+ * The platforms the install can run as, by their `?platform=` name. The browser first: the
+ * default, Linux wasm32, whose optional builds are the ones this tab can run.
  */
-export const ARCHES = ["wasm32", "x64", "x64-musl", "arm64", "arm64-musl", "arm", "ppc64", "s390x"];
+export const PLATFORMS: { name: string; label: string; target: Platform }[] = [
+  { name: "browser", label: "Browser", target: { os: "linux", cpu: "wasm32", libc: "glibc" } },
+  { name: "darwin-arm64", label: "macOS arm64", target: { os: "darwin", cpu: "arm64" } },
+  { name: "linux-x64", label: "Linux x64", target: { os: "linux", cpu: "x64", libc: "glibc" } },
+  {
+    name: "linux-arm64",
+    label: "Linux arm64",
+    target: { os: "linux", cpu: "arm64", libc: "glibc" },
+  },
+  {
+    name: "linux-x64-musl",
+    label: "Linux x64 musl",
+    target: { os: "linux", cpu: "x64", libc: "musl" },
+  },
+  { name: "win32-x64", label: "Windows x64", target: { os: "win32", cpu: "x64" } },
+];
 
-export function targetOf(arch: string): Target {
-  const [cpu, libc] = arch.split("-");
-  return { arch: cpu!, libc: libc === "musl" ? "musl" : "glibc" };
+/** A preset's platform; the browser's for a name not on the list. */
+export function targetOf(name: string): Platform {
+  return (PLATFORMS.find((p) => p.name === name) ?? PLATFORMS[0]!).target;
 }
 
-export function archOf(target: Target): string {
-  return target.libc === "musl" ? `${target.arch}-musl` : target.arch;
-}
-
-/** The open file, its picked lines and the install's arch, as a `/npm/<spec>` path's query keeps them. */
-export function openOf(search: string): { file?: string; lines?: Lines; target: Target } {
+/** The open file, its picked lines and the install's platform, as a `/npm/<spec>` path's query keeps them. */
+export function openOf(search: string): { file?: string; lines?: Lines; platform: string } {
   const query = new URLSearchParams(search);
-  const arch = query.get("arch") ?? "";
-  const target = targetOf(ARCHES.includes(arch) ? arch : ARCHES[0]!);
+  const named = query.get("platform");
+  const platform = PLATFORMS.some((p) => p.name === named) ? named! : PLATFORMS[0]!.name;
   const file = query.get("file") || undefined;
   const match = /^(\d+)(?:-(\d+))?$/.exec(query.get("line") ?? "");
-  if (!file || !match) return { file, target };
+  if (!file || !match) return { file, platform };
   const from = Number(match[1]);
   const to = Number(match[2] ?? from);
   const lines: Lines = [Math.min(from, to), Math.max(from, to)];
-  return from > 0 ? { file, lines, target } : { file, target };
+  return from > 0 ? { file, lines, platform } : { file, platform };
 }
 
-/** The query for an open file and an arch other than wasm32; the path's `/` and `@` stay readable. */
-export function searchOf(file: string | undefined, lines?: Lines, target?: Target): string {
+/** The query for an open file and a platform other than the browser; the path's `/` and `@` stay readable. */
+export function searchOf(file: string | undefined, lines?: Lines, platform?: string): string {
   const parts: string[] = [];
   if (file) {
     parts.push(`file=${encodeURIComponent(file).replace(/%40/g, "@").replace(/%2F/gi, "/")}`);
     if (lines) parts.push(`line=${lines[0] === lines[1] ? lines[0] : `${lines[0]}-${lines[1]}`}`);
   }
-  const arch = target && archOf(target);
-  if (arch && arch !== ARCHES[0]) parts.push(`arch=${arch}`);
+  if (platform && platform !== PLATFORMS[0]!.name) parts.push(`platform=${platform}`);
   return parts.length ? `?${parts.join("&")}` : "";
 }
 

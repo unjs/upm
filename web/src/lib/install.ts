@@ -3,6 +3,7 @@
 // store's content is kept on OPFS (./opfs.ts) across runs, tabs and visits, and upm asks it
 // before a download. Those, and upm's commands, load on the first install.
 import type { InstallResult } from "upm/src/api.ts";
+import type { Platform } from "upm/src/resolve.ts";
 import { fraction, type Seen } from "upm/src/progress.ts";
 import type { TarEntry } from "upm/src/tar.ts";
 import { blobKey, indexKey } from "upm/src/store-backend.ts";
@@ -12,11 +13,6 @@ import { allowedSource } from "./route.ts";
 
 const PROJECT = "/project";
 
-/** The Linux the install says it runs on: it installs that arch's and libc's optional builds. */
-export interface Target {
-  arch: string;
-  libc: "glibc" | "musl";
-}
 const HOME = "/home/user";
 
 /** A file of the installed tree, or a symlink: then `data` is its target. */
@@ -38,12 +34,23 @@ export interface Installed {
 let running: Promise<unknown> = Promise.resolve();
 let shim: typeof import("./node.ts") | undefined;
 
-/** The shim in place as this tab's `process`, loaded on first use; `target` retargets it. */
-async function ready(target?: Target): Promise<typeof import("./node.ts")> {
+let loaded: Promise<unknown> | undefined;
+
+/**
+ * The shim in place as this tab's `process`, loaded on first use. With a `target`, it says it is
+ * that platform, for the optional builds the install picks. upm's modules that read the OS as
+ * they load are loaded first, while it says Linux: the in-memory `fs` keeps Linux's links and
+ * bins, with no Windows junctions or `.cmd` shims, whatever the target.
+ */
+async function ready(target?: Platform): Promise<typeof import("./node.ts")> {
   shim ??= await import("./node.ts");
-  shim.installShim({ cwd: PROJECT, home: HOME, ...target });
+  shim.installShim({ cwd: PROJECT, home: HOME });
   if (typeof globalThis.process?.getBuiltinModule !== "function") {
     throw new Error("This page has a `process` of its own, so upm's cannot be put in place");
+  }
+  if (target) {
+    await (loaded ??= Promise.all([import("upm/src/api.ts"), import("upm/src/tree-lock.ts")]));
+    shim.installShim({ platform: target.os, arch: target.cpu, libc: target.libc });
   }
   return shim;
 }
@@ -128,7 +135,7 @@ export function installInTab(
   log: (message: string, level: string) => void,
   lockfile?: string,
   logged?: typeof fetch,
-  target?: Target,
+  target?: Platform,
 ): Promise<Installed> {
   const run = running.then(async () => {
     const node = await ready(target);

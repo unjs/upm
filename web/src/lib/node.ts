@@ -37,7 +37,7 @@ export interface ShimOptions {
   platform?: string;
   arch?: string;
   /** What `process.report` says on Linux; upm installs the builds for this libc. */
-  libc?: "glibc" | "musl";
+  libc?: string;
 }
 
 const UMASK = 0o022;
@@ -57,13 +57,13 @@ export function* walk(at = "/"): Generator<[path: string, entry: Entry]> {
   }
 }
 
-/** Each shim made here, and how to give it another arch or libc. */
+/** Each shim made here, and how to give it another platform, arch or libc. */
 const retargets = new WeakMap<object, (options: ShimOptions) => void>();
 
 /**
  * Install the shim as `globalThis.process`. Never over a real one: returns false and leaves it.
- * Over one of ours, it takes the `arch` and `libc` given, so the next install picks that
- * platform's optional builds. Linux wasm32 with glibc unless told otherwise, so the tab gets
+ * Over one of ours, it takes the `platform`, `arch` and `libc` given, so the next install picks
+ * that platform's optional builds. Linux wasm32 with glibc unless told otherwise, so the tab gets
  * the wasm ones (`-wasm32-wasi`), the only ones a browser can run; there is no Node version, so
  * every `engines.node` passes.
  */
@@ -79,7 +79,6 @@ export function installShim(options: ShimOptions = {}): boolean {
 }
 
 export function createProcess(options: ShimOptions = {}) {
-  const { platform = "linux" } = options;
   let libc = options.libc ?? "glibc";
   const cwd = options.cwd ?? "/project";
   const home = options.home ?? "/home/user";
@@ -94,13 +93,13 @@ export function createProcess(options: ShimOptions = {}) {
       parentPort: null,
       Worker: class extends Thread {
         constructor(entry: URL | string, options?: { workerData?: unknown }) {
-          super(entry, options?.workerData, { platform, arch: proc.arch, env, cwd });
+          super(entry, options?.workerData, { platform: proc.platform, arch: proc.arch, env, cwd });
         }
       },
     },
   };
   const proc = {
-    platform,
+    platform: options.platform ?? "linux",
     arch: options.arch ?? "wasm32",
     env,
     versions: {},
@@ -115,6 +114,7 @@ export function createProcess(options: ShimOptions = {}) {
   };
   // Only what is given: a read of the store, which gives neither, may run during an install.
   retargets.set(proc, (next) => {
+    if (next.platform) proc.platform = next.platform;
     if (next.arch) proc.arch = next.arch;
     if (next.libc) libc = next.libc;
   });

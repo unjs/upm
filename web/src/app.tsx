@@ -26,11 +26,9 @@ import {
   manifestOf,
   type Installed,
   type InstalledFile,
-  type Target,
 } from "./lib/install.ts";
 import { Panel, type PanelTab, type Problem } from "./components/panel.tsx";
 import {
-  ARCHES,
   EXAMPLES,
   normalSpec,
   openOf,
@@ -46,9 +44,6 @@ import { TopBar } from "./components/topbar.tsx";
 
 // Off https and localhost, WebCrypto is missing: fill it in before anything hashes.
 const insecure = fillCrypto();
-
-/** What ./lib/node.ts's shim says it is unless told otherwise: the builds a browser can run. */
-const WASM = targetOf(ARCHES[0]!);
 
 /** One query as it lands: each part is undefined while pending, an Error when it failed. */
 export interface View {
@@ -67,8 +62,8 @@ export interface View {
   resolved?: Resolved | Error;
   /** What the resolve installs: set once the run starts. */
   dependencies?: Record<string, string>;
-  /** The arch and libc the install runs as: it skips other platforms' builds. */
-  target: Target;
+  /** The platform the install runs as: it skips other platforms' builds. */
+  target: Platform;
   /** upm's install of it in this tab: true while it runs. */
   installed?: Installed | Error | true;
   sbomTarget?: Platform;
@@ -90,8 +85,8 @@ export function App({ ready }: { ready?: Promise<unknown> }) {
   // A shared link's file and lines, opened once its run has them.
   const [linked] = useState(() => openOf(location.search));
   // A ref too: a change starts its run in the same handler, before the state lands.
-  const [target, setTarget] = useState(linked.target);
-  const targetRef = useRef(target);
+  const [platform, setPlatform] = useState(linked.platform);
+  const platformRef = useRef(platform);
   const [lines, setLines] = useState(linked.lines);
   // Whether the open file goes in the url: one picked, not the README a run opens on.
   const [pinned, setPinned] = useState(!!linked.file);
@@ -158,7 +153,7 @@ export function App({ ready }: { ready?: Promise<unknown> }) {
         name: query.name,
         started: performance.now(),
         dependencies: query.dependencies,
-        target: targetRef.current,
+        target: targetOf(platformRef.current),
       });
       const first = treePath(query.name, "package.json");
       const root = treePath(query.name);
@@ -196,7 +191,7 @@ export function App({ ready }: { ready?: Promise<unknown> }) {
         },
         (error: Error) => update({ tarball: error }),
       );
-      const runTarget = targetRef.current;
+      const runTarget = targetOf(platformRef.current);
       let started = false;
       startInstall.current = () => {
         if (run.current !== id || started) return;
@@ -246,7 +241,7 @@ export function App({ ready }: { ready?: Promise<unknown> }) {
         spec: raw,
         name: raw,
         started: performance.now(),
-        target: targetRef.current,
+        target: targetOf(platformRef.current),
         top: error as Error,
       });
     }
@@ -260,7 +255,7 @@ export function App({ ready }: { ready?: Promise<unknown> }) {
     registry: string,
     logged: typeof fetch,
     resolved: Resolved,
-    target: Target,
+    target: Platform,
     file?: string,
   ) {
     const warnings: string[] = [];
@@ -338,9 +333,9 @@ export function App({ ready }: { ready?: Promise<unknown> }) {
     history.replaceState(
       null,
       "",
-      pathOf(shownSpec) + searchOf(pinned ? selected : undefined, lines, target),
+      pathOf(shownSpec) + searchOf(pinned ? selected : undefined, lines, platform),
     );
-  }, [shownSpec, pinned, selected, lines, target]);
+  }, [shownSpec, pinned, selected, lines, platform]);
 
   const requests = client?.requests ?? [];
   const picked = [...picks.current.values()].reduce((sum, list) => sum + list.length, 0);
@@ -371,7 +366,7 @@ export function App({ ready }: { ready?: Promise<unknown> }) {
   const estimate =
     installed || view?.installed instanceof Error
       ? undefined
-      : estimateOf(sized.current, view?.target ?? WASM);
+      : estimateOf(sized.current, view?.target ?? targetOf(platform));
   // upm's own counts, as the CLI's bar draws them, on the install's clock. Pending while there
   // is nothing to count yet: the resolve, and the install's first downloads.
   const busy =
@@ -407,10 +402,10 @@ export function App({ ready }: { ready?: Promise<unknown> }) {
     submit(view.spec, registryUrl, undefined, true, pinned ? selected : undefined);
     setSidebar(true);
   };
-  /** A run that installed, or was asked to, installs again as the new target. */
-  const chooseTarget = (next: Target) => {
-    targetRef.current = next;
-    setTarget(next);
+  /** A run that installed, or was asked to, installs again as the new platform. */
+  const choosePlatform = (next: string) => {
+    platformRef.current = next;
+    setPlatform(next);
     if (view?.requested) reinstall();
   };
   const chooseSbomTarget = (target?: Platform) => {
@@ -585,8 +580,8 @@ export function App({ ready }: { ready?: Promise<unknown> }) {
         panel={panel}
         togglePanel={togglePanel}
         opfs={opfs}
-        target={target}
-        setTarget={chooseTarget}
+        platform={platform}
+        setPlatform={choosePlatform}
         registry={registryUrl}
         setRegistry={(url) => {
           setRegistryUrl(url);
@@ -610,8 +605,7 @@ function progressOf(installing: boolean): number | "pending" {
 }
 
 /** What the picks that run here unpack to, as the registry says. */
-function estimateOf(sized: { pkg: ResolvedPackage; size: Size }[], target: Target): Size {
-  const platform = { os: "linux", cpu: target.arch, libc: target.libc };
+function estimateOf(sized: { pkg: ResolvedPackage; size: Size }[], platform: Platform): Size {
   const sum = { files: 0, bytes: 0 };
   for (const { pkg, size } of sized) {
     if (!runsOn(pkg, platform)) continue;

@@ -1,12 +1,11 @@
 // The status bar. Left: the panel switches, problems, requests then storage, and a deprecation. Right:
 // the run's state, what it found, the package then its tree, then the download total, the
-// install's arch and the registry.
+// install's platform and the registry.
 import { useMemo, useState, type ReactNode } from "react";
 import type { Resolution } from "upm/resolver";
 import type { View } from "../app.tsx";
 import { DEFAULT_REGISTRY, type RequestEntry, type Resolved } from "../lib/client.ts";
-import type { Target } from "../lib/install.ts";
-import { ARCHES, archOf, targetOf } from "../lib/route.ts";
+import { PLATFORMS } from "../lib/route.ts";
 import { formatBytes } from "./code.tsx";
 import { formatMs, type PanelTab, type Problem } from "./panel.tsx";
 import { Badge, Icon, Pulse } from "./ui.tsx";
@@ -19,8 +18,8 @@ export function StatusBar(props: {
   panel: PanelTab | undefined;
   togglePanel: (tab: PanelTab) => void;
   opfs: number | undefined;
-  target: Target;
-  setTarget: (target: Target) => void;
+  platform: string;
+  setPlatform: (name: string) => void;
   registry: string;
   setRegistry: (url: string) => void;
 }) {
@@ -131,7 +130,7 @@ export function StatusBar(props: {
               {formatBytes(bytes)}
             </Item>
           )}
-          <Arch target={props.target} setTarget={props.setTarget} />
+          <PlatformPicker platform={props.platform} setPlatform={props.setPlatform} />
           <Registry url={props.registry} setUrl={props.setRegistry} />
         </div>
       </div>
@@ -139,25 +138,25 @@ export function StatusBar(props: {
   );
 }
 
-/** The arch and libc the install runs as, to see what it costs there. */
-function Arch({ target, setTarget }: { target: Target; setTarget: (target: Target) => void }) {
+/** The platform the install runs as, to see what it costs there. */
+function PlatformPicker(props: { platform: string; setPlatform: (name: string) => void }) {
   return (
     <label
       title={
-        "Install as Linux on this arch and libc, to see what an install costs there.\nwasm32 gets the builds this tab can run. Changing it installs again."
+        "Install as this platform, to see what an install costs there: of the optional builds,\nit gets that platform's. Browser gets the ones this tab can run. Changing it installs again."
       }
       className="flex h-6 items-center gap-1 px-2 hover:bg-zinc-200/70 dark:hover:bg-zinc-800"
     >
       <Icon name="cpu" className="size-3" />
       <select
-        aria-label="Install arch"
-        value={archOf(target)}
-        onChange={(e) => setTarget(targetOf(e.currentTarget.value))}
+        aria-label="Install platform"
+        value={props.platform}
+        onChange={(e) => props.setPlatform(e.currentTarget.value)}
         className="cursor-pointer appearance-none bg-transparent outline-none"
       >
-        {ARCHES.map((arch) => (
-          <option key={arch} value={arch}>
-            {arch.replace("-", " ")}
+        {PLATFORMS.map((p) => (
+          <option key={p.name} value={p.name}>
+            {p.label}
           </option>
         ))}
       </select>
