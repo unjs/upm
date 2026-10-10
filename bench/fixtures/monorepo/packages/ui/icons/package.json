@@ -4,7 +4,7 @@
   "private": true,
   "dependencies": {
     "@acme/ui-theme": "*",
-    "lucide-react": "1.50.0"
+    "lucide-react": "1.52.0"
   },
   "devDependencies": {
     "@acme/tsconfig": "*",
