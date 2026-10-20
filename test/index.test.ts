@@ -10,12 +10,14 @@ describe("public api", () => {
       "exec",
       "fetchLockfile",
       "fetchPackages",
+      "importx",
       "install",
       "listScripts",
       "lock",
       "prune",
       "remove",
       "resolve",
+      "resolvex",
       "run",
     ]);
   });

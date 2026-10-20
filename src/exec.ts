@@ -1,8 +1,10 @@
 // `upm exec`'s lookups: which installed bin a command means, which bin a package runs, and
-// where a package installs.
-// Its own module, loaded by `exec` alone, so no other command pays for it at startup.
+// where a package installs; and `resolvex`'s: which import it takes and the file it lands on.
+// Its own module, loaded by `exec` and `resolvex` alone: no other command pays for it at startup.
 import { normalizeBin } from "./normalize-bin.ts";
 import { builtin } from "./builtin.ts";
+import { exportsTarget } from "./exports.ts";
+import { fromFileURL, toFileURL } from "./runtime.ts";
 import { binDirs } from "./run.ts";
 import { satisfies } from "./semver.ts";
 import { parseSpec } from "./spec.ts";
@@ -56,13 +58,6 @@ export async function localBin(dir: string, command: string): Promise<string[] |
   try {
     spec = parseSpec(command);
   } catch {} // not a package, and install will say so
-  const fits = (version: unknown): boolean => {
-    if (spec === undefined) return false;
-    if (spec.raw === spec.name) return true;
-    if (typeof version !== "string") return false;
-    const ranged = spec.type === "version" || spec.type === "range";
-    return ranged && spec.name === spec.fetchName && satisfies(version, spec.fetchSpec);
-  };
   // On Windows a bin is its shims, and the `.cmd` one is what cmd runs.
   const win = globalThis.process.platform === "win32";
   for (const bins of binDirs(dir)) {
@@ -72,7 +67,7 @@ export async function localBin(dir: string, command: string): Promise<string[] |
     const pkg = await readJson(join(dirname(bins), spec.name, "package.json")).catch(
       () => undefined,
     );
-    if (!pkg || !fits((pkg as { version?: unknown }).version)) continue;
+    if (!pkg || !fits(spec, (pkg as { version?: unknown }).version)) continue;
     let own: string;
     try {
       own = pickBin(pkg, spec.name);
@@ -82,6 +77,112 @@ export async function localBin(dir: string, command: string): Promise<string[] |
     if (await isFile(shim(own))) return [shim(own)];
   }
   return undefined;
+}
+
+/** As npm: a bare name takes what is installed, a version or range what fits, a tag nothing. */
+function fits(spec: Spec, version: unknown): boolean {
+  if (spec.raw === spec.name) return true;
+  if (typeof version !== "string") return false;
+  const ranged = spec.type === "version" || spec.type === "range";
+  return ranged && spec.name === spec.fetchName && satisfies(version, spec.fetchSpec);
+}
+
+/**
+ * `[npm:]name[@version][/subpath]` as the registry spec to install and the subpath to import.
+ * Anything else is refused, `jsr:` and other schemes, paths, git, tarballs and aliases among them.
+ */
+export function parseImport(specifier: string): { spec: Spec; subpath: string } {
+  const raw = specifier.startsWith("npm:") ? specifier.slice(4) : specifier;
+  // The name is one segment, or two under a scope.
+  const end = raw.indexOf("/", raw.startsWith("@") ? raw.indexOf("/") + 1 : 0);
+  let spec: Spec | undefined;
+  if (!/^[a-z][\w+.-]*:|^[./\\]/i.test(raw)) {
+    try {
+      spec = parseSpec(end < 0 ? raw : raw.slice(0, end));
+    } catch {} // refused below, with the form it takes
+  }
+  // A tag never starts as a path does, but `pkg@./x.tgz` cut at its first `/` would be one.
+  const path = spec?.type === "tag" && /^[.~]/.test(spec.fetchSpec);
+  const registry = spec && !path && ["version", "range", "tag"].includes(spec.type);
+  if (!registry || spec!.name !== spec!.fetchName) {
+    const message = `${specifier} is not a package as [npm:]name[@version][/subpath]`;
+    throw Object.assign(new Error(message), { code: "EINVALIDSPEC" });
+  }
+  return { spec: spec!, subpath: end < 0 ? "" : raw.slice(end) };
+}
+
+/**
+ * The directory an import is resolved from: `from` as a directory, or a module's path or
+ * `file://` url, else `dir`.
+ */
+export function startDir(from: string | URL | undefined, dir: string): string {
+  const { fs, path } = builtin;
+  if (from === undefined) return path.resolve(dir);
+  const file = typeof from === "string" && !from.startsWith("file:");
+  const at = file ? path.resolve(from) : fromFileURL(from);
+  return fs.existsSync(at) && fs.statSync(at).isFile() ? path.dirname(at) : at;
+}
+
+/** A directory's `file://` url, ending in `/`: what an import from a file in it resolves from. */
+export const dirURL = (dir: string): string => toFileURL(`${dir}${builtin.path.sep}`);
+
+/**
+ * The nearest `node_modules` directory of the name above `dir`, and its package.json when it
+ * has one: Node.js takes that directory, whatever is in it.
+ */
+async function nearest(dir: string, name: string): Promise<{ home: string; pkg?: object }> {
+  const { dirname, join } = builtin.path;
+  for (let at = dir; ; at = dirname(at)) {
+    const home = join(at, "node_modules", name);
+    if (builtin.fs.existsSync(home)) {
+      return { home, pkg: await readJson(join(home, "package.json")).catch(() => undefined) };
+    }
+    if (dirname(at) === at) throw fail(`${name} is not installed above ${dir}`, "ENOEXPORT");
+  }
+}
+
+/** Whether an import from `dir` finds the spec's package in a version it takes. */
+export async function hasPackage(dir: string, spec: Spec): Promise<boolean> {
+  const { pkg } = await nearest(dir, spec.name).catch(() => ({ pkg: undefined }));
+  return pkg !== undefined && fits(spec, (pkg as { version?: unknown }).version);
+}
+
+/**
+ * `resolvex`'s own resolution of `id`, `name` or `name/subpath`, imported from the directory
+ * `parentURL`: as Node.js resolves it, for the package's `exports` with Node.js's conditions for
+ * an import, else its `main` or `index.js`, to the file's real path. Not read: `imports`, a
+ * package importing itself by name, and the `browser` and `module` fields.
+ */
+export async function resolveImport(id: string, parentURL: string): Promise<string> {
+  const { join } = builtin.path;
+  // The name is one segment, or two under a scope.
+  const end = id.indexOf("/", id.startsWith("@") ? id.indexOf("/") + 1 : 0);
+  const name = end < 0 ? id : id.slice(0, end);
+  const subpath = end < 0 ? "." : `.${id.slice(end)}`;
+  const { home, pkg = {} } = await nearest(fromFileURL(parentURL), name);
+  const { exports, main } = pkg as { exports?: unknown; main?: unknown };
+  let found: string | undefined;
+  if (exports !== undefined) {
+    const target = exportsTarget(exports, subpath);
+    if (target === undefined) throw fail(`${name} does not export ${subpath}`, "ENOEXPORT");
+    found = join(home, target);
+  } else if (subpath !== ".") {
+    found = join(home, subpath);
+  } else {
+    // As Node.js looks for `main` from an import.
+    const ends = ["", ".js", ".json", ".node", "/index.js", "/index.json", "/index.node"];
+    const tries = typeof main === "string" && main ? ends.map((end) => main + end) : [];
+    for (const file of [...tries, "index.js", "index.json", "index.node"]) {
+      if (await isFile(join(home, file))) {
+        found = join(home, file);
+        break;
+      }
+    }
+  }
+  if (found === undefined || !(await isFile(found))) {
+    throw fail(`${id} names no file in ${home}`, "ENOEXPORT");
+  }
+  return toFileURL(await builtin.fsp.realpath(found));
 }
 
 /** A file, or a link to one: a directory of that name is no bin. */
@@ -114,6 +215,6 @@ export async function readJson(file: string): Promise<object> {
   return value;
 }
 
-function fail(message: string, code: "ENOBIN" | "EMANIFEST"): Error {
+function fail(message: string, code: "ENOBIN" | "EMANIFEST" | "ENOEXPORT"): Error {
   return Object.assign(new Error(message), { code });
 }

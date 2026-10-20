@@ -24,6 +24,7 @@ import type { Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
+import { pathToFileURL } from "node:url";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { builtin } from "../src/builtin.ts";
 import * as upm from "../src/index.ts";
@@ -1897,6 +1898,76 @@ describe("tarball dependencies", () => {
     await expect(upm.exec("a", { ...base, packages: [`a@${url()}`] })).rejects.toMatchObject({
       code: "EINVALIDSPEC",
     });
+  });
+});
+
+describe("resolvex", () => {
+  /** A package installed under `dir`, from its package.json and files. */
+  async function local(name: string, manifest: object, files: string[]): Promise<string> {
+    const home = join(dir, "node_modules", name);
+    for (const file of files) {
+      await mkdir(dirname(join(home, file)), { recursive: true });
+      await writeFile(join(home, file), "");
+    }
+    await writeFile(join(home, "package.json"), JSON.stringify({ name, ...manifest }));
+    return home;
+  }
+  const url = (file: string) => pathToFileURL(file).href;
+
+  it("lands on the file `exports` names, with Node.js's conditions for an import", async () => {
+    const exports = {
+      ".": { types: "./i.d.ts", require: "./i.cjs", import: "./i.mjs" },
+      "./utils/*": "./dist/utils/*.js",
+      "./internal/*": null,
+    };
+    const files = ["i.cjs", "i.mjs", "dist/utils/a.js", "internal/x.js", "dist/raw.js"];
+    const home = await local("@s/pkg", { version: "1.0.0", exports }, files);
+    const options = { ...base, from: join(dir, "src") };
+    expect(await upm.resolvex("@s/pkg", options)).toBe(url(join(home, "i.mjs")));
+    expect(await upm.resolvex("npm:@s/pkg@^1/utils/a", options)).toBe(
+      url(join(home, "dist", "utils", "a.js")),
+    );
+    for (const specifier of ["@s/pkg/internal/x", "@s/pkg/dist/raw.js", "@s/pkg/utils/b"]) {
+      await expect(upm.resolvex(specifier, options)).rejects.toMatchObject({ code: "ENOEXPORT" });
+    }
+    expect(served).toEqual([]);
+  });
+
+  it("lands on `main` as Node.js looks for it, or on any file without `exports`", async () => {
+    const home = await local("old", { version: "1.0.0", main: "lib/main" }, [
+      "lib/main.js",
+      "x.js",
+    ]);
+    expect(await upm.resolvex("old", base)).toBe(url(join(home, "lib", "main.js")));
+    expect(await upm.resolvex("old/x.js", base)).toBe(url(join(home, "x.js")));
+    // Node.js adds no extension to a subpath.
+    await expect(upm.resolvex("old/x", base)).rejects.toMatchObject({ code: "ENOEXPORT" });
+    await writeFile(join(home, "package.json"), '{"name":"old","version":"1.0.0"}');
+    await expect(upm.resolvex("old", base)).rejects.toMatchObject({ code: "ENOEXPORT" });
+    await writeFile(join(home, "index.js"), "");
+    expect(await upm.resolvex("old", base)).toBe(url(join(home, "index.js")));
+  });
+
+  it("lands on the real file, as Node.js does", async () => {
+    const real = join(dir, "real");
+    await mkdir(real);
+    await writeFile(join(real, "package.json"), '{"name":"linked","version":"1.0.0"}');
+    await writeFile(join(real, "index.js"), "");
+    await mkdir(join(dir, "node_modules"), { recursive: true });
+    await symlink(real, join(dir, "node_modules", "linked"), "junction");
+    expect(await upm.resolvex("linked", base)).toBe(url(join(await realpath(real), "index.js")));
+  });
+
+  it("hands the last step to `resolve`, once the package is in place", async () => {
+    await local("hi", { version: "1.0.0" }, ["index.js"]);
+    const calls: string[][] = [];
+    const resolve = (id: string, parentURL: string) => {
+      calls.push([id, parentURL]);
+      return "file:///elsewhere.js";
+    };
+    const from = join(dir, "a", "b");
+    expect(await upm.resolvex("hi/x", { ...base, from, resolve })).toBe("file:///elsewhere.js");
+    expect(calls).toEqual([["hi/x", `${url(from)}/`]]);
   });
 });
 

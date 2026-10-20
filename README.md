@@ -269,7 +269,7 @@ lifecycle scripts for a fairer comparison.
 The commands are also available as functions from `upm`:
 
 ```js
-import { add, install, lock, resolve, run } from "upm";
+import { add, importx, install, lock, resolve, resolvex, run } from "upm";
 
 // Install from the lockfile, failing if it is out of date
 const result = await install({
@@ -296,6 +296,12 @@ const { code, results } = await run("build", {
   workspaces: "all",
   install: true, // install the tree first, as `upm run` does
 }); // { code: 0, results: [{ name: "app", path, file, code: 0 }] }
+
+// Import a package at runtime, installing it if needed
+const { parse } = await importx("npm:yaml@2"); // also "pkg", "pkg@rc", "@org/name@1/sub"
+const url = await resolvex("yaml@2/util", {
+  from: import.meta.url, // resolve as this module would; default cwd
+}); // "file:///.../yaml/dist/util.js", not imported
 
 // Other exports
 import {
@@ -324,6 +330,27 @@ Functions return data and do not print their own messages. Use `log` for progres
 warnings, and debug messages, and `onProgress` (install, add, remove, dedupe, lock) for
 counts to draw a progress bar from. `run` and `exec` still share the child's
 terminal input and output.
+
+`importx` imports a package as `upx` runs one. The specifier is
+`[npm:]name[@version][/subpath]`; anything else, such as `jsr:`, a path or a git url,
+fails with `EINVALIDSPEC`. A name without a version, or a version or range that fits,
+comes from the nearest `node_modules` above `from`: a directory, or a module's path or
+`file://` url (default `dir`, else cwd). Anything else installs where `upx` installs, in
+the project found above `from`, once per version; a tag or range asks the registry each
+time. `resolvex` takes the same arguments and returns the `file://` url instead, without
+running the module.
+
+upm resolves the import itself, as Node.js does for a package's `exports` with Node.js's
+conditions for an import (`node`, `import`, `module-sync`, `default`), else its `main` or
+`index.js`, to the file's real path; a file it does not export fails with `ENOEXPORT`. It
+does not read `imports`, nor the `browser` and `module` fields. Pass `resolve` to resolve
+another way, such as with a `browser` condition or with exsolve's `resolveModuleURL`:
+
+```js
+await resolvex("pkg", {
+  resolve: (id, parentURL) => myResolve(id, parentURL), // returns the module's url
+});
+```
 
 Errors have a `code` you can handle. The exported `ErrorCode` type lists common
 codes; filesystem and worker errors may have others. Options under `experimental`

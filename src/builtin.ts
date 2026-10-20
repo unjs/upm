@@ -15,6 +15,7 @@ export interface Builtin {
   readonly os: typeof import("node:os");
   readonly path: typeof import("node:path");
   readonly stream: typeof import("node:stream");
+  readonly url: typeof import("node:url");
   readonly util: typeof import("node:util");
   readonly workers: typeof import("node:worker_threads");
   readonly zlib: typeof import("node:zlib");
@@ -29,6 +30,7 @@ const MODULES: Record<keyof Builtin, string> = {
   os: "node:os",
   path: "node:path",
   stream: "node:stream",
+  url: "node:url",
   util: "node:util",
   workers: "node:worker_threads",
   zlib: "node:zlib",
