@@ -185,8 +185,9 @@ export interface RegistryAccess {
 
 export interface StoreAccess {
   /**
-   * Content-addressed store directory. Default: `UPM_STORE`, then `~/.upm/store`, or
-   * `.upm-store` on the project's mount when `~/.upm/store` cannot hardlink into it.
+   * Content-addressed store directory. Default: `UPM_STORE`, then `store` in upm's data
+   * directory (`~/.upm`, else `$XDG_DATA_HOME/upm`), or `.upm-store` on the project's mount
+   * when that store cannot hardlink into it.
    */
   store?: string;
   /** Shared storage behind the store. */

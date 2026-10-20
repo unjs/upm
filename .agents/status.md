@@ -80,7 +80,7 @@ compatibility. Keep this page about open work, not completed implementation step
 - **Symlinked workspace:** when a workspace directory is itself a symlink, its dep links
   are spelled relative to the path linked through, not where they sit, so on Linux and
   macOS they dangle. The test pins that spelling. Start at `linkTop` in `src/link.ts`.
-- **Compile cache is never reclaimed:** the bin's V8 cache in `~/.upm/compile-cache` gains
+- **Compile cache is never reclaimed:** the bin's V8 cache in `compile-cache` (upm's cache directory) gains
   entries for every new build and Node version, and nothing removes old ones. Needs a
   retention rule and a place to apply it, `prune` or the bin's start. Start at `src/upm.ts`.
 - **Kept registry documents are never reclaimed:** the store's `metadata` directory keeps

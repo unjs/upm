@@ -17,7 +17,7 @@ import { createWriter, SHARD_MIN, verifyTarball, wrapped } from "./unpack.ts";
 import { authFor } from "./registry.ts";
 import { concat, createHasher, hasNode, iterate, sleep, toBase64 } from "./runtime.ts";
 import { sameIntegrity } from "./integrity.ts";
-import { isIndex, now, sizeOfSync, tick, trace, tracing } from "./util.ts";
+import { isIndex, now, sizeOfSync, tick, trace, tracing, upmHome } from "./util.ts";
 
 export { isIndex };
 
@@ -61,7 +61,7 @@ export interface PackageIndex {
 export type Tarball = string | { path: string };
 
 export interface StoreOptions {
-  /** Defaults to `UPM_STORE`, then `~/.upm/store`. */
+  /** Defaults to `UPM_STORE`, then `store` in upm's data directory. */
   dir?: string;
   /** Injectable for tests. */
   fetch?: typeof fetch;
@@ -186,17 +186,13 @@ const BACKOFF = 100;
  */
 const STALL = 30_000;
 
-/** Where the store is: `dir`, else `UPM_STORE`, else `~/.upm/store`. */
+/** Where the store is: `dir`, else `UPM_STORE`, else `store` in upm's data directory. */
 export function storeDir(dir?: string): string {
-  return (
-    dir ||
-    globalThis.process?.env.UPM_STORE ||
-    builtin.path.join(builtin.os.homedir(), ".upm", "store")
-  );
+  return dir || globalThis.process?.env.UPM_STORE || builtin.path.join(upmHome("data"), "store");
 }
 
 /**
- * The store for the project at `root`: `dir` or `UPM_STORE` as given, else `~/.upm/store` while
+ * The store for the project at `root`: `dir` or `UPM_STORE` as given, else the home store while
  * its files can be hardlinked into the project. A link cannot cross filesystems, nor the mount
  * points of one (a container's bind mounts), and copying every file took twice the time and a
  * full copy per project. Then, `.upm-store` in the topmost directory above the

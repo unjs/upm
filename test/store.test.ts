@@ -26,6 +26,7 @@ import { createStore, projectStore } from "../src/store.ts";
 import { indexKey } from "../src/store-backend.ts";
 import type { BackendIndex, StoreBackend } from "../src/store-backend.ts";
 import { makeTarball } from "./tarball.ts";
+import { upmHome } from "../src/util.ts";
 
 let dir: string;
 
@@ -1416,8 +1417,10 @@ describe("projectStore", () => {
   beforeEach(async () => {
     env = { HOME: process.env.HOME, USERPROFILE: process.env.USERPROFILE };
     env.UPM_STORE = process.env.UPM_STORE;
+    env.XDG_DATA_HOME = process.env.XDG_DATA_HOME;
     delete process.env.UPM_STORE;
     process.env.HOME = process.env.USERPROFILE = join(dir, "home");
+    process.env.XDG_DATA_HOME = join(dir, "data"); // the same home store on every platform
     await mkdir(join(dir, "mnt", "a", "project"), { recursive: true });
     mnt = fs.realpathSync(join(dir, "mnt")); // macOS's tmpdir is under a symlink
     project = join(mnt, "a", "project");
@@ -1431,9 +1434,9 @@ describe("projectStore", () => {
     }
   });
 
-  const home = () => join(dir, "home", ".upm", "store");
+  const home = () => join(dir, "data", "upm", "store");
 
-  it("keeps ~/.upm/store when it can hardlink into the project", async () => {
+  it("keeps the home store when it can hardlink into the project", async () => {
     expect(projectStore(project)).toEqual({ dir: home() });
     expect(await readdir(project)).toEqual([]);
   });
@@ -1489,10 +1492,42 @@ describe("projectStore", () => {
     expect(link).not.toHaveBeenCalled();
   });
 
-  it("keeps ~/.upm/store when the disk has no hardlinks at all", () => {
+  it("keeps the home store when the disk has no hardlinks at all", () => {
     vi.spyOn(fs, "linkSync").mockImplementation(() => {
       throw Object.assign(new Error("not permitted"), { code: "EPERM" });
     });
     expect(projectStore(project)).toEqual({ dir: home() });
+  });
+});
+
+describe("upmHome", () => {
+  const home = () => join(dir, "home");
+
+  it("follows XDG on Linux, set or by default", () => {
+    expect(upmHome("data", {}, home(), "linux")).toBe(join(home(), ".local", "share", "upm"));
+    expect(upmHome("cache", {}, home(), "linux")).toBe(join(home(), ".cache", "upm"));
+    const env = { XDG_DATA_HOME: join(dir, "data"), XDG_CACHE_HOME: join(dir, "cache") };
+    expect(upmHome("data", env, home(), "linux")).toBe(join(dir, "data", "upm"));
+    expect(upmHome("cache", env, home(), "linux")).toBe(join(dir, "cache", "upm"));
+  });
+
+  it("passes over a relative XDG path, as the spec says", () => {
+    expect(upmHome("data", { XDG_DATA_HOME: "data" }, home(), "linux")).toBe(
+      join(home(), ".local", "share", "upm"),
+    );
+  });
+
+  it("keeps ~/.upm on macOS and Windows unless XDG is set", () => {
+    expect(upmHome("data", {}, home(), "darwin")).toBe(join(home(), ".upm"));
+    expect(upmHome("cache", {}, home(), "win32")).toBe(join(home(), ".upm"));
+    const env = { XDG_CACHE_HOME: join(dir, "cache") };
+    expect(upmHome("cache", env, home(), "darwin")).toBe(join(dir, "cache", "upm"));
+  });
+
+  it("keeps ~/.upm once it exists, so a filled store stays put", async () => {
+    await mkdir(join(home(), ".upm"), { recursive: true });
+    const env = { XDG_DATA_HOME: join(dir, "data"), XDG_CACHE_HOME: join(dir, "cache") };
+    expect(upmHome("data", env, home(), "linux")).toBe(join(home(), ".upm"));
+    expect(upmHome("cache", {}, home(), "linux")).toBe(join(home(), ".upm"));
   });
 });

@@ -7,10 +7,12 @@ import { binDirs } from "./run.ts";
 import { satisfies } from "./semver.ts";
 import { parseSpec } from "./spec.ts";
 import type { Spec } from "./spec.ts";
+import { upmHome } from "./util.ts";
 
 /**
  * Where exec installs for the project at `root`: its `node_modules/.upm/.exec`, so the packages
- * go with that tree and can import what the project installed, or `~/.upm/exec` when it has none.
+ * go with that tree and can import what the project installed, or `exec` in upm's cache directory
+ * when it has none.
  */
 export function execHome(root: string): string {
   const { join } = builtin.path;
@@ -19,7 +21,7 @@ export function execHome(root: string): string {
     // Dotted: the sweep of `.upm` entries leaves it alone.
     return join(root, "node_modules", ".upm", ".exec");
   }
-  return join(builtin.os.homedir(), ".upm", "exec");
+  return join(upmHome("cache"), "exec");
 }
 
 /**

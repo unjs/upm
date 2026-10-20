@@ -388,7 +388,7 @@ network. If `package.json` has changed, the copy is ignored and the install reso
 there were no `node_modules`. `upm lock` and `--frozen-lockfile` never read the copy.
 
 Registry documents that upm reads while resolving are kept in the store's `metadata`
-directory (`~/.upm/store`'s, unless a store is set), under paths named after the registry and package
+directory (the home store's, unless a store is set), under paths named after the registry and package
 (`metadata/registry.npmjs.org/@scope/name/`), so deleting a directory forgets those
 documents. A full document is kept cut down to the fields upm reads, and each notes where its
 versions are, so a pick parses only the versions it looks at. A kept document is used
@@ -497,8 +497,8 @@ such as `@latest` always asks the registry.
 
 Otherwise upm installs the package into its own project, linked from the shared
 store: under `node_modules/.upm/.exec` of the project root, so it is removed with that
-`node_modules` and can import what the project installed, or under `~/.upm/exec`
-when the root has no `node_modules`. It runs the package's only command (or one file
+`node_modules` and can import what the project installed, or under `exec` in upm's
+cache directory when the root has no `node_modules`. It runs the package's only command (or one file
 with several names), or the one named after the package. Use `-p` when a package has
 several commands or when the command has another name. A tag or range asks the
 registry for the newest match each time; each set of versions is installed once.
@@ -682,13 +682,13 @@ setting has no form there.
 |                                                       | `npm_config_userconfig`                    | Path of the user config file, instead of `~/.npmrc`.                                                               |
 | `globalconfig` (user config only)                     | `npm_config_globalconfig`                  | Path of the global config file.                                                                                    |
 | `prefix` (user config only)                           | `npm_config_prefix`, `PREFIX`              | The global config file is `<prefix>/etc/npmrc`.                                                                    |
-|                                                       | `UPM_STORE`                                | Shared store directory. Defaults to `~/.upm/store`, else `.upm-store` on the project's mount; `--store` wins.      |
+|                                                       | `UPM_STORE`                                | Shared store directory. Defaults to the home store, else `.upm-store` on the project's mount; `--store` wins.      |
 |                                                       | `UPM_LINK_POOL`                            | Same as `--experimental-link-pool`: `off`, `on` or `<size>[,<packages>[,<files>]]`.                                |
 |                                                       | `UPM_RESOLVE_POOL`                         | Experimental: threads that read the registry. `off`, `on` or a count up to 16.                                     |
 |                                                       | `UPM_DEBUG`                                | `1` or `on` prints debug messages to stderr, as `--verbose`.                                                       |
 |                                                       | `UPM_TRACE`                                | Benchmarks: appends one JSON line per event to this file.                                                          |
 |                                                       | `UPM_PHASES`                               | Benchmarks: `1` prints phase timings to stderr at exit.                                                            |
-|                                                       | `NODE_DISABLE_COMPILE_CACHE`               | `1` turns off the compile cache in `~/.upm/compile-cache`.                                                         |
+|                                                       | `NODE_DISABLE_COMPILE_CACHE`               | `1` turns off the compile cache in `compile-cache` of upm's cache directory.                                       |
 |                                                       | `NO_COLOR`, `FORCE_COLOR`                  | Turn colored output off or on.                                                                                     |
 
 Values can use `${VAR}` to read an environment variable. `${VAR?}` is empty when
@@ -749,13 +749,20 @@ package that imports something it forgot to declare still finds it. When a name 
 several versions, the one nearest the root wins. Set `hoist=false` in `.npmrc` to
 turn this off.
 
-The shared file cache lives at `~/.upm/store`. Change it with `UPM_STORE` or
-`--store <path>`; the command-line option takes priority.
+The shared file cache, the home store, lives in `store` of upm's data directory. Change it
+with `UPM_STORE` or `--store <path>`; the command-line option takes priority.
+
+upm keeps its files in `~/.upm` when that directory exists, so an existing store stays where
+it is. Otherwise it follows the XDG base directories: the store in `$XDG_DATA_HOME/upm`
+(default `~/.local/share/upm`), and what it can make again, `exec` installs and the compile
+cache, in `$XDG_CACHE_HOME/upm` (default `~/.cache/upm`). On macOS and Windows it uses
+`~/.upm` unless those variables are set. Remove `~/.upm` to move to the XDG directories;
+the next install downloads the packages again.
 
 Files are stored by content and hardlinked into each project's
 `node_modules/.upm`. Hardlinks let projects share the same bytes on disk. A hardlink
 cannot cross filesystems or mount points, such as another drive or a container's
-bind mount. When `~/.upm/store` cannot reach a project that way and no store is set,
+bind mount. When the home store cannot reach a project that way and no store is set,
 upm uses `.upm-store` in the topmost directory on the project's mount it can write
 to, as pnpm does, and says so once when it creates it. A directory every user can
 write to, such as `/tmp`, or a `.upm-store` another user owns is passed over. The packages

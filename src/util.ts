@@ -310,6 +310,28 @@ export function describe(error: unknown): string {
 const WIN = globalThis.process?.platform === "win32";
 
 /**
+ * upm's own directory for what it keeps (`data`) or can make again (`cache`). `~/.upm` while it
+ * exists, so a store already filled stays where it is; else the XDG base directory, set or by
+ * default off macOS and Windows: `~/.local/share/upm` and `~/.cache/upm`. `src/upm.ts` repeats
+ * this for the compile cache, which is on before anything is imported.
+ */
+export function upmHome(
+  kind: "data" | "cache",
+  env: Record<string, string | undefined> = globalThis.process?.env ?? {},
+  home = builtin.os.homedir(),
+  platform = globalThis.process?.platform,
+): string {
+  const { isAbsolute, join } = builtin.path;
+  const own = join(home, ".upm");
+  if (builtin.fs.existsSync(own)) return own;
+  // The spec has a relative path ignored.
+  const set = kind === "data" ? env.XDG_DATA_HOME : env.XDG_CACHE_HOME;
+  if (set && isAbsolute(set)) return join(set, "upm");
+  if (platform === "darwin" || platform === "win32") return own;
+  return kind === "data" ? join(home, ".local", "share", "upm") : join(home, ".cache", "upm");
+}
+
+/**
  * `symlink` arguments for a link at `at` to the relative `target`. Links stay relative, so a tree
  * survives being moved. Windows needs a privilege for a symlink but not for a junction, and a
  * junction must be absolute. Every link there leads to a directory: a bin is a shim, not a link.

@@ -896,6 +896,7 @@ describe("exec", () => {
         ...clean,
         HOME: home,
         USERPROFILE: home,
+        XDG_CACHE_HOME: join(dir, "cache"), // the same exec home on every platform
         npm_config_globalconfig: join(dir, "no"),
         ...env,
       },
@@ -913,7 +914,7 @@ describe("exec", () => {
     const first = await exec("hi", ...args);
     expect(first).toMatchObject({ code: 0, stderr: "upm: installed hi@1.1.0\n" });
     expect(ran(first)).toEqual({ at: "hi@1.1.0", args, cwd: join(dir, "work") });
-    const installed = await readdir(join(dir, "home", ".upm", "exec"));
+    const installed = await readdir(join(dir, "cache", "upm", "exec"));
     expect(installed).toHaveLength(1);
 
     // A tag is picked from the document the first run kept: read since the release cutoff,
@@ -945,7 +946,7 @@ describe("exec", () => {
     expect(exact.code).toBe(7);
     expect(ran(exact).at).toBe("hi@1.0.0");
     expect(requests).toEqual([]);
-    expect(await readdir(join(dir, "home", ".upm", "exec"))).toHaveLength(2);
+    expect(await readdir(join(dir, "cache", "upm", "exec"))).toHaveLength(2);
   });
 
   it("is what upx does", async () => {
@@ -1019,8 +1020,8 @@ describe("exec", () => {
       expect(ran(first)).toMatchObject({ at: "hi@1.0.0", cwd: work });
       expect(requests).toContain("/hi/-/hi-1.0.0.tgz");
       expect(requests.some((url) => url.startsWith("/lib"))).toBe(false);
-      const [project] = await readdir(join(dir, "home", ".upm", "exec"));
-      const installed = join(dir, "home", ".upm", "exec", project!, "node_modules");
+      const [project] = await readdir(join(dir, "cache", "upm", "exec"));
+      const installed = join(dir, "cache", "upm", "exec", project!, "node_modules");
       expect((await readdir(installed)).sort()).toEqual([
         ".bin",
         ".upm",
@@ -1040,12 +1041,12 @@ describe("exec", () => {
         expect(ran(await upm(CLI, ["exec", "hi@v1.0.0"], {}, flags, work)).at).toBe("hi@1.0.0");
         // Its metadata, that is: the tarball's integrity is one the store already holds.
         expect(requests).toContain("/hi");
-        expect(await readdir(join(dir, "home", ".upm", "exec"))).toHaveLength(2);
+        expect(await readdir(join(dir, "cache", "upm", "exec"))).toHaveLength(2);
         // `v1.0.0` and `1.0.0` are one version, so one project.
         requests = [];
         expect(ran(await upm(CLI, ["exec", "hi@1.0.0"], {}, flags, work)).at).toBe("hi@1.0.0");
         expect(requests).toEqual([]);
-        expect(await readdir(join(dir, "home", ".upm", "exec"))).toHaveLength(2);
+        expect(await readdir(join(dir, "cache", "upm", "exec"))).toHaveLength(2);
       } finally {
         await new Promise<void>((resolve) => other.close(() => resolve()));
       }
@@ -1066,7 +1067,7 @@ describe("exec", () => {
     expect(ran(first)).toMatchObject({ at: "hi@1.0.0", cwd: inside });
     const projects = await readdir(join(work, "node_modules", ".upm", ".exec"));
     expect(projects).toHaveLength(1);
-    await expect(readdir(join(dir, "home", ".upm", "exec"))).rejects.toMatchObject({
+    await expect(readdir(join(dir, "cache", "upm", "exec"))).rejects.toMatchObject({
       code: "ENOENT",
     });
     expect(await readdir(join(work, "packages", "a"))).toEqual(["package.json"]);
@@ -1241,11 +1242,12 @@ describe("startup budget", () => {
     // 169,833 with an optional pin named for another os read from the abbreviated document,
     // `--help` within noise (25.2/25.5 and 72.6/69.8 ms). 171,573 with a store on the project's
     // mount when `~/.upm/store` cannot hardlink there, `--help` within noise (70.6/68.6 and
-    // 117.1/110.8 ms), a no-op install too (76.4/76.1 ms).
+    // 117.1/110.8 ms), a no-op install too (76.4/76.1 ms). 171,978 with upm's own directories
+    // following XDG off macOS and Windows, `--help` within noise (71.1/70.3 ms).
     const modules = await reachable();
     const bytes = [...modules.values()].reduce((total, size) => total + size, 0);
     expect(modules.size).toBeLessThanOrEqual(27); // `upm.ts` is the bin, `cli.ts` the program
-    expect(bytes).toBeLessThanOrEqual(171_573);
+    expect(bytes).toBeLessThanOrEqual(171_978);
     // Found through `import()` by the commands that read a project, like the pools: each holds
     // its worker's whole code in the build.
     const lazy = [
