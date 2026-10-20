@@ -309,13 +309,21 @@ export function describe(error: unknown): string {
 
 const WIN = globalThis.process?.platform === "win32";
 
+// Asked once per path for the process: a command looks up the store more than once.
+const dirs = new Map<string, boolean>();
+
 /** Whether `path` is a directory. Older Node throws ENOTDIR under a file, even with no-throw. */
 function isDir(path: string): boolean {
-  try {
-    return !!builtin.fs.statSync(path, { throwIfNoEntry: false })?.isDirectory();
-  } catch {
-    return false;
+  let found = dirs.get(path);
+  if (found === undefined) {
+    try {
+      found = !!builtin.fs.statSync(path, { throwIfNoEntry: false })?.isDirectory();
+    } catch {
+      found = false;
+    }
+    dirs.set(path, found);
   }
+  return found;
 }
 
 /**

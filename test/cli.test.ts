@@ -656,19 +656,16 @@ describe("the ./upm entry", () => {
 
   // `src/upm.ts` and `./upm` each repeat `upmHome("cache")`, before anything is imported.
   it("puts the compile cache in upm's cache directory, from either entry", async () => {
-    const home = await mkdtemp(join(tmpdir(), "upm-home-"));
+    const top = await mkdtemp(join(tmpdir(), "upm-home-"));
     try {
+      let n = 0;
       for (const entry of [CLI, ENTRY]) {
-        const cases: Record<string, string | undefined>[] = [
-          { XDG_CACHE_HOME: undefined },
-          { XDG_CACHE_HOME: join(home, "xdg") },
-          { XDG_CACHE_HOME: "relative" },
-        ];
-        for (const env of cases) {
+        for (const xdg of [undefined, "xdg", "relative"]) {
           for (const kept of [false, true]) {
-            await rm(home, { recursive: true, force: true });
-            if (kept) await mkdir(join(home, ".upm", "store"), { recursive: true });
-            else await mkdir(home);
+            // A home of its own each time: `upmHome` keeps what it found for the process.
+            const home = join(top, `${n++}`);
+            await mkdir(kept ? join(home, ".upm", "store") : home, { recursive: true });
+            const env = { XDG_CACHE_HOME: xdg === "xdg" ? join(home, xdg) : xdg };
             const merged: NodeJS.ProcessEnv = {
               ...process.env,
               HOME: home,
@@ -683,7 +680,7 @@ describe("the ./upm entry", () => {
         }
       }
     } finally {
-      await rm(home, { recursive: true, force: true });
+      await rm(top, { recursive: true, force: true });
     }
   });
 
@@ -1279,11 +1276,12 @@ describe("startup budget", () => {
     // mount when `~/.upm/store` cannot hardlink there, `--help` within noise (70.6/68.6 and
     // 117.1/110.8 ms), a no-op install too (76.4/76.1 ms). 172,136 with upm's own directories
     // following XDG off macOS and Windows, `--help` within noise (70.6/70.9 ms). 172,212 with a
-    // `~/.upm` that is a file passed over on older Node.
+    // `~/.upm` that is a file passed over on older Node. 172,263 with that check kept for the
+    // process.
     const modules = await reachable();
     const bytes = [...modules.values()].reduce((total, size) => total + size, 0);
     expect(modules.size).toBeLessThanOrEqual(27); // `upm.ts` is the bin, `cli.ts` the program
-    expect(bytes).toBeLessThanOrEqual(172_212);
+    expect(bytes).toBeLessThanOrEqual(172_263);
     // Found through `import()` by the commands that read a project, like the pools: each holds
     // its worker's whole code in the build.
     const lazy = [
