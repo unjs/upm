@@ -1535,6 +1535,14 @@ describe("upmHome", () => {
     expect(upmHome("cache", cache, home(), "linux")).toBe(join(dir, "cache", "upm"));
   });
 
+  it("passes over a ~/.upm that is a file", async () => {
+    await mkdir(home(), { recursive: true });
+    await writeFile(join(home(), ".upm"), "");
+    const env = { XDG_DATA_HOME: join(dir, "data") };
+    expect(upmHome("data", env, home(), "linux")).toBe(join(dir, "data", "upm"));
+    expect(upmHome("cache", {}, home(), "linux")).toBe(join(home(), ".cache", "upm"));
+  });
+
   it("holds one XDG variable on macOS across runs, though the compile cache makes ~/.upm", async () => {
     await mkdir(join(home(), ".upm", "compile-cache"), { recursive: true });
     const env = { XDG_DATA_HOME: join(dir, "data") };

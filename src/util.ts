@@ -309,6 +309,15 @@ export function describe(error: unknown): string {
 
 const WIN = globalThis.process?.platform === "win32";
 
+/** Whether `path` is a directory. Older Node throws ENOTDIR under a file, even with no-throw. */
+function isDir(path: string): boolean {
+  try {
+    return !!builtin.fs.statSync(path, { throwIfNoEntry: false })?.isDirectory();
+  } catch {
+    return false;
+  }
+}
+
 /**
  * upm's own directory for what it keeps (`data`) or can make again (`cache`): the XDG base
  * directory, set or by default off macOS and Windows (`~/.local/share/upm`, `~/.cache/upm`),
@@ -328,7 +337,7 @@ export function upmHome(
   // The spec has a relative path ignored.
   const set = kind === "data" ? env.XDG_DATA_HOME : env.XDG_CACHE_HOME;
   if (kind === "cache" && set && isAbsolute(set)) return join(set, "upm");
-  if (builtin.fs.statSync(join(own, "store"), { throwIfNoEntry: false })?.isDirectory()) return own;
+  if (isDir(join(own, "store"))) return own;
   if (set && isAbsolute(set)) return join(set, "upm");
   if (platform === "darwin" || platform === "win32") return own;
   return kind === "data" ? join(home, ".local", "share", "upm") : join(home, ".cache", "upm");

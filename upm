@@ -20,11 +20,16 @@ if (home) {
   const { isAbsolute, join } = builtin("node:path");
   const own = join(home, ".upm");
   const set = proc.env.XDG_CACHE_HOME;
-  const kept = builtin("node:fs").statSync(join(own, "store"), { throwIfNoEntry: false });
+  // Older Node throws ENOTDIR when `~/.upm` is a file, even with no-throw.
+  const kept = () => {
+    try {
+      return builtin("node:fs").statSync(join(own, "store"), { throwIfNoEntry: false });
+    } catch {}
+  };
   const dir =
     set && isAbsolute(set)
       ? join(set, "upm")
-      : kept?.isDirectory() || proc.platform === "darwin" || proc.platform === "win32"
+      : kept()?.isDirectory() || proc.platform === "darwin" || proc.platform === "win32"
         ? own
         : join(home, ".cache", "upm");
   builtin("node:module")?.enableCompileCache?.(join(dir, "compile-cache"));

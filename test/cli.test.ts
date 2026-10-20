@@ -1278,11 +1278,12 @@ describe("startup budget", () => {
     // `--help` within noise (25.2/25.5 and 72.6/69.8 ms). 171,573 with a store on the project's
     // mount when `~/.upm/store` cannot hardlink there, `--help` within noise (70.6/68.6 and
     // 117.1/110.8 ms), a no-op install too (76.4/76.1 ms). 172,136 with upm's own directories
-    // following XDG off macOS and Windows, `--help` within noise (70.6/70.9 ms).
+    // following XDG off macOS and Windows, `--help` within noise (70.6/70.9 ms). 172,212 with a
+    // `~/.upm` that is a file passed over on older Node.
     const modules = await reachable();
     const bytes = [...modules.values()].reduce((total, size) => total + size, 0);
     expect(modules.size).toBeLessThanOrEqual(27); // `upm.ts` is the bin, `cli.ts` the program
-    expect(bytes).toBeLessThanOrEqual(172_136);
+    expect(bytes).toBeLessThanOrEqual(172_212);
     // Found through `import()` by the commands that read a project, like the pools: each holds
     // its worker's whole code in the build.
     const lazy = [

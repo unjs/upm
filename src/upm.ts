@@ -26,8 +26,14 @@ function cacheHome(): string | undefined {
   const { isAbsolute, join } = proc.getBuiltinModule("node:path");
   const own = join(home, ".upm");
   const set = proc.env.XDG_CACHE_HOME;
-  const kept = () =>
-    proc.getBuiltinModule("node:fs").statSync(join(own, "store"), { throwIfNoEntry: false });
+  // Older Node throws ENOTDIR when `~/.upm` is a file, even with no-throw.
+  const kept = () => {
+    try {
+      return proc
+        .getBuiltinModule("node:fs")
+        .statSync(join(own, "store"), { throwIfNoEntry: false });
+    } catch {}
+  };
   const dir =
     set && isAbsolute(set)
       ? join(set, "upm")
