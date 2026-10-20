@@ -16,7 +16,8 @@ compatibility. Keep this page about open work, not completed implementation step
   retention policy and a test that pauses an install at the deletion race.
   Start at `src/gc.ts` and `test/gc.test.ts`.
 - **Exec projects are never reclaimed:** every set of versions `upm exec` runs keeps a
-  project under the root's `node_modules/.upm/.exec`, or `~/.upm/exec` outside a project, and
+  project under the root's `node_modules/.upm/.exec`, or the cache directory's `exec` outside
+  a project, and
   `prune` knows nothing of them. The first go only with their `node_modules`; the second
   never. A tag that moves often (`upm publish` runs npm's `latest`) leaves one per version.
   Needs a retention rule (last use, count) and a prune test that keeps a running command's

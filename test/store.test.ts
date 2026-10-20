@@ -1520,14 +1520,29 @@ describe("upmHome", () => {
   it("keeps ~/.upm on macOS and Windows unless XDG is set", () => {
     expect(upmHome("data", {}, home(), "darwin")).toBe(join(home(), ".upm"));
     expect(upmHome("cache", {}, home(), "win32")).toBe(join(home(), ".upm"));
-    const env = { XDG_CACHE_HOME: join(dir, "cache") };
+    const env = { XDG_DATA_HOME: join(dir, "data"), XDG_CACHE_HOME: join(dir, "cache") };
+    expect(upmHome("data", env, home(), "darwin")).toBe(join(dir, "data", "upm"));
     expect(upmHome("cache", env, home(), "darwin")).toBe(join(dir, "cache", "upm"));
   });
 
-  it("keeps ~/.upm once it exists, so a filled store stays put", async () => {
-    await mkdir(join(home(), ".upm"), { recursive: true });
-    const env = { XDG_DATA_HOME: join(dir, "data"), XDG_CACHE_HOME: join(dir, "cache") };
+  it("keeps ~/.upm once it has a store, so that store stays put", async () => {
+    await mkdir(join(home(), ".upm", "store"), { recursive: true });
+    const env = { XDG_DATA_HOME: join(dir, "data") };
     expect(upmHome("data", env, home(), "linux")).toBe(join(home(), ".upm"));
-    expect(upmHome("cache", {}, home(), "linux")).toBe(join(home(), ".upm"));
+    expect(upmHome("cache", env, home(), "linux")).toBe(join(home(), ".upm"));
+    // A cache is cheap to make again: a set one is used.
+    const cache = { XDG_CACHE_HOME: join(dir, "cache") };
+    expect(upmHome("cache", cache, home(), "linux")).toBe(join(dir, "cache", "upm"));
+  });
+
+  it("holds one XDG variable on macOS across runs, though the compile cache makes ~/.upm", async () => {
+    await mkdir(join(home(), ".upm", "compile-cache"), { recursive: true });
+    const env = { XDG_DATA_HOME: join(dir, "data") };
+    expect(upmHome("data", env, home(), "linux")).toBe(join(dir, "data", "upm"));
+    expect(upmHome("data", env, home(), "darwin")).toBe(join(dir, "data", "upm"));
+    // A store made in ~/.upm by the first run does not move the cache of the next one.
+    await mkdir(join(home(), ".upm", "store"));
+    const cache = { XDG_CACHE_HOME: join(dir, "cache") };
+    expect(upmHome("cache", cache, home(), "darwin")).toBe(join(dir, "cache", "upm"));
   });
 });

@@ -15,6 +15,9 @@ const PROJECT = "/project";
 
 const HOME = "/home/user";
 
+// Set, so the store is the one listed here whichever platform the install says it is on.
+const STORE = `${HOME}/.upm/store/`;
+
 /** A file of the installed tree, or a symlink: then `data` is its target. */
 export type InstalledFile = TarEntry & { link?: string };
 
@@ -44,7 +47,7 @@ let loaded: Promise<unknown> | undefined;
  */
 async function ready(target?: Platform): Promise<typeof import("./node.ts")> {
   shim ??= await import("./node.ts");
-  shim.installShim({ cwd: PROJECT, home: HOME });
+  shim.installShim({ cwd: PROJECT, home: HOME, env: { UPM_STORE: STORE.slice(0, -1) } });
   if (typeof globalThis.process?.getBuiltinModule !== "function") {
     throw new Error("This page has a `process` of its own, so upm's cannot be put in place");
   }
@@ -113,8 +116,6 @@ export function manifestOf(dependencies: Record<string, string>): InstalledFile 
   const data = new TextEncoder().encode(`${JSON.stringify(manifest, null, 2)}\n`);
   return { path: "package.json", mode: 0o644, size: data.length, data };
 }
-
-const STORE = `${HOME}/.upm/store/`;
 
 /** What the running install last reported of each phase, through `onProgress`. */
 let seen: Seen = {};

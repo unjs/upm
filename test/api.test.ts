@@ -510,8 +510,8 @@ describe("api", () => {
       XDG_DATA_HOME: process.env.XDG_DATA_HOME,
     };
     delete process.env.UPM_STORE;
-    // ~/.upm, as an existing install has it: the XDG one is passed over.
-    await mkdir(join(home, ".upm"));
+    // ~/.upm/store, as an earlier upm made it: the XDG one is passed over.
+    await mkdir(join(home, ".upm", "store"), { recursive: true });
     process.env.HOME = process.env.USERPROFILE = home;
     process.env.XDG_DATA_HOME = join(home, "data");
     // The project dir stands for a mount of its own: no link crosses its edge. By real path, as

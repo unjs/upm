@@ -1,6 +1,7 @@
 import { Buffer } from "node:buffer";
 import { execFile, spawn } from "node:child_process";
 import { mkdir, mkdtemp, open, readFile, readdir, realpath, rm, writeFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
 import { createServer } from "node:http";
 import type { IncomingMessage, Server, ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
@@ -12,6 +13,7 @@ import { promisify } from "node:util";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { parseArgv } from "../src/cli.ts";
 import type { Cli } from "../src/cli.ts";
+import { upmHome } from "../src/util.ts";
 import { hashOf } from "./hash.ts";
 import { makeTarball } from "./tarball.ts";
 
@@ -652,6 +654,39 @@ describe("the ./upm entry", () => {
     expect(stdout).toContain("--verbose            print debug messages (also UPM_DEBUG=1 or on)");
   });
 
+  // `src/upm.ts` and `./upm` each repeat `upmHome("cache")`, before anything is imported.
+  it("puts the compile cache in upm's cache directory, from either entry", async () => {
+    const home = await mkdtemp(join(tmpdir(), "upm-home-"));
+    try {
+      for (const entry of [CLI, ENTRY]) {
+        const cases: Record<string, string | undefined>[] = [
+          { XDG_CACHE_HOME: undefined },
+          { XDG_CACHE_HOME: join(home, "xdg") },
+          { XDG_CACHE_HOME: "relative" },
+        ];
+        for (const env of cases) {
+          for (const kept of [false, true]) {
+            await rm(home, { recursive: true, force: true });
+            if (kept) await mkdir(join(home, ".upm", "store"), { recursive: true });
+            else await mkdir(home);
+            const merged: NodeJS.ProcessEnv = {
+              ...process.env,
+              HOME: home,
+              USERPROFILE: home,
+              ...env,
+            };
+            delete merged.NODE_DISABLE_COMPILE_CACHE;
+            await run(process.execPath, [entry, "--help"], { env: merged, cwd: home });
+            const want = join(upmHome("cache", env, home), "compile-cache");
+            expect(existsSync(want), `${entry} ${JSON.stringify({ ...env, kept })}`).toBe(true);
+          }
+        }
+      }
+    } finally {
+      await rm(home, { recursive: true, force: true });
+    }
+  });
+
   // The entry's `await import` keeps the process alive past the write, so a reader that has
   // gone away delivers EPIPE instead of being missed on the way out. `| head` is not a failure.
   it("says nothing when the reader closes the pipe", async () => {
@@ -1242,12 +1277,12 @@ describe("startup budget", () => {
     // 169,833 with an optional pin named for another os read from the abbreviated document,
     // `--help` within noise (25.2/25.5 and 72.6/69.8 ms). 171,573 with a store on the project's
     // mount when `~/.upm/store` cannot hardlink there, `--help` within noise (70.6/68.6 and
-    // 117.1/110.8 ms), a no-op install too (76.4/76.1 ms). 171,978 with upm's own directories
-    // following XDG off macOS and Windows, `--help` within noise (71.1/70.3 ms).
+    // 117.1/110.8 ms), a no-op install too (76.4/76.1 ms). 172,136 with upm's own directories
+    // following XDG off macOS and Windows, `--help` within noise (70.6/70.9 ms).
     const modules = await reachable();
     const bytes = [...modules.values()].reduce((total, size) => total + size, 0);
     expect(modules.size).toBeLessThanOrEqual(27); // `upm.ts` is the bin, `cli.ts` the program
-    expect(bytes).toBeLessThanOrEqual(171_978);
+    expect(bytes).toBeLessThanOrEqual(172_136);
     // Found through `import()` by the commands that read a project, like the pools: each holds
     // its worker's whole code in the build.
     const lazy = [

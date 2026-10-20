@@ -10,7 +10,10 @@ jobs:
         with: { node-version: lts/* }
       - uses: actions/cache@v4
         with:
-          path: ~/.upm/store
+          # Linux's XDG default, and ~/.upm elsewhere or where an older cache made it.
+          path: |
+            ~/.local/share/upm/store
+            ~/.upm/store
           key: upm-store-${{ runner.os }}-${{ hashFiles('upm.lock') }}
           restore-keys: upm-store-${{ runner.os }}-
       # Not --frozen-lockfile: a stale upm.lock is refreshed here and committed below.

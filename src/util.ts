@@ -310,10 +310,12 @@ export function describe(error: unknown): string {
 const WIN = globalThis.process?.platform === "win32";
 
 /**
- * upm's own directory for what it keeps (`data`) or can make again (`cache`). `~/.upm` while it
- * exists, so a store already filled stays where it is; else the XDG base directory, set or by
- * default off macOS and Windows: `~/.local/share/upm` and `~/.cache/upm`. `src/upm.ts` repeats
- * this for the compile cache, which is on before anything is imported.
+ * upm's own directory for what it keeps (`data`) or can make again (`cache`): the XDG base
+ * directory, set or by default off macOS and Windows (`~/.local/share/upm`, `~/.cache/upm`),
+ * else `~/.upm`. While `~/.upm/store` exists, `~/.upm` wins over all but a set `XDG_CACHE_HOME`,
+ * so a store already filled stays where it is. Its store and not `~/.upm` itself: an earlier upm,
+ * or any on macOS and Windows, makes `~/.upm` for the compile cache alone. `src/upm.ts` and
+ * `./upm` repeat this for that cache, which is on before anything is imported.
  */
 export function upmHome(
   kind: "data" | "cache",
@@ -323,9 +325,10 @@ export function upmHome(
 ): string {
   const { isAbsolute, join } = builtin.path;
   const own = join(home, ".upm");
-  if (builtin.fs.existsSync(own)) return own;
   // The spec has a relative path ignored.
   const set = kind === "data" ? env.XDG_DATA_HOME : env.XDG_CACHE_HOME;
+  if (kind === "cache" && set && isAbsolute(set)) return join(set, "upm");
+  if (builtin.fs.statSync(join(own, "store"), { throwIfNoEntry: false })?.isDirectory()) return own;
   if (set && isAbsolute(set)) return join(set, "upm");
   if (platform === "darwin" || platform === "win32") return own;
   return kind === "data" ? join(home, ".local", "share", "upm") : join(home, ".cache", "upm");

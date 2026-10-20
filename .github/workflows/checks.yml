@@ -14,7 +14,10 @@ jobs:
       # upm's own store, so a warm run links from cache instead of refetching.
       - uses: actions/cache@v4
         with:
-          path: ~/.upm/store
+          # Linux's XDG default, and ~/.upm elsewhere or where an older cache made it.
+          path: |
+            ~/.local/share/upm/store
+            ~/.upm/store
           key: upm-store-${{ runner.os }}-${{ hashFiles('upm.lock') }}
           restore-keys: upm-store-${{ runner.os }}-
       - run: node ./upm install --frozen-lockfile

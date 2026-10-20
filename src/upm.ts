@@ -26,11 +26,12 @@ function cacheHome(): string | undefined {
   const { isAbsolute, join } = proc.getBuiltinModule("node:path");
   const own = join(home, ".upm");
   const set = proc.env.XDG_CACHE_HOME;
-  const dir = proc.getBuiltinModule("node:fs").existsSync(own)
-    ? own
-    : set && isAbsolute(set)
+  const kept = () =>
+    proc.getBuiltinModule("node:fs").statSync(join(own, "store"), { throwIfNoEntry: false });
+  const dir =
+    set && isAbsolute(set)
       ? join(set, "upm")
-      : proc.platform === "darwin" || proc.platform === "win32"
+      : kept()?.isDirectory() || proc.platform === "darwin" || proc.platform === "win32"
         ? own
         : join(home, ".cache", "upm");
   return join(dir, "compile-cache");

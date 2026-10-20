@@ -752,12 +752,12 @@ turn this off.
 The shared file cache, the home store, lives in `store` of upm's data directory. Change it
 with `UPM_STORE` or `--store <path>`; the command-line option takes priority.
 
-upm keeps its files in `~/.upm` when that directory exists, so an existing store stays where
-it is. Otherwise it follows the XDG base directories: the store in `$XDG_DATA_HOME/upm`
-(default `~/.local/share/upm`), and what it can make again, `exec` installs and the compile
-cache, in `$XDG_CACHE_HOME/upm` (default `~/.cache/upm`). On macOS and Windows it uses
-`~/.upm` unless those variables are set. Remove `~/.upm` to move to the XDG directories;
-the next install downloads the packages again.
+upm follows the XDG base directories: the store in `$XDG_DATA_HOME/upm` (default
+`~/.local/share/upm`), and what it can make again, `exec` installs and the compile cache, in
+`$XDG_CACHE_HOME/upm` (default `~/.cache/upm`). On macOS and Windows it uses `~/.upm` unless
+those variables are set. When `~/.upm/store` exists, as an earlier upm made it, upm keeps using
+`~/.upm` (except for a set `XDG_CACHE_HOME`), so that store stays where it is. Remove `~/.upm`
+to move to the XDG directories; the next install downloads the packages again.
 
 Files are stored by content and hardlinked into each project's
 `node_modules/.upm`. Hardlinks let projects share the same bytes on disk. A hardlink

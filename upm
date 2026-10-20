@@ -9,13 +9,26 @@
 // it is worth 3 ms of a 30 ms `--help`; it stays the published `bin`.
 //
 // `getBuiltinModule` rather than `src/builtin.ts`, because importing that would be the
-// one TypeScript file this has to load before the cache is on. The cache sits beside the
-// store, not in `os.tmpdir()` where Node puts it by default — a shared `/tmp` can already
-// hold that directory owned by someone else. `NODE_DISABLE_COMPILE_CACHE=1` turns it off.
-const builtin = (id) => globalThis.process?.getBuiltinModule(id);
+// one TypeScript file this has to load before the cache is on. The cache sits in upm's cache
+// directory, as `upmHome("cache")` of `src/util.ts` finds it, not in `os.tmpdir()` where Node
+// puts it by default — a shared `/tmp` can already hold that directory owned by someone else.
+// `NODE_DISABLE_COMPILE_CACHE=1` turns it off.
+const proc = globalThis.process;
+const builtin = (id) => proc?.getBuiltinModule(id);
 const home = builtin("node:os")?.homedir();
-const cache = home && builtin("node:path").join(home, ".upm", "compile-cache");
-if (cache) builtin("node:module")?.enableCompileCache?.(cache);
+if (home) {
+  const { isAbsolute, join } = builtin("node:path");
+  const own = join(home, ".upm");
+  const set = proc.env.XDG_CACHE_HOME;
+  const kept = builtin("node:fs").statSync(join(own, "store"), { throwIfNoEntry: false });
+  const dir =
+    set && isAbsolute(set)
+      ? join(set, "upm")
+      : kept?.isDirectory() || proc.platform === "darwin" || proc.platform === "win32"
+        ? own
+        : join(home, ".cache", "upm");
+  builtin("node:module")?.enableCompileCache?.(join(dir, "compile-cache"));
+}
 
 const { main } = await import("./src/cli.ts");
 globalThis.process.exitCode = await main(globalThis.process.argv.slice(2));

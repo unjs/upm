@@ -245,10 +245,15 @@ and an offline install fails until then. Registry documents stay in the home sto
 read, not linked, and a command picking two stores would split them. A set store (`--store`,
 `UPM_STORE`, or `run`'s from the state) is never probed.
 
-The home store is in upm's data directory (`upmHome` in `src/util.ts`): `~/.upm` while it
-exists, else XDG's. An existing `~/.upm` wins over a set `XDG_DATA_HOME` because moving the store
-downloads every tarball again and leaves the old one behind. A user moves by removing it.
-`src/upm.ts` repeats the cache lookup, since it turns the compile cache on before any import.
+The home store is in upm's data directory (`upmHome` in `src/util.ts`): XDG's, set or by default
+off macOS and Windows, else `~/.upm`. An existing `~/.upm/store` wins over a set `XDG_DATA_HOME`
+because moving the store downloads every tarball again and leaves the old one behind; a user
+moves by removing it. The signal is the store, not `~/.upm`, which an earlier upm, or any on
+macOS and Windows, makes for the compile cache alone. A set `XDG_CACHE_HOME` always wins: a cache
+is cheap to make again. Exec projects are in the cache directory, which may be another mount than
+the store (a tmpfs `~/.cache`), so an exec install there can get a `.upm-store` of its own, as
+pnpm's `dlx` would. `src/upm.ts` and `./upm` repeat the cache lookup, since each turns the
+compile cache on before any import.
 
 ## Optimization must keep the same answer
 
