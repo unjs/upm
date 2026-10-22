@@ -6,7 +6,7 @@
     "@acme/cache": "*",
     "@acme/db": "*",
     "@acme/logger": "*",
-    "bullmq": "6.3.15",
+    "bullmq": "6.3.17",
     "ioredis": "6.0.0"
   },
   "devDependencies": {
