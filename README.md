@@ -23,7 +23,7 @@ There are already several popular package managers:
 - **npm** ships with Node.js, but it is simply slow.
 - **pnpm** is fast and well designed, but it keeps growing in size, features and customization settings.
 - **Yarn** (berry) has become complex, with its own concepts and unusual requirements.
-- **Bun**, **Deno** and **Nub** are fast, but they fit best when you also use them as runtime and not Node.js.
+- **Bun** and **Deno** are fast, but they fit best when you also use them as runtime and not Node.js.
 
 Furthermore:
 
