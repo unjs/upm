@@ -1,10 +1,26 @@
-// The YAML pnpm writes: block maps, block lists, flow `{}` and `[]`, quoted and plain scalars.
-// Nothing else appears in its lockfile. Loaded only by what reads one of pnpm's files.
+// The YAML pnpm writes: block maps, explicit keys, block lists, flow `{}` and `[]`, quoted and
+// plain scalars. Nothing else appears in its lockfile. Loaded only by what reads one of pnpm's
+// files.
 
 export function yaml(text: string): unknown {
   const lines = text.split("\n").filter((l) => l.trim() && !l.trimStart().startsWith("#"));
   const indentOf = (l: string) => l.length - l.trimStart().length;
   let i = 0;
+  /** The value of a mapping entry: inline, or the block one level down. */
+  function value(rest: string, indent: number): unknown {
+    const next = lines[i];
+    if (rest !== "") return scalar(rest);
+    return next !== undefined && indentOf(next) > indent ? block(indentOf(next)) : {};
+  }
+  /** The value of an explicit key: inline, empty, or a block map opening on its `:` line. */
+  function explicitValue(rest: string, indent: number): unknown {
+    if (rest.endsWith(":")) {
+      const key = unquote(rest.slice(0, -1));
+      const next = lines[i];
+      return { [key]: next !== undefined && indentOf(next) > indent ? block(indentOf(next)) : {} };
+    }
+    return value(rest, indent);
+  }
   function block(indent: number): unknown {
     if (lines[i]?.trim().startsWith("- ")) {
       const out: unknown[] = [];
@@ -20,12 +36,24 @@ export function yaml(text: string): unknown {
     const out: Record<string, unknown> = {};
     while (i < lines.length && indentOf(lines[i]!) === indent) {
       const line = lines[i++]!.trim();
+      // YAML's explicit key form (`? key` / `: value`), which pnpm writes for long keys.
+      if (line.startsWith("? ")) {
+        const key = unquote(line.slice(2));
+        const separator = lines[i];
+        if (
+          separator === undefined ||
+          indentOf(separator) !== indent ||
+          !separator.trim().startsWith(":")
+        ) {
+          throw new Error(`Invalid YAML: explicit key without a value: ${key}`);
+        }
+        i++;
+        out[key] = explicitValue(separator.trim().slice(1).trim(), indent);
+        continue;
+      }
       const colon = keyEnd(line);
       const key = unquote(line.slice(0, colon));
-      const rest = line.slice(colon + 1).trim();
-      const next = lines[i];
-      if (rest !== "") out[key] = scalar(rest);
-      else out[key] = next !== undefined && indentOf(next) > indent ? block(indentOf(next)) : {};
+      out[key] = value(line.slice(colon + 1).trim(), indent);
     }
     return out;
   }
