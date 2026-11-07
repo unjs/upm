@@ -12,14 +12,23 @@ export function yaml(text: string): unknown {
     if (rest !== "") return scalar(rest);
     return next !== undefined && indentOf(next) > indent ? block(indentOf(next)) : {};
   }
-  /** The value of an explicit key: inline, empty, or a block map opening on its `:` line. */
-  function explicitValue(rest: string, indent: number): unknown {
-    if (rest.endsWith(":")) {
-      const key = unquote(rest.slice(0, -1));
-      const next = lines[i];
-      return { [key]: next !== undefined && indentOf(next) > indent ? block(indentOf(next)) : {} };
+  /** The value of an explicit key: inline, empty, or a block opening on its `:` line. */
+  function explicitValue(separator: string, indent: number): unknown {
+    const colon = separator.indexOf(":");
+    const raw = separator.slice(colon + 1);
+    const rest = raw.trim();
+    const next = lines[i];
+    if (rest === "") {
+      return next !== undefined && indentOf(next) > indent ? block(indentOf(next)) : {};
     }
-    return value(rest, indent);
+    // A block map or list can open on the separator line (`: dependencies:`), and its siblings
+    // continue at the column where that first key starts.
+    if (rest.startsWith("- ") || isMappingEntry(rest)) {
+      const valueIndent = colon + 1 + (raw.length - raw.trimStart().length);
+      lines.splice(i, 0, " ".repeat(valueIndent) + rest);
+      return block(valueIndent);
+    }
+    return scalar(rest);
   }
   function block(indent: number): unknown {
     if (lines[i]?.trim().startsWith("- ")) {
@@ -48,7 +57,7 @@ export function yaml(text: string): unknown {
           throw new Error(`Invalid YAML: explicit key without a value: ${key}`);
         }
         i++;
-        out[key] = explicitValue(separator.trim().slice(1).trim(), indent);
+        out[key] = explicitValue(separator, indent);
         continue;
       }
       const colon = keyEnd(line);
@@ -75,6 +84,14 @@ function keyEnd(line: string): number {
   const sep = line.indexOf(": ");
   if (sep >= 0) return sep;
   return line.endsWith(":") ? line.length - 1 : line.indexOf(":");
+}
+
+/** Whether a value opens a block mapping (`key: value` or `key:`) rather than being a scalar. */
+function isMappingEntry(text: string): boolean {
+  const first = text[0];
+  if (first === "{" || first === "[" || first === "'" || first === '"') return false;
+  const colon = keyEnd(text);
+  return colon >= 0 && (colon === text.length - 1 || text[colon + 1] === " ");
 }
 
 function scalar(text: string): unknown {

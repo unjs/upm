@@ -8,14 +8,17 @@ describe("yaml", () => {
     });
   });
 
-  it("reads an explicit key with a quoted name and a nested block value", () => {
+  it("reads an explicit key with a quoted name, a nested block value and its siblings", () => {
     expect(
       yaml(
-        "snapshots:\n  ? 'long-package-name'\n  : dependencies:\n      helper: 1.0.0\n  other@1.0.0: {}\n",
+        "snapshots:\n  ? 'long-package-name'\n  : dependencies:\n      helper: 1.0.0\n    optionalDependencies:\n      opt: 1.0.0\n  other@1.0.0: {}\n",
       ),
     ).toEqual({
       snapshots: {
-        "long-package-name": { dependencies: { helper: "1.0.0" } },
+        "long-package-name": {
+          dependencies: { helper: "1.0.0" },
+          optionalDependencies: { opt: "1.0.0" },
+        },
         "other@1.0.0": {},
       },
     });
