@@ -89,7 +89,9 @@ function keyEnd(line: string): number {
 /** Whether a value opens a block mapping (`key: value` or `key:`) rather than being a scalar. */
 function isMappingEntry(text: string): boolean {
   const first = text[0];
-  if (first === "{" || first === "[" || first === "'" || first === '"') return false;
+  if (first === "{" || first === "[") return false;
+  // A quoted scalar ends at its closing quote; a quoted key continues with a mapping colon.
+  if ((first === "'" || first === '"') && text.at(-1) === first) return false;
   const colon = keyEnd(text);
   return colon >= 0 && (colon === text.length - 1 || text[colon + 1] === " ");
 }
