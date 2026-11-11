@@ -1278,10 +1278,12 @@ describe("startup budget", () => {
     // following XDG off macOS and Windows, `--help` within noise (70.6/70.9 ms). 172,212 with a
     // `~/.upm` that is a file passed over on older Node. 172,263 with that check kept for the
     // process. 172,464 with undici's untouched default agent detected when node:http is loaded.
+    // 172,817 with undici 8's dispatcher slot and handler callbacks (Node 26), `--help` within
+    // noise (46.3/45.1 and 119.9/119.2 ms).
     const modules = await reachable();
     const bytes = [...modules.values()].reduce((total, size) => total + size, 0);
     expect(modules.size).toBeLessThanOrEqual(27); // `upm.ts` is the bin, `cli.ts` the program
-    expect(bytes).toBeLessThanOrEqual(172_464);
+    expect(bytes).toBeLessThanOrEqual(172_817);
     // Found through `import()` by the commands that read a project, like the pools: each holds
     // its worker's whole code in the build.
     const lazy = [

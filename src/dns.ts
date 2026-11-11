@@ -22,8 +22,13 @@ type Callback = (
   family?: number,
 ) => void;
 
-/** Where undici keeps the dispatcher `fetch` uses: what `setGlobalDispatcher` writes to. */
-export const DISPATCHER = Symbol.for("undici.globalDispatcher.1");
+/**
+ * Where undici keeps the dispatcher `fetch` uses: what `setGlobalDispatcher` writes to. undici 8
+ * (Node 26) reads `.2` and leaves `.1` a wrapper for older copies of undici; before it, `.1`.
+ */
+export const DISPATCHER = Symbol.for(
+  `undici.globalDispatcher.${Number.parseInt(globalThis.process?.versions?.undici ?? "") >= 8 ? 2 : 1}`,
+);
 
 const known = new Map<string, Promise<LookupAddress[]>>();
 const turns = new Map<string, number>();
@@ -142,11 +147,23 @@ const SAYS = { "user-agent": "node", accept: "*/*" };
 /** As `fetch` has it. */
 const MAX_REDIRECTS = 20;
 
-/** The part of undici's `Dispatcher` a GET uses: the callbacks that both undici 6 and 7 call. */
+/**
+ * The part of undici's `Dispatcher` a GET uses. undici 7 and 8 call the `onRequest…` and
+ * `onResponse…` callbacks (8 refuses a handler without them); undici 6 the others.
+ */
 interface Dispatcher {
   dispatch(
     options: { origin: string; path: string; method: "GET"; headers?: Record<string, string> },
     handler: {
+      onRequestStart(controller: { abort(reason?: unknown): void }): void;
+      onResponseStart(
+        controller: unknown,
+        status: number,
+        headers: Record<string, string | string[] | undefined>,
+      ): void;
+      onResponseData(controller: unknown, chunk: Uint8Array): void;
+      onResponseEnd(): void;
+      onResponseError(controller: unknown, error: Error): void;
       onConnect(abort: (reason?: unknown) => void): void;
       onHeaders(status: number, raw: (Uint8Array | Uint8Array[])[]): boolean;
       onData(chunk: Uint8Array): boolean;
@@ -183,17 +200,51 @@ function getOnce(
     }
   }
   return new Promise((resolve, reject) => {
+    const start = (cancel: (reason?: unknown) => void) => {
+      abort = cancel;
+      if (signal.aborted) cancel(signal.reason);
+    };
+    const answer = (status: number, found: Map<string, string>) => {
+      // An informational answer, 103 Early Hints say, comes before the real one.
+      if (status < 200) return;
+      // As `fetch` has it: these statuses have no body.
+      const none = status === 204 || status === 205 || status === 304;
+      const headers = { get: (name: string) => found.get(name) ?? null };
+      resolve({ status, headers, body: none ? null : body() });
+    };
+    const data = (chunk: Uint8Array) => {
+      chunks.push(chunk);
+      wake?.();
+    };
+    const end = () => {
+      done = true;
+      settle();
+    };
+    const fail = (error: Error) => {
+      // Uncoded, as `fetch` rejects: the caller tells a transient failure by the lack of one.
+      failed = new Error(error?.message ?? String(error), { cause: error });
+      reject(failed);
+      settle();
+    };
     own.dispatch(
       // What `fetch` would say it is: some proxies turn away a request that says nothing.
       { origin, path: `${pathname}${search}`, method: "GET", headers: { ...SAYS, ...headers } },
       {
-        onConnect(cancel) {
-          abort = cancel;
-          if (signal.aborted) cancel(signal.reason);
+        onRequestStart: (controller) => start((reason) => controller.abort(reason)),
+        onResponseStart(_, status, headers) {
+          const found = new Map<string, string>();
+          for (const [name, value] of Object.entries(headers)) {
+            if (value !== undefined) {
+              found.set(name.toLowerCase(), Array.isArray(value) ? value.join(", ") : value);
+            }
+          }
+          answer(status, found);
         },
+        onResponseData: (_, chunk) => data(chunk),
+        onResponseEnd: end,
+        onResponseError: (_, error) => fail(error),
+        onConnect: start,
         onHeaders(status, raw) {
-          // An informational answer, 103 Early Hints say, comes before the real one.
-          if (status < 200) return true;
           const found = new Map<string, string>();
           const text = (value: Uint8Array | Uint8Array[]): string =>
             Array.isArray(value) ? value.map(text).join(", ") : decoder.decode(value);
@@ -203,27 +254,15 @@ function getOnce(
             const before = found.get(name);
             found.set(name, before === undefined ? value : `${before}, ${value}`);
           }
-          // As `fetch` has it: these statuses have no body.
-          const none = status === 204 || status === 205 || status === 304;
-          const headers = { get: (name: string) => found.get(name) ?? null };
-          resolve({ status, headers, body: none ? null : body() });
+          answer(status, found);
           return true;
         },
         onData(chunk) {
-          chunks.push(chunk);
-          wake?.();
+          data(chunk);
           return true;
         },
-        onComplete() {
-          done = true;
-          settle();
-        },
-        onError(error) {
-          // Uncoded, as `fetch` rejects: the caller tells a transient failure by the lack of one.
-          failed = new Error(error?.message ?? String(error), { cause: error });
-          reject(failed);
-          settle();
-        },
+        onComplete: end,
+        onError: fail,
       },
     );
   });
@@ -255,7 +294,7 @@ async function install(): Promise<void> {
 
 /**
  * Whether a dispatcher is undici's untouched default agent, which an ESM `import "node:http"`
- * or a first `fetch` creates on Node 22 and 24, rather than one the caller configured.
+ * or a first `fetch` creates on Node 22 to 26, rather than one the caller configured.
  */
 function isDefault(dispatcher: unknown): boolean {
   if ((dispatcher as { constructor?: { name?: string } })?.constructor?.name !== "Agent") {
