@@ -138,8 +138,8 @@ describe("cacheLookups", () => {
   });
   // Module state (installed once) is per import: a fresh copy for each case.
   const fresh = async () => {
-    const { cacheLookups, fetching } = await import("../src/dns.ts");
-    return { cacheLookups, fetching };
+    const { cacheLookups, fetching, getter } = await import("../src/dns.ts");
+    return { cacheLookups, fetching, getter };
   };
   /** What `fetching()` hands `fetch` as the dispatcher, if anything. */
   const dispatcherOf = async (fetching: () => typeof fetch) => {
@@ -192,6 +192,17 @@ describe("cacheLookups", () => {
     await again.cacheLookups();
     expect(global[DISPATCHER]).toBe(theirs);
     expect(await dispatcherOf(again.fetching)).toBeUndefined();
+  });
+
+  it("makes its agent when node:http or an untouched default is already in place", async () => {
+    // An untouched default agent, as node:http makes it: we still make our agent.
+    global[DISPATCHER] = new Agent({});
+    const { cacheLookups, fetching, getter } = await fresh();
+    await cacheLookups();
+    const ours = (await dispatcherOf(fetching)) as { constructor: { name: string } };
+    expect(ours?.constructor.name).toBe("Agent");
+    expect(ours).not.toBe(global[DISPATCHER]);
+    expect(getter()).toBeTypeOf("function");
   });
 
   it("makes its agent before its first request, and not before", async () => {

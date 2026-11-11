@@ -1,6 +1,6 @@
 {
   "name": "upm",
-  "version": "1.4.0",
+  "version": "1.5.1",
   "description": "A fast, tiny package manager for the npm registry, written in TypeScript.",
   "license": "MIT",
   "repository": "unjs/upm",

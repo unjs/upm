@@ -1,6 +1,52 @@
 # Changelog
 
 
+## v1.5.1
+
+[compare changes](https://github.com/unjs/upm/compare/v1.5.0...v1.5.1)
+
+### 🩹 Fixes
+
+- **web:** Skip listing a store the install never made ([0828a8c](https://github.com/unjs/upm/commit/0828a8c))
+- **dns:** Detect untouched default agent when node:http is loaded ([#42](https://github.com/unjs/upm/pull/42))
+
+### ❤️ Contributors
+
+- LuckTerence ([@LuckTerence](https://github.com/LuckTerence))
+- Pooya Parsa ([@pi0](https://github.com/pi0))
+
+## v1.5.0
+
+[compare changes](https://github.com/unjs/upm/compare/v1.4.0...v1.5.0)
+
+### 🚀 Enhancements
+
+- Use a store on the project's mount when ~/.upm/store cannot hardlink there ([c033d73](https://github.com/unjs/upm/commit/c033d73))
+
+### 🩹 Fixes
+
+- **website:** Keep a linked file and its lines as the tarball and install land ([9cef58b](https://github.com/unjs/upm/commit/9cef58b))
+- Read a package-lock.json bundle its parent lists without entries of its own ([#38](https://github.com/unjs/upm/pull/38))
+- Follow XDG base directories for upm's own files ([#41](https://github.com/unjs/upm/pull/41))
+
+### 🏡 Chore
+
+- **website:** Lighter storage tab, compact panel badges ([d41b956](https://github.com/unjs/upm/commit/d41b956))
+- **website:** Keep open file and picked lines in the url ([271ff8b](https://github.com/unjs/upm/commit/271ff8b))
+- Update lockfile ([08899e9](https://github.com/unjs/upm/commit/08899e9))
+- Apply automated updates ([fcb0a97](https://github.com/unjs/upm/commit/fcb0a97))
+
+### ✅ Tests
+
+- Resolve the fake mount as projectStore does, keeping Windows short names ([58f419f](https://github.com/unjs/upm/commit/58f419f))
+- Drop unused aliases binding ([d817e6b](https://github.com/unjs/upm/commit/d817e6b))
+
+### ❤️ Contributors
+
+- Pooya Parsa ([@pi0](https://github.com/pi0))
+- Pi0x <x@pi0.io>
+- Raphael Fakhri ([@RaphaelFakhri](https://github.com/RaphaelFakhri))
+
 ## v1.4.0
 
 [compare changes](https://github.com/unjs/upm/compare/v1.3.1...v1.4.0)

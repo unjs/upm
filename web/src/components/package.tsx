@@ -2,6 +2,7 @@
 import { useMemo } from "react";
 import type { View } from "../app.tsx";
 import type { FullManifest } from "../lib/client.ts";
+import { allowedSource } from "../lib/route.ts";
 import { formatBytes } from "./code.tsx";
 import { Downloads } from "./downloads.tsx";
 import { tally } from "./files.tsx";
@@ -91,9 +92,19 @@ export function PackageMeta({ view, onInstall }: { view: View; onInstall: () => 
             <h1 className="font-mono text-xl font-semibold break-all text-zinc-900 dark:text-zinc-100">
               {view.name}
             </h1>
-            <span className="font-mono text-sm text-amber-600 dark:text-amber-500">
-              {top.version}
-            </span>
+            {/* A tarball url's version is its package.json's, which says little: its ref says more. */}
+            {allowedSource(top.resolved) ? (
+              <span
+                title={`${top.version}, from ${top.resolved}`}
+                className="font-mono text-sm text-amber-600 dark:text-amber-500"
+              >
+                {top.resolved.slice(top.resolved.lastIndexOf("@"))}
+              </span>
+            ) : (
+              <span className="font-mono text-sm text-amber-600 dark:text-amber-500">
+                {top.version}
+              </span>
+            )}
             {manifest?.license && <Badge>{manifest.license}</Badge>}
             {manifest?.deprecated && <Badge tone="red">deprecated</Badge>}
           </div>
@@ -109,11 +120,13 @@ export function PackageMeta({ view, onInstall }: { view: View; onInstall: () => 
       <ul className="flex flex-wrap gap-x-4 text-xs">
         {manifest?.homepage && <Link icon="home" href={manifest.homepage} />}
         {repo && <RepoLink href={repo} />}
-        <Link
-          icon="npm"
-          label="npm"
-          href={`https://www.npmjs.com/package/${top.name}/v/${top.version}`}
-        />
+        {!allowedSource(top.resolved) && (
+          <Link
+            icon="npm"
+            label="npm"
+            href={`https://www.npmjs.com/package/${top.name}/v/${top.version}`}
+          />
+        )}
       </ul>
       <Tags words={facts} />
       <Tags words={totals} />

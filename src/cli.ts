@@ -83,8 +83,9 @@ Options
   --production         skip dev-only packages
   --registry <url>     override the registry
   -s, --silent         no progress, run banner or install summary (also -q, --loglevel)
-  --store <dir>        package store directory (default ~/.upm/store, or .upm-store
-                       on the project's mount when ~/.upm/store cannot hardlink there)
+  --store <dir>        package store directory (default ~/.local/share/upm/store or
+                       ~/.upm/store, or .upm-store on the project's mount when that
+                       cannot hardlink there)
   --verbose            print debug messages (also UPM_DEBUG=1 or on)
   --verify             install: check file contents, links, bins and peers
   -w, --workspace <name|path>
@@ -124,7 +125,7 @@ Notes
   run alone lists scripts; upm test = upm run test. upm <name> with no such script
   runs an installed bin of that name.
   exec (also upx) uses local bins, else installs into the root's node_modules/.upm/.exec
-  (or ~/.upm/exec) with the project registry. Use -p for packages, -c for a shell line.
+  (or upm's cache directory) with the project registry. Use -p for packages, -c for a shell line.
 
   npm's spellings work too: --save-dev, --save-optional, --save-exact, --omit=dev
   (--production; --include=dev undoes it), --prefix and -C (--dir). Accepted and ignored,

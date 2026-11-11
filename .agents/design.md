@@ -235,15 +235,25 @@ install that loses content to a prune fails its link and refills.
 
 A hardlink cannot cross a filesystem or a mount point, even two bind mounts of one disk, and
 the linker then copies every file: about twice the link time and a full copy per project. So
-with no store set, `projectStore` (`src/store.ts`) tries one link from `~/.upm/store` into the
+with no store set, `projectStore` (`src/store.ts`) tries one link from the home store into the
 project and, on `EXDEV` only, picks `.upm-store` in the topmost directory a link from the
 project reaches. Other refusals mean a disk with no hardlinks, which another
 store does not fix. A plain install trusts the store's content, so a directory others can
 write to (`/tmp`) or a `.upm-store` another user owns is passed over. The store is in the
 install state's inputs: moving it downloads every tarball again and relinks the tree once,
-and an offline install fails until then. Registry documents stay in `~/.upm/store`: they are
+and an offline install fails until then. Registry documents stay in the home store: they are
 read, not linked, and a command picking two stores would split them. A set store (`--store`,
 `UPM_STORE`, or `run`'s from the state) is never probed.
+
+The home store is in upm's data directory (`upmHome` in `src/util.ts`): XDG's, set or by default
+off macOS and Windows, else `~/.upm`. An existing `~/.upm/store` wins over a set `XDG_DATA_HOME`
+because moving the store downloads every tarball again and leaves the old one behind; a user
+moves by removing it. The signal is the store, not `~/.upm`, which an earlier upm, or any on
+macOS and Windows, makes for the compile cache alone. A set `XDG_CACHE_HOME` always wins: a cache
+is cheap to make again. Exec projects are in the cache directory, which may be another mount than
+the store (a tmpfs `~/.cache`), so an exec install there can get a `.upm-store` of its own, as
+pnpm's `dlx` would. `src/upm.ts` and `./upm` repeat the cache lookup, since each turns the
+compile cache on before any import.
 
 ## Optimization must keep the same answer
 

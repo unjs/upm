@@ -8,13 +8,16 @@ jobs:
         os: [ubuntu-latest, macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-node@v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with: { node-version: lts/* }
       # upm's own store, so a warm run links from cache instead of refetching.
-      - uses: actions/cache@v4
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
-          path: ~/.upm/store
+          # Linux's XDG default, and ~/.upm elsewhere or where an older cache made it.
+          path: |
+            ~/.local/share/upm/store
+            ~/.upm/store
           key: upm-store-${{ runner.os }}-${{ hashFiles('upm.lock') }}
           restore-keys: upm-store-${{ runner.os }}-
       - run: node ./upm install --frozen-lockfile

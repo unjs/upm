@@ -132,6 +132,30 @@ snapshots:
     );
   });
 
+  it("reads a pnpm snapshot written under an explicit key", () => {
+    const text = `lockfileVersion: '9.0'
+importers:
+  .:
+    dependencies:
+      pathe:
+        specifier: 2.0.3
+        version: 2.0.3
+packages:
+  pathe@2.0.3:
+    resolution: {integrity: sha512-sw}
+snapshots:
+  ? pathe@2.0.3
+  : {}
+`;
+    const manifest = { dependencies: { pathe: "2.0.3" } };
+    const { lock } = readForeign("pnpm-lock.yaml", text, manifest, npmjs);
+    expect(lock.root).toEqual({
+      specs: { dependencies: { pathe: "2.0.3" } },
+      dependencies: { pathe: "2.0.3" },
+    });
+    expect(Object.keys(lock.packages)).toEqual(["pathe@2.0.3"]);
+  });
+
   it("refuses what it cannot map rather than dropping it", () => {
     const npm = (packages: object) => JSON.stringify({ lockfileVersion: 3, packages });
     const git = npm({
@@ -174,6 +198,26 @@ snapshots:
       },
     });
     const { lock } = readForeign("bun.lock", text, { dependencies: { a: "^1" } }, npmjs);
+    expect(Object.keys(lock.packages)).toEqual(["a@1.0.0"]);
+    expect(lock.packages["a@1.0.0"]!.dependencies).toBeUndefined();
+  });
+
+  it("leaves an npm bundle its parent names, with no entry of its own, to the tarball", () => {
+    // npm writes no `inBundle` entries for a package it did not unpack, as one for another cpu.
+    const text = JSON.stringify({
+      lockfileVersion: 3,
+      packages: {
+        "": { dependencies: { a: "^1" } },
+        "node_modules/a": {
+          version: "1.0.0",
+          resolved: "https://registry.npmjs.org/a/-/a-1.0.0.tgz",
+          integrity: "sha512-a",
+          bundleDependencies: ["b"],
+          dependencies: { b: "^1" },
+        },
+      },
+    });
+    const { lock } = readForeign("package-lock.json", text, { dependencies: { a: "^1" } }, npmjs);
     expect(Object.keys(lock.packages)).toEqual(["a@1.0.0"]);
     expect(lock.packages["a@1.0.0"]!.dependencies).toBeUndefined();
   });

@@ -309,6 +309,48 @@ export function describe(error: unknown): string {
 
 const WIN = globalThis.process?.platform === "win32";
 
+// Asked once per path for the process: a command looks up the store more than once.
+const dirs = new Map<string, boolean>();
+
+/** Whether `path` is a directory. Older Node throws ENOTDIR under a file, even with no-throw. */
+function isDir(path: string): boolean {
+  let found = dirs.get(path);
+  if (found === undefined) {
+    try {
+      found = !!builtin.fs.statSync(path, { throwIfNoEntry: false })?.isDirectory();
+    } catch {
+      found = false;
+    }
+    dirs.set(path, found);
+  }
+  return found;
+}
+
+/**
+ * upm's own directory for what it keeps (`data`) or can make again (`cache`): the XDG base
+ * directory, set or by default off macOS and Windows (`~/.local/share/upm`, `~/.cache/upm`),
+ * else `~/.upm`. While `~/.upm/store` exists, `~/.upm` wins over all but a set `XDG_CACHE_HOME`,
+ * so a store already filled stays where it is. Its store and not `~/.upm` itself: an earlier upm,
+ * or any on macOS and Windows, makes `~/.upm` for the compile cache alone. `src/upm.ts` and
+ * `./upm` repeat this for that cache, which is on before anything is imported.
+ */
+export function upmHome(
+  kind: "data" | "cache",
+  env: Record<string, string | undefined> = globalThis.process?.env ?? {},
+  home = builtin.os.homedir(),
+  platform = globalThis.process?.platform,
+): string {
+  const { isAbsolute, join } = builtin.path;
+  const own = join(home, ".upm");
+  // The spec has a relative path ignored.
+  const set = kind === "data" ? env.XDG_DATA_HOME : env.XDG_CACHE_HOME;
+  if (kind === "cache" && set && isAbsolute(set)) return join(set, "upm");
+  if (isDir(join(own, "store"))) return own;
+  if (set && isAbsolute(set)) return join(set, "upm");
+  if (platform === "darwin" || platform === "win32") return own;
+  return kind === "data" ? join(home, ".local", "share", "upm") : join(home, ".cache", "upm");
+}
+
 /**
  * `symlink` arguments for a link at `at` to the relative `target`. Links stay relative, so a tree
  * survives being moved. Windows needs a privilege for a symlink but not for a junction, and a

@@ -12,7 +12,8 @@ upm's site, built from `../src` (no build of upm needed). Three routes, one `ind
   on one and small on the other. `src/router.ts` moves between the two in place, in a view
   transition, so the logo and the box move into the app's top bar and back (the
   logo link, or the browser's back and forward). The app's run waits for the animation.
-- `/npm/<spec>` is the app for a spec, e.g. `/npm/@nuxt/kit` or `/npm/vue@^3`. Any other
+- `/npm/<spec>` is the app for a spec, e.g. `/npm/@nuxt/kit` or `/npm/vue@^3`. A tarball url on
+  an allowed host is its own path, without `https:/`: `/pkg.pr.new/nitro@be2edec`. Any other
   `/<spec>` path and old `?q=<spec>` links redirect there.
 
 `src/` holds the entries and the app's state (`app.tsx`), `src/components/` the UI, and
@@ -35,6 +36,14 @@ asked for until the Install button (also small in the sidebar) is pressed; a wid
 itself once the README has painted. Then it resolves the whole tree and shows the lockfile upm
 would write.
 
+Besides registry specs, the box takes a tarball url on an allowed host (`SOURCES` in
+`src/lib/route.ts`; only `pkg.pr.new` for now), with or without `https://`, as in
+`pkg.pr.new/nitro@be2edec`. With no ref, or `@latest`, a pkg.pr.new url means `@main`, the newest
+build of that branch. `pkg.pr.new/<owner>/<repo>` is the package named as the repo, and the
+site's repo page, `pkg.pr.new/~/<owner>/<repo>`, opens as that. The host's path names the package, the tarball's `package.json` gives
+its version and dependencies, and the integrity is the hash of its bytes. Each host must allow the
+page with CORS. A tarball dependency from any other host fails the resolve.
+
 While a name is typed, the spec box on both pages suggests packages from the registry's
 `/-/v1/search` (`src/components/suggest.ts`), and after `@`, the package's tags and versions from
 its abbreviated document, asked with the resolver's `accept` so a run finds it in the HTTP cache.
@@ -52,7 +61,10 @@ Once that resolve is in, upm's own `install` runs in the tab: `src/lib/node.ts` 
 `worker_threads` every pool runs on the one thread. The Explorer then shows the project
 (`node_modules/.upm`, the links, `upm.lock`) and the content store. The platform is Linux wasm32
 with glibc, so of the optional platform builds the tab gets the wasm ones, the only ones a
-browser can run. upm calls the global `fetch`, so while it runs, the tab swaps in one that sends
+browser can run. The status bar's platform picker (`?platform=`) installs as macOS, Linux or
+Windows instead, to show what an install costs there: the shim says it is that platform only
+once upm has loaded, since upm picks Windows and macOS filesystem rules as it loads, so the
+in-memory `fs` stays Linux's. upm calls the global `fetch`, so while it runs, the tab swaps in one that sends
 the registry's requests (the install's downloads) through the Requests panel too.
 
 The `fs` lives in memory, since upm's sync calls cannot wait for OPFS, and the project is made

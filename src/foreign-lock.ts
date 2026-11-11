@@ -227,6 +227,7 @@ interface NpmEntry {
   libc?: string[];
   link?: boolean;
   inBundle?: boolean;
+  bundleDependencies?: string[];
 }
 
 function readNpm(text: string): Source {
@@ -267,6 +268,8 @@ function readNpm(text: string): Source {
     };
     nodes.push(
       withEdges(node, entry, (dep) => {
+        // npm lists a bundled copy only when it unpacked the parent, not one for another cpu.
+        if (entry.bundleDependencies?.includes(dep)) return null;
         const hit = find(from, dep);
         if (hit?.inBundle) return null;
         return registry(hit) ? hit.version : undefined;

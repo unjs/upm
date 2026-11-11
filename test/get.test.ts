@@ -1,9 +1,10 @@
 // A tarball download with no `fetch` given: the store asks through its agent's own callbacks.
-// Loading `node:http` makes undici's default dispatcher, and one that is there before ours is
-// used as is, so the agent is made first and the server's module loaded after it.
+// Loading `node:http` makes undici's default dispatcher; `cacheLookups` detects the untouched
+// default and still makes its agent.
 import { Buffer } from "node:buffer";
 import { randomBytes } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
+import { createServer } from "node:http";
 import type { IncomingMessage, Server, ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
@@ -38,7 +39,6 @@ afterEach(async () => {
 });
 
 async function serve(handler: Handler): Promise<string> {
-  const { createServer } = await import("node:http");
   const server = createServer(handler);
   servers.push(server);
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));

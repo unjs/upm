@@ -1,6 +1,7 @@
 import { Buffer } from "node:buffer";
 import { execFile, spawn } from "node:child_process";
 import { mkdir, mkdtemp, open, readFile, readdir, realpath, rm, writeFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
 import { createServer } from "node:http";
 import type { IncomingMessage, Server, ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
@@ -12,6 +13,7 @@ import { promisify } from "node:util";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { parseArgv } from "../src/cli.ts";
 import type { Cli } from "../src/cli.ts";
+import { upmHome } from "../src/util.ts";
 import { hashOf } from "./hash.ts";
 import { makeTarball } from "./tarball.ts";
 
@@ -652,6 +654,36 @@ describe("the ./upm entry", () => {
     expect(stdout).toContain("--verbose            print debug messages (also UPM_DEBUG=1 or on)");
   });
 
+  // `src/upm.ts` and `./upm` each repeat `upmHome("cache")`, before anything is imported.
+  it("puts the compile cache in upm's cache directory, from either entry", async () => {
+    const top = await mkdtemp(join(tmpdir(), "upm-home-"));
+    try {
+      let n = 0;
+      for (const entry of [CLI, ENTRY]) {
+        for (const xdg of [undefined, "xdg", "relative"]) {
+          for (const kept of [false, true]) {
+            // A home of its own each time: `upmHome` keeps what it found for the process.
+            const home = join(top, `${n++}`);
+            await mkdir(kept ? join(home, ".upm", "store") : home, { recursive: true });
+            const env = { XDG_CACHE_HOME: xdg === "xdg" ? join(home, xdg) : xdg };
+            const merged: NodeJS.ProcessEnv = {
+              ...process.env,
+              HOME: home,
+              USERPROFILE: home,
+              ...env,
+            };
+            delete merged.NODE_DISABLE_COMPILE_CACHE;
+            await run(process.execPath, [entry, "--help"], { env: merged, cwd: home });
+            const want = join(upmHome("cache", env, home), "compile-cache");
+            expect(existsSync(want), `${entry} ${JSON.stringify({ ...env, kept })}`).toBe(true);
+          }
+        }
+      }
+    } finally {
+      await rm(top, { recursive: true, force: true });
+    }
+  });
+
   // The entry's `await import` keeps the process alive past the write, so a reader that has
   // gone away delivers EPIPE instead of being missed on the way out. `| head` is not a failure.
   it("says nothing when the reader closes the pipe", async () => {
@@ -896,6 +928,7 @@ describe("exec", () => {
         ...clean,
         HOME: home,
         USERPROFILE: home,
+        XDG_CACHE_HOME: join(dir, "cache"), // the same exec home on every platform
         npm_config_globalconfig: join(dir, "no"),
         ...env,
       },
@@ -913,7 +946,7 @@ describe("exec", () => {
     const first = await exec("hi", ...args);
     expect(first).toMatchObject({ code: 0, stderr: "upm: installed hi@1.1.0\n" });
     expect(ran(first)).toEqual({ at: "hi@1.1.0", args, cwd: join(dir, "work") });
-    const installed = await readdir(join(dir, "home", ".upm", "exec"));
+    const installed = await readdir(join(dir, "cache", "upm", "exec"));
     expect(installed).toHaveLength(1);
 
     // A tag is picked from the document the first run kept: read since the release cutoff,
@@ -945,7 +978,7 @@ describe("exec", () => {
     expect(exact.code).toBe(7);
     expect(ran(exact).at).toBe("hi@1.0.0");
     expect(requests).toEqual([]);
-    expect(await readdir(join(dir, "home", ".upm", "exec"))).toHaveLength(2);
+    expect(await readdir(join(dir, "cache", "upm", "exec"))).toHaveLength(2);
   });
 
   it("is what upx does", async () => {
@@ -1019,8 +1052,8 @@ describe("exec", () => {
       expect(ran(first)).toMatchObject({ at: "hi@1.0.0", cwd: work });
       expect(requests).toContain("/hi/-/hi-1.0.0.tgz");
       expect(requests.some((url) => url.startsWith("/lib"))).toBe(false);
-      const [project] = await readdir(join(dir, "home", ".upm", "exec"));
-      const installed = join(dir, "home", ".upm", "exec", project!, "node_modules");
+      const [project] = await readdir(join(dir, "cache", "upm", "exec"));
+      const installed = join(dir, "cache", "upm", "exec", project!, "node_modules");
       expect((await readdir(installed)).sort()).toEqual([
         ".bin",
         ".upm",
@@ -1040,12 +1073,12 @@ describe("exec", () => {
         expect(ran(await upm(CLI, ["exec", "hi@v1.0.0"], {}, flags, work)).at).toBe("hi@1.0.0");
         // Its metadata, that is: the tarball's integrity is one the store already holds.
         expect(requests).toContain("/hi");
-        expect(await readdir(join(dir, "home", ".upm", "exec"))).toHaveLength(2);
+        expect(await readdir(join(dir, "cache", "upm", "exec"))).toHaveLength(2);
         // `v1.0.0` and `1.0.0` are one version, so one project.
         requests = [];
         expect(ran(await upm(CLI, ["exec", "hi@1.0.0"], {}, flags, work)).at).toBe("hi@1.0.0");
         expect(requests).toEqual([]);
-        expect(await readdir(join(dir, "home", ".upm", "exec"))).toHaveLength(2);
+        expect(await readdir(join(dir, "cache", "upm", "exec"))).toHaveLength(2);
       } finally {
         await new Promise<void>((resolve) => other.close(() => resolve()));
       }
@@ -1066,7 +1099,7 @@ describe("exec", () => {
     expect(ran(first)).toMatchObject({ at: "hi@1.0.0", cwd: inside });
     const projects = await readdir(join(work, "node_modules", ".upm", ".exec"));
     expect(projects).toHaveLength(1);
-    await expect(readdir(join(dir, "home", ".upm", "exec"))).rejects.toMatchObject({
+    await expect(readdir(join(dir, "cache", "upm", "exec"))).rejects.toMatchObject({
       code: "ENOENT",
     });
     expect(await readdir(join(work, "packages", "a"))).toEqual(["package.json"]);
@@ -1187,15 +1220,15 @@ describe("exec", () => {
         expect(stderr).toBe("");
       }
       // Resolved, it is the file's real url, as node gives it, and none of its code runs.
-      const [project] = await readdir(join(dir, "home", ".upm", "exec"));
-      const at = join(dir, "home", ".upm", "exec", project!, "node_modules", "hi", "hi.js");
+      const [project] = await readdir(join(dir, "cache", "upm", "exec"));
+      const at = join(dir, "cache", "upm", "exec", project!, "node_modules", "hi", "hi.js");
       expect(await resolvex("hi@1.0.0/hi.js")).toEqual({
         code: 0,
         stdout: `${pathToFileURL(await realpath(at)).href}\n`,
         stderr: "",
       });
       expect(requests).toEqual([]);
-      expect(await readdir(join(dir, "home", ".upm", "exec"))).toHaveLength(1);
+      expect(await readdir(join(dir, "cache", "upm", "exec"))).toHaveLength(1);
       expect(await importx("npm:hi@latest")).toMatchObject({ code: 0, stdout: '"hi"\n' });
       expect(requests).toEqual(["/hi", "/hi/-/hi-1.1.0.tgz"]);
       expect((await importx("hi@2")).stderr).toContain("ETARGET");
@@ -1337,12 +1370,17 @@ describe("startup budget", () => {
     // 169,833 with an optional pin named for another os read from the abbreviated document,
     // `--help` within noise (25.2/25.5 and 72.6/69.8 ms). 171,573 with a store on the project's
     // mount when `~/.upm/store` cannot hardlink there, `--help` within noise (70.6/68.6 and
-    // 117.1/110.8 ms), a no-op install too (76.4/76.1 ms). 172,124 with `importx` and `resolvex`,
-    // `--help` within noise (68.7/67.3 ms).
+    // 117.1/110.8 ms), a no-op install too (76.4/76.1 ms). 172,136 with upm's own directories
+    // following XDG off macOS and Windows, `--help` within noise (70.6/70.9 ms). 172,212 with a
+    // `~/.upm` that is a file passed over on older Node. 172,263 with that check kept for the
+    // process. 172,464 with undici's untouched default agent detected when node:http is loaded.
+    // 172,817 with undici 8's dispatcher slot and handler callbacks (Node 26), `--help` within
+    // noise (46.3/45.1 and 119.9/119.2 ms). 173,506 with `importx` and `resolvex`, `--help`
+    // within noise (74.5/71.6 and 72.9/73.5 ms).
     const modules = await reachable();
     const bytes = [...modules.values()].reduce((total, size) => total + size, 0);
     expect(modules.size).toBeLessThanOrEqual(27); // `upm.ts` is the bin, `cli.ts` the program
-    expect(bytes).toBeLessThanOrEqual(172_124);
+    expect(bytes).toBeLessThanOrEqual(173_506);
     // Found through `import()` by the commands that read a project, like the pools: each holds
     // its worker's whole code in the build.
     const lazy = [

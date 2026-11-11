@@ -28,16 +28,22 @@ import {
   type InstalledFile,
 } from "./lib/install.ts";
 import { Panel, type PanelTab, type Problem } from "./components/panel.tsx";
-import { EXAMPLES, openOf, pathOf, searchOf, specOf, type Lines } from "./lib/route.ts";
+import {
+  EXAMPLES,
+  normalSpec,
+  openOf,
+  pathOf,
+  searchOf,
+  specOf,
+  targetOf,
+  type Lines,
+} from "./lib/route.ts";
 import { StatusBar } from "./components/statusbar.tsx";
 import { Sidebar } from "./components/sidebar.tsx";
 import { TopBar } from "./components/topbar.tsx";
 
 // Off https and localhost, WebCrypto is missing: fill it in before anything hashes.
 const insecure = fillCrypto();
-
-/** The platform ./lib/node.ts's shim says it is: the install skips other platforms' builds. */
-const PLATFORM = { os: "linux", cpu: "wasm32", libc: "glibc" };
 
 /** One query as it lands: each part is undefined while pending, an Error when it failed. */
 export interface View {
@@ -56,6 +62,8 @@ export interface View {
   resolved?: Resolved | Error;
   /** What the resolve installs: set once the run starts. */
   dependencies?: Record<string, string>;
+  /** The platform the install runs as: it skips other platforms' builds. */
+  target: Platform;
   /** upm's install of it in this tab: true while it runs. */
   installed?: Installed | Error | true;
   sbomTarget?: Platform;
@@ -76,6 +84,9 @@ export function App({ ready }: { ready?: Promise<unknown> }) {
   const [selected, setSelected] = useState("");
   // A shared link's file and lines, opened once its run has them.
   const [linked] = useState(() => openOf(location.search));
+  // A ref too: a change starts its run in the same handler, before the state lands.
+  const [platform, setPlatform] = useState(linked.platform);
+  const platformRef = useRef(platform);
   const [lines, setLines] = useState(linked.lines);
   // Whether the open file goes in the url: one picked, not the README a run opens on.
   const [pinned, setPinned] = useState(!!linked.file);
@@ -114,6 +125,8 @@ export function App({ ready }: { ready?: Promise<unknown> }) {
     file?: string,
   ) {
     if (!raw.trim()) return;
+    // A url on an allowed host shows in one form, however it was pasted.
+    raw = normalSpec(raw.trim());
     setSpec(raw);
     history.replaceState(null, "", pathOf(raw.trim()));
     // The README opens as soon as the tarball's stream yields it: load its renderer alongside.
@@ -140,6 +153,7 @@ export function App({ ready }: { ready?: Promise<unknown> }) {
         name: query.name,
         started: performance.now(),
         dependencies: query.dependencies,
+        target: targetOf(platformRef.current),
       });
       const first = treePath(query.name, "package.json");
       const root = treePath(query.name);
@@ -177,6 +191,7 @@ export function App({ ready }: { ready?: Promise<unknown> }) {
         },
         (error: Error) => update({ tarball: error }),
       );
+      const runTarget = targetOf(platformRef.current);
       let started = false;
       startInstall.current = () => {
         if (run.current !== id || started) return;
@@ -195,7 +210,16 @@ export function App({ ready }: { ready?: Promise<unknown> }) {
         resolved.then(
           (done) =>
             run.current === id &&
-            install(id, query.name, query.dependencies, registry, next.fetch, done, file),
+            install(
+              id,
+              query.name,
+              query.dependencies,
+              registry,
+              next.fetch,
+              done,
+              runTarget,
+              file,
+            ),
           () => {},
         );
       };
@@ -212,7 +236,14 @@ export function App({ ready }: { ready?: Promise<unknown> }) {
         );
       }
     } catch (error) {
-      setView({ id, spec: raw, name: raw, started: performance.now(), top: error as Error });
+      setView({
+        id,
+        spec: raw,
+        name: raw,
+        started: performance.now(),
+        target: targetOf(platformRef.current),
+        top: error as Error,
+      });
     }
   }
 
@@ -224,6 +255,7 @@ export function App({ ready }: { ready?: Promise<unknown> }) {
     registry: string,
     logged: typeof fetch,
     resolved: Resolved,
+    target: Platform,
     file?: string,
   ) {
     const warnings: string[] = [];
@@ -240,6 +272,7 @@ export function App({ ready }: { ready?: Promise<unknown> }) {
       },
       resolved.lockfile,
       logged,
+      target,
     )
       .then(
         (installed) => {
@@ -300,9 +333,9 @@ export function App({ ready }: { ready?: Promise<unknown> }) {
     history.replaceState(
       null,
       "",
-      pathOf(shownSpec) + searchOf(pinned ? selected : undefined, lines),
+      pathOf(shownSpec) + searchOf(pinned ? selected : undefined, lines, platform),
     );
-  }, [shownSpec, pinned, selected, lines]);
+  }, [shownSpec, pinned, selected, lines, platform]);
 
   const requests = client?.requests ?? [];
   const picked = [...picks.current.values()].reduce((sum, list) => sum + list.length, 0);
@@ -331,7 +364,9 @@ export function App({ ready }: { ready?: Promise<unknown> }) {
   // Until the install lands, what the registry says it will write here. A libc read that lands
   // later drops a pick, so it is summed again each draw.
   const estimate =
-    installed || view?.installed instanceof Error ? undefined : estimateOf(sized.current);
+    installed || view?.installed instanceof Error
+      ? undefined
+      : estimateOf(sized.current, view?.target ?? targetOf(platform));
   // upm's own counts, as the CLI's bar draws them, on the install's clock. Pending while there
   // is nothing to count yet: the resolve, and the install's first downloads.
   const busy =
@@ -366,6 +401,12 @@ export function App({ ready }: { ready?: Promise<unknown> }) {
     if (!view) return;
     submit(view.spec, registryUrl, undefined, true, pinned ? selected : undefined);
     setSidebar(true);
+  };
+  /** A run that installed, or was asked to, installs again as the new platform. */
+  const choosePlatform = (next: string) => {
+    platformRef.current = next;
+    setPlatform(next);
+    if (view?.requested) reinstall();
   };
   const chooseSbomTarget = (target?: Platform) => {
     const resolved = view?.resolved;
@@ -539,6 +580,8 @@ export function App({ ready }: { ready?: Promise<unknown> }) {
         panel={panel}
         togglePanel={togglePanel}
         opfs={opfs}
+        platform={platform}
+        setPlatform={choosePlatform}
         registry={registryUrl}
         setRegistry={(url) => {
           setRegistryUrl(url);
@@ -562,10 +605,10 @@ function progressOf(installing: boolean): number | "pending" {
 }
 
 /** What the picks that run here unpack to, as the registry says. */
-function estimateOf(sized: { pkg: ResolvedPackage; size: Size }[]): Size {
+function estimateOf(sized: { pkg: ResolvedPackage; size: Size }[], platform: Platform): Size {
   const sum = { files: 0, bytes: 0 };
   for (const { pkg, size } of sized) {
-    if (!runsOn(pkg, PLATFORM)) continue;
+    if (!runsOn(pkg, platform)) continue;
     sum.files += size.files;
     sum.bytes += size.bytes;
   }

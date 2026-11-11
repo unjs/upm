@@ -16,11 +16,11 @@ compatibility. Keep this page about open work, not completed implementation step
   retention policy and a test that pauses an install at the deletion race.
   Start at `src/gc.ts` and `test/gc.test.ts`.
 - **Exec projects are never reclaimed:** every set of versions `upm exec` or `importx`
-  installs keeps a project under the root's `node_modules/.upm/.exec`, or `~/.upm/exec`
-  outside a project, and `prune` knows nothing of them. The first go only with their `node_modules`; the second
-  never. A tag that moves often (`upm publish` runs npm's `latest`) leaves one per version.
-  Needs a retention rule (last use, count) and a prune test that keeps a running command's
-  project. Start at `execHome` in `src/exec.ts` and `execProject` in `src/api.ts`.
+  installs keeps a project under the root's `node_modules/.upm/.exec`, or the cache directory's
+  `exec` outside a project, and `prune` knows nothing of them. The first go only with their
+  `node_modules`; the second never. A tag that moves often (`upm publish` runs npm's `latest`)
+  leaves one per version. Needs a retention rule (last use, count) and a prune test that keeps
+  a running command's project. Start at `execHome` in `src/exec.ts` and `execProject` in `src/api.ts`.
 - **`resolvex`'s own resolution covers packages, not all of Node.js's:** `exportsTarget`
   (`src/exports.ts`) and `resolveImport` (`src/exec.ts`) read `exports` and `main`. Not read:
   `imports`, a package importing itself by name, `--conditions`, percent-encoded segments
@@ -87,7 +87,7 @@ compatibility. Keep this page about open work, not completed implementation step
 - **Symlinked workspace:** when a workspace directory is itself a symlink, its dep links
   are spelled relative to the path linked through, not where they sit, so on Linux and
   macOS they dangle. The test pins that spelling. Start at `linkTop` in `src/link.ts`.
-- **Compile cache is never reclaimed:** the bin's V8 cache in `~/.upm/compile-cache` gains
+- **Compile cache is never reclaimed:** the bin's V8 cache in `compile-cache` (upm's cache directory) gains
   entries for every new build and Node version, and nothing removes old ones. Needs a
   retention rule and a place to apply it, `prune` or the bin's start. Start at `src/upm.ts`.
 - **Kept registry documents are never reclaimed:** the store's `metadata` directory keeps
@@ -274,11 +274,6 @@ Unranked: take a fresh profile before choosing one. Use [perf.md](perf.md) for e
   the pool's messages. Writing the index in the worker that stored the files would take the
   first away, but only main writes an index today: decide that first. Start at `publish` in
   `src/store.ts`; the fetch thread below is the other way.
-- Through the library, a host that has imported `node:http` never gets upm's agent: on Node 22
-  and 24 an ESM import of it makes undici's default dispatcher (a `require` does not), which
-  `install` in `src/dns.ts` takes for the host's own, so its requests go through `fetch` with
-  no lookup cache. Telling a default the host never configured from one it did would fix it;
-  test from a process that imported `node:http` first, as `test/get.test.ts` explains.
 - The tarball GET (`getter` in `src/dns.ts`) uses undici's legacy handler callbacks, which
   undici 6 and 7 both call. An undici that drops them would fail every download with
   `ENETWORK`, with no fallback to `fetch`: check `test/get.test.ts` on each new Node major.
@@ -303,7 +298,7 @@ Unranked: take a fresh profile before choosing one. Use [perf.md](perf.md) for e
   Under `**` any symlink means no proof at all. The proof's own walk (`record`) reads the same
   folders in a fraction of the glob's time; answering from it instead needs the glob's
   matching rules, and `implied` already checks the two agree. Measure with `bench/ab.sh
-relock` on a workspace project, and the no-op with a folder toggled under `packages/`
+  relock` on a workspace project, and the no-op with a folder toggled under `packages/`
   before each run; the `monorepo` fixture has no sources to walk.
 - On a warm walk the registry threads are still the bound on a large workspace, about 85%
   busy: parsing the manifests a pick reads, the head of each kept document (its index is

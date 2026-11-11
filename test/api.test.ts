@@ -471,14 +471,16 @@ describe("api", () => {
       HOME: process.env.HOME,
       USERPROFILE: process.env.USERPROFILE,
       UPM_STORE: process.env.UPM_STORE,
+      XDG_DATA_HOME: process.env.XDG_DATA_HOME,
     };
     delete process.env.UPM_STORE;
-    process.env.HOME = join(dir, "home-a"); // `~/.upm/store`, the last default
+    process.env.HOME = join(dir, "home-a");
     process.env.USERPROFILE = join(dir, "home-a"); // os.homedir() on Windows
+    process.env.XDG_DATA_HOME = join(dir, "data-a"); // the home store, the last default
     try {
       await upm.install(noStore);
       const state = await readJson(stateFile);
-      expect(state.store).toBe(join(dir, "home-a", ".upm", "store"));
+      expect(state.store).toBe(join(dir, "data-a", "upm", "store"));
       // The default store spelled from another cwd is the same store: the fast path holds and
       // the state is not written again.
       process.chdir(join(dir, "node_modules"));
@@ -498,7 +500,7 @@ describe("api", () => {
     }
   });
 
-  it("stores on the project's mount when ~/.upm/store cannot hardlink into it", async () => {
+  it("stores on the project's mount when the home store cannot hardlink into it", async () => {
     await writeFile(join(dir, "package.json"), '{"name":"demo","dependencies":{"nanoid":"^5"}}');
     const { store: _store, ...noStore } = base;
     const home = await mkdtemp(join(tmpdir(), "upm-home-"));
@@ -506,12 +508,16 @@ describe("api", () => {
       HOME: process.env.HOME,
       USERPROFILE: process.env.USERPROFILE,
       UPM_STORE: process.env.UPM_STORE,
+      XDG_DATA_HOME: process.env.XDG_DATA_HOME,
     };
     delete process.env.UPM_STORE;
+    // ~/.upm/store, as an earlier upm made it: the XDG one is passed over.
+    await mkdir(join(home, ".upm", "store"), { recursive: true });
     process.env.HOME = process.env.USERPROFILE = home;
+    process.env.XDG_DATA_HOME = join(home, "data");
     // The project dir stands for a mount of its own: no link crosses its edge. By real path, as
     // the kernel sees it: macOS's tmpdir is under a symlink.
-    const mount = await realpath(dir);
+    const mount = builtin.fs.realpathSync(dir); // as projectStore: it keeps Windows short names
     const inside = (path: unknown) =>
       builtin.fs.realpathSync(dirname(String(path))).startsWith(mount);
     const link = builtin.fs.linkSync;
@@ -2416,7 +2422,7 @@ describe("a tarball is the package it is installed as", () => {
     const store = createStore({ dir: base.store! });
     const at = store.indexPath(p);
     const fresh = await readFile(at, "utf8");
-    const { aliases, ...older } = JSON.parse(fresh);
+    const { aliases: _, ...older } = JSON.parse(fresh);
     const blob = store.blobPath(older.files.find((file: any) => file.path === "package.json"));
     const reads = () => spy.mock.calls.filter(([path]) => path === blob).length;
     const spy = vi.spyOn(builtin.fs, "readFileSync");

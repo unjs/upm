@@ -3,14 +3,20 @@
 // store's content is kept on OPFS (./opfs.ts) across runs, tabs and visits, and upm asks it
 // before a download. Those, and upm's commands, load on the first install.
 import type { InstallResult } from "upm/src/api.ts";
+import type { Platform } from "upm/src/resolve.ts";
 import { fraction, type Seen } from "upm/src/progress.ts";
 import type { TarEntry } from "upm/src/tar.ts";
 import { blobKey, indexKey } from "upm/src/store-backend.ts";
 import type { BackendIndex } from "upm/src/store-backend.ts";
 import { opfsBackend, persist } from "./opfs.ts";
+import { allowedSource } from "./route.ts";
 
 const PROJECT = "/project";
+
 const HOME = "/home/user";
+
+// Set, so the store is the one listed here whichever platform the install says it is on.
+const STORE = `${HOME}/.upm/store/`;
 
 /** A file of the installed tree, or a symlink: then `data` is its target. */
 export type InstalledFile = TarEntry & { link?: string };
@@ -31,12 +37,23 @@ export interface Installed {
 let running: Promise<unknown> = Promise.resolve();
 let shim: typeof import("./node.ts") | undefined;
 
-/** The shim in place as this tab's `process`, loaded on first use. */
-async function ready(): Promise<typeof import("./node.ts")> {
+let loaded: Promise<unknown> | undefined;
+
+/**
+ * The shim in place as this tab's `process`, loaded on first use. With a `target`, it says it is
+ * that platform, for the optional builds the install picks. upm's modules that read the OS as
+ * they load are loaded first, while it says Linux: the in-memory `fs` keeps Linux's links and
+ * bins, with no Windows junctions or `.cmd` shims, whatever the target.
+ */
+async function ready(target?: Platform): Promise<typeof import("./node.ts")> {
   shim ??= await import("./node.ts");
-  shim.installShim({ cwd: PROJECT, home: HOME });
+  shim.installShim({ cwd: PROJECT, home: HOME, env: { UPM_STORE: STORE.slice(0, -1) } });
   if (typeof globalThis.process?.getBuiltinModule !== "function") {
     throw new Error("This page has a `process` of its own, so upm's cannot be put in place");
+  }
+  if (target) {
+    await (loaded ??= Promise.all([import("upm/src/api.ts"), import("upm/src/tree-lock.ts")]));
+    shim.installShim({ platform: target.os, arch: target.cpu, libc: target.libc });
   }
   return shim;
 }
@@ -100,8 +117,6 @@ export function manifestOf(dependencies: Record<string, string>): InstalledFile 
   return { path: "package.json", mode: 0o644, size: data.length, data };
 }
 
-const STORE = `${HOME}/.upm/store/`;
-
 /** What the running install last reported of each phase, through `onProgress`. */
 let seen: Seen = {};
 
@@ -121,9 +136,10 @@ export function installInTab(
   log: (message: string, level: string) => void,
   lockfile?: string,
   logged?: typeof fetch,
+  target?: Platform,
 ): Promise<Installed> {
   const run = running.then(async () => {
-    const node = await ready();
+    const node = await ready(target);
     const storeBackend = await opfsBackend();
     if (!storeBackend?.set) log("the store is in memory only: OPFS cannot be written here", "warn");
     node.fs.rmSync(PROJECT, { recursive: true, force: true });
@@ -139,15 +155,16 @@ export function installInTab(
     const quiet = (message: string, level: string) => {
       if (!message.startsWith("worker threads unavailable")) log(message, level);
     };
-    // upm takes no `fetch`: it calls the global one, so that is swapped for the run. Its registry
-    // threads have their own, but with the walk's lockfile they never start. One run at a time,
-    // so no other install swaps it meanwhile.
+    // upm takes no `fetch`: it calls the global one, so that is swapped for the run, for the
+    // registry and the allowed tarball hosts. Its registry threads have their own, but with the
+    // walk's lockfile they never start. One run at a time, so no other install swaps it meanwhile.
     const page = globalThis.fetch;
     const origin = new URL(registry).origin;
     if (logged) {
       globalThis.fetch = (input, init) => {
         const url = input instanceof Request ? input.url : String(input);
-        return (new URL(url, location.href).origin === origin ? logged : page)(input, init);
+        const own = new URL(url, location.href).origin === origin || allowedSource(url);
+        return (own ? logged : page)(input, init);
       };
     }
     let result: InstallResult;
@@ -184,7 +201,8 @@ export function installInTab(
       }
     };
     list(PROJECT, "");
-    list(STORE.slice(0, -1), "~/.upm/store/");
+    // Made by its first write: an install that stored nothing has none.
+    if (node.fs.existsSync(STORE.slice(0, -1))) list(STORE.slice(0, -1), "~/.upm/store/");
     return { files, links, result, ms };
   });
   running = run.catch(() => {});

@@ -6,6 +6,8 @@
 // for the tab. Until a query's own answer lands, a shorter query's answer that still matches
 // shows instead.
 
+import { sourceOf } from "../lib/route.ts";
+
 const REGISTRY = "https://registry.npmjs.org";
 const SEARCH = `${REGISTRY}/-/v1/search?size=20&text=`;
 // The resolver's own `accept` (src/registry.ts), so its request finds this one in the HTTP cache.
@@ -147,7 +149,7 @@ function nearest(text: string): Hit[] | undefined {
 // or path.
 function parse(value: string): { name: string; range?: string } | undefined {
   const text = value.trim().toLowerCase();
-  if (!text || /[\s:\\]/.test(text) || text.startsWith(".")) return;
+  if (!text || /[\s:\\]/.test(text) || text.startsWith(".") || sourceOf(text)) return;
   const at = text.indexOf("@", 1);
   return at < 0 ? { name: text } : { name: text.slice(0, at), range: text.slice(at + 1) };
 }

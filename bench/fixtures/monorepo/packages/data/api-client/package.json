@@ -5,8 +5,8 @@
   "dependencies": {
     "@acme/errors": "*",
     "@acme/schemas": "*",
-    "ky": "2.1.0",
-    "zod": "4.6.5"
+    "ky": "2.2.0",
+    "zod": "4.6.7"
   },
   "devDependencies": {
     "@acme/tsconfig": "*"

@@ -1,10 +1,11 @@
 // The status bar. Left: the panel switches, problems, requests then storage, and a deprecation. Right:
-// the run's state, what it found, the package then its tree, then the download total and the
-// registry.
+// the run's state, what it found, the package then its tree, then the download total, the
+// install's platform and the registry.
 import { useMemo, useState, type ReactNode } from "react";
 import type { Resolution } from "upm/resolver";
 import type { View } from "../app.tsx";
 import { DEFAULT_REGISTRY, type RequestEntry, type Resolved } from "../lib/client.ts";
+import { PLATFORMS } from "../lib/route.ts";
 import { formatBytes } from "./code.tsx";
 import { formatMs, type PanelTab, type Problem } from "./panel.tsx";
 import { Badge, Icon, Pulse } from "./ui.tsx";
@@ -17,6 +18,8 @@ export function StatusBar(props: {
   panel: PanelTab | undefined;
   togglePanel: (tab: PanelTab) => void;
   opfs: number | undefined;
+  platform: string;
+  setPlatform: (name: string) => void;
   registry: string;
   setRegistry: (url: string) => void;
 }) {
@@ -127,10 +130,37 @@ export function StatusBar(props: {
               {formatBytes(bytes)}
             </Item>
           )}
+          <PlatformPicker platform={props.platform} setPlatform={props.setPlatform} />
           <Registry url={props.registry} setUrl={props.setRegistry} />
         </div>
       </div>
     </footer>
+  );
+}
+
+/** The platform the install runs as, to see what it costs there. */
+function PlatformPicker(props: { platform: string; setPlatform: (name: string) => void }) {
+  return (
+    <label
+      title={
+        "Install as this platform, to see what an install costs there: of the optional builds,\nit gets that platform's. Browser gets the ones this tab can run. Changing it installs again."
+      }
+      className="flex h-6 items-center gap-1 px-2 hover:bg-zinc-200/70 dark:hover:bg-zinc-800"
+    >
+      <Icon name="cpu" className="size-3" />
+      <select
+        aria-label="Install platform"
+        value={props.platform}
+        onChange={(e) => props.setPlatform(e.currentTarget.value)}
+        className="cursor-pointer appearance-none bg-transparent outline-none"
+      >
+        {PLATFORMS.map((p) => (
+          <option key={p.name} value={p.name}>
+            {p.label}
+          </option>
+        ))}
+      </select>
+    </label>
   );
 }
 
