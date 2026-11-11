@@ -57,13 +57,19 @@ function pick(
   }
   if (target === null) return null;
   if (typeof target !== "object") return undefined;
-  const choices = Array.isArray(target)
-    ? target
-    : Object.entries(target)
-        .filter(([key]) => key === "default" || conditions.includes(key))
-        .map(([, value]) => value);
-  for (const choice of choices) {
-    const found = pick(choice, star, conditions);
+  if (Array.isArray(target)) {
+    // As Node.js: a null in a list is passed over, and holds back only when nothing after fits.
+    let held: null | undefined;
+    for (const choice of target) {
+      const found = pick(choice, star, conditions);
+      if (found === null) held = null;
+      else if (found !== undefined) return found;
+    }
+    return held;
+  }
+  for (const [key, value] of Object.entries(target)) {
+    if (key !== "default" && !conditions.includes(key)) continue;
+    const found = pick(value, star, conditions);
     if (found !== undefined) return found;
   }
   return undefined;

@@ -36,6 +36,15 @@ describe("parseImport", () => {
     "pkg@npm:other@1",
     "Bad Name",
     "",
+    // A subpath stays inside the package.
+    "pkg/../other/x.js",
+    "pkg/a/../../x.js",
+    "@org/name/..",
+    "pkg/./x.js",
+    "pkg//x.js",
+    "pkg/",
+    "pkg/node_modules/dep",
+    "pkg/a\\..\\..\\x.js",
   ])("refuses %s", (specifier) => {
     expect(() => parseImport(specifier)).toThrow(
       expect.objectContaining({

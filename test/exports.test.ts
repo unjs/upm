@@ -45,7 +45,11 @@ describe("exportsTarget", () => {
     const exports = { "./*": "./dist/*.js", "./internal/*": null };
     expect(exportsTarget(exports, "./internal/x")).toBeUndefined();
     expect(exportsTarget({ ".": { import: null, default: "./a.js" } }, ".")).toBeUndefined();
-    expect(exportsTarget({ ".": [null, "./a.js"] }, ".")).toBeUndefined();
+    expect(exportsTarget({ ".": ["./a.cjs", null] }, ".")).toBe("./a.cjs");
+    expect(exportsTarget({ ".": [{ require: "./a.cjs" }, null] }, ".")).toBeUndefined();
+    // In a list, a null is passed over as Node.js does.
+    expect(exportsTarget({ ".": [null, "./a.js"] }, ".")).toBe("./a.js");
+    expect(exportsTarget({ ".": [[null], { import: "./a.mjs" }] }, ".")).toBe("./a.mjs");
   });
 
   it("passes over targets outside the package", () => {

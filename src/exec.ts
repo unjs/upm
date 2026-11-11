@@ -93,10 +93,12 @@ function fits(spec: Spec, version: unknown): boolean {
  */
 export function parseImport(specifier: string): { spec: Spec; subpath: string } {
   const raw = specifier.startsWith("npm:") ? specifier.slice(4) : specifier;
-  // The name is one segment, or two under a scope.
-  const end = raw.indexOf("/", raw.startsWith("@") ? raw.indexOf("/") + 1 : 0);
+  const end = nameEnd(raw);
+  // A `..` would leave the package, and `node_modules` reach into another, as Node.js refuses.
+  const subpath = end < 0 ? "" : raw.slice(end);
+  const segments = /\\|\/(\.\.?|node_modules)?(?=\/|$)/i.test(subpath);
   let spec: Spec | undefined;
-  if (!/^[a-z][\w+.-]*:|^[./\\]/i.test(raw)) {
+  if (!segments && !/^[a-z][\w+.-]*:|^[./\\]/i.test(raw)) {
     try {
       spec = parseSpec(end < 0 ? raw : raw.slice(0, end));
     } catch {} // refused below, with the form it takes
@@ -108,19 +110,23 @@ export function parseImport(specifier: string): { spec: Spec; subpath: string } 
     const message = `${specifier} is not a package as [npm:]name[@version][/subpath]`;
     throw Object.assign(new Error(message), { code: "EINVALIDSPEC" });
   }
-  return { spec: spec!, subpath: end < 0 ? "" : raw.slice(end) };
+  return { spec: spec!, subpath };
 }
+
+/** Where a package's name ends in `id`, at the `/` before its subpath: one segment, or two under a scope. */
+const nameEnd = (id: string): number =>
+  id.indexOf("/", id.startsWith("@") ? id.indexOf("/") + 1 : 0);
 
 /**
  * The directory an import is resolved from: `from` as a directory, or a module's path or
- * `file://` url, else `dir`.
+ * `file://` url, else `dir`, else cwd.
  */
-export function startDir(from: string | URL | undefined, dir: string): string {
+export function startDir(from: string | URL | undefined, dir = "."): string {
   const { fs, path } = builtin;
   if (from === undefined) return path.resolve(dir);
   const file = typeof from === "string" && !from.startsWith("file:");
   const at = file ? path.resolve(from) : fromFileURL(from);
-  return fs.existsSync(at) && fs.statSync(at).isFile() ? path.dirname(at) : at;
+  return fs.statSync(at, { throwIfNoEntry: false })?.isFile() ? path.dirname(at) : at;
 }
 
 /** A directory's `file://` url, ending in `/`: what an import from a file in it resolves from. */
@@ -155,34 +161,29 @@ export async function hasPackage(dir: string, spec: Spec): Promise<boolean> {
  */
 export async function resolveImport(id: string, parentURL: string): Promise<string> {
   const { join } = builtin.path;
-  // The name is one segment, or two under a scope.
-  const end = id.indexOf("/", id.startsWith("@") ? id.indexOf("/") + 1 : 0);
+  const end = nameEnd(id);
   const name = end < 0 ? id : id.slice(0, end);
   const subpath = end < 0 ? "." : `.${id.slice(end)}`;
   const { home, pkg = {} } = await nearest(fromFileURL(parentURL), name);
   const { exports, main } = pkg as { exports?: unknown; main?: unknown };
-  let found: string | undefined;
+  let tries: string[];
   if (exports !== undefined) {
     const target = exportsTarget(exports, subpath);
     if (target === undefined) throw fail(`${name} does not export ${subpath}`, "ENOEXPORT");
-    found = join(home, target);
+    tries = [target];
   } else if (subpath !== ".") {
-    found = join(home, subpath);
+    tries = [subpath];
   } else {
     // As Node.js looks for `main` from an import.
     const ends = ["", ".js", ".json", ".node", "/index.js", "/index.json", "/index.node"];
-    const tries = typeof main === "string" && main ? ends.map((end) => main + end) : [];
-    for (const file of [...tries, "index.js", "index.json", "index.node"]) {
-      if (await isFile(join(home, file))) {
-        found = join(home, file);
-        break;
-      }
-    }
+    tries = typeof main === "string" && main ? ends.map((end) => main + end) : [];
+    tries.push("index.js", "index.json", "index.node");
   }
-  if (found === undefined || !(await isFile(found))) {
-    throw fail(`${id} names no file in ${home}`, "ENOEXPORT");
+  for (const file of tries) {
+    const found = join(home, file);
+    if (await isFile(found)) return toFileURL(await builtin.fsp.realpath(found));
   }
-  return toFileURL(await builtin.fsp.realpath(found));
+  throw fail(`${id} names no file in ${home}`, "ENOEXPORT");
 }
 
 /** A file, or a link to one: a directory of that name is no bin. */

@@ -1430,14 +1430,14 @@ export async function exec(command: string, options: ExecOptions = {}): Promise<
   // Before the spec is parsed: `_mocha` is a bin, and no package could have that name. The
   // project's own bin first, as npm: it is never worth a registry package of the same name.
   // Loaded here, as `workspaces.ts` is: no other command needs it to start.
-  const { execHome, localBin, pickBin, readJson, selfBin } = await import("./exec.ts");
+  const { localBin, pickBin, readJson, selfBin } = await import("./exec.ts");
   if (packages === undefined) {
     const local = (await selfBin(cwd, command)) ?? (await localBin(cwd, command));
     if (local) return { code: await spawn(local, []) };
   }
   const own = packages === undefined ? parseSpec(command) : undefined;
   if (packages?.length === 0) throw fail("exec lists no package to install", "EOPTION");
-  const dir = await execProject(options, packages ?? [command], execHome);
+  const dir = await execProject(options, packages ?? [command]);
   const file = builtin.path.join(dir, "node_modules", own?.name ?? "", "package.json");
   const bins = [builtin.path.join(dir, "node_modules", ".bin")];
   if (call) return { code: await run(command, bins), installed: dir };
@@ -1453,14 +1453,13 @@ export async function exec(command: string, options: ExecOptions = {}): Promise<
  * version or range to what is there when it fits; a tag always asks the registry.
  */
 export async function resolvex(specifier: string, options: ResolvexOptions = {}): Promise<string> {
-  const { dirURL, execHome, hasPackage, parseImport, resolveImport, startDir } =
-    await import("./exec.ts");
+  const { dirURL, hasPackage, parseImport, resolveImport, startDir } = await import("./exec.ts");
   const { spec, subpath } = parseImport(specifier);
-  const start = startDir(options.from, options.dir ?? globalThis.process.cwd());
+  const start = startDir(options.from, options.dir);
   let at = start;
   if (!(await hasPackage(start, spec))) {
     const dir = options.dir ?? (await (await import("./workspaces.ts")).findRoot(start)).dir;
-    at = await execProject({ ...options, dir }, [spec.raw], execHome);
+    at = await execProject({ ...options, dir }, [spec.raw]);
   }
   return await (options.resolve ?? resolveImport)(spec.name + subpath, dirURL(at));
 }
@@ -1474,13 +1473,12 @@ export async function importx<T = Record<string, any>>(
 }
 
 /**
- * `specs` installed in a project of their own under the root's `home`, which is returned. The
- * registries are in the name: the same versions there can be other bytes.
+ * `specs` installed in their own project under `execHome`, which is returned. The registries
+ * are in the name: the same versions there can be other bytes.
  */
 async function execProject(
-  options: ImportxOptions,
+  options: ProjectOptions & RegistryAccess & StoreAccess & { experimental?: Experimental },
   specs: string[],
-  home: (root: string) => string,
 ): Promise<string> {
   const log = options.log ?? (() => {});
   // The install's own progress is about a directory the caller never chose; its warnings stay.
@@ -1519,7 +1517,8 @@ async function execProject(
   const { registry, scopes } = settings(ctx);
   const scoped = Object.entries(scopes).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
   const key = await shortHash(JSON.stringify([registry, scoped, text]));
-  const dir = join(home(ctx.root!), key);
+  const { execHome } = await import("./exec.ts");
+  const dir = join(execHome(ctx.root!), key);
   const file = join(dir, "package.json");
   if ((await builtin.fsp.readFile(file, "utf8").catch(() => undefined)) !== text) {
     // Through a rename: another run of the same versions may be reading it.
