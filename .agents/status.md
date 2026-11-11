@@ -23,8 +23,8 @@ compatibility. Keep this page about open work, not completed implementation step
   project. Start at `execHome` in `src/exec.ts` and `execProject` in `src/api.ts`.
 - **`resolvex`'s own resolution covers packages, not all of Node.js's:** `exportsTarget`
   (`src/exports.ts`) and `resolveImport` (`src/exec.ts`) read `exports` and `main`. Not read:
-  `imports`, a package importing itself by name, `--conditions`, and Node.js's checks on a
-  target's segments (`..`, `node_modules`). `importx` loads through the runtime's own
+  `imports`, a package importing itself by name, `--conditions`, percent-encoded segments
+  (`%2e%2e`), and Node.js's refusal of an `exports` that mixes subpaths and conditions. `importx` loads through the runtime's own
   `import()`, so in a tab, where `fs` is a shim, it needs a loader that reads the file instead,
   such as a `Blob` url. Compare against Node.js with `import.meta.resolve(id, parent)` under
   `--experimental-import-meta-resolve`; without the flag Node.js drops the parent.

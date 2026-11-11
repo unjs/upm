@@ -118,10 +118,25 @@ const nameEnd = (id: string): number =>
   id.indexOf("/", id.startsWith("@") ? id.indexOf("/") + 1 : 0);
 
 /**
+ * What `resolvex` knows before any install: the spec, the import as `name` or `name/subpath`,
+ * the directory it is resolved from, and the package found above it when it is a version the
+ * spec takes.
+ */
+export async function findImport(
+  specifier: string,
+  from?: string | URL,
+  dir?: string,
+): Promise<{ spec: Spec; id: string; start: string; found?: Found }> {
+  const { spec, subpath } = parseImport(specifier);
+  const start = startDir(from, dir);
+  return { spec, id: spec.name + subpath, start, found: await hasPackage(start, spec) };
+}
+
+/**
  * The directory an import is resolved from: `from` as a directory, or a module's path or
  * `file://` url, else `dir`, else cwd.
  */
-export function startDir(from: string | URL | undefined, dir = "."): string {
+function startDir(from: string | URL | undefined, dir = "."): string {
   const { fs, path } = builtin;
   if (from === undefined) return path.resolve(dir);
   const file = typeof from === "string" && !from.startsWith("file:");
@@ -136,7 +151,7 @@ export const dirURL = (dir: string): string => toFileURL(`${dir}${builtin.path.s
  * The nearest `node_modules` directory of the name above `dir`, and its package.json when it
  * has one: Node.js takes that directory, whatever is in it.
  */
-async function nearest(dir: string, name: string): Promise<{ home: string; pkg?: object }> {
+async function nearest(dir: string, name: string): Promise<Found> {
   const { dirname, join } = builtin.path;
   for (let at = dir; ; at = dirname(at)) {
     const home = join(at, "node_modules", name);
@@ -147,28 +162,38 @@ async function nearest(dir: string, name: string): Promise<{ home: string; pkg?:
   }
 }
 
-/** Whether an import from `dir` finds the spec's package in a version it takes. */
-export async function hasPackage(dir: string, spec: Spec): Promise<boolean> {
-  const { pkg } = await nearest(dir, spec.name).catch(() => ({ pkg: undefined }));
-  return pkg !== undefined && fits(spec, (pkg as { version?: unknown }).version);
+/** A package's directory, and its package.json when it has one. */
+type Found = { home: string; pkg?: object };
+
+/** The package an import from `dir` finds, when it is a version the spec takes. */
+async function hasPackage(dir: string, spec: Spec): Promise<Found | undefined> {
+  const found = await nearest(dir, spec.name).catch(() => undefined);
+  const version = (found?.pkg as { version?: unknown } | undefined)?.version;
+  return found?.pkg && fits(spec, version) ? found : undefined;
 }
 
 /**
  * `resolvex`'s own resolution of `id`, `name` or `name/subpath`, imported from the directory
  * `parentURL`: as Node.js resolves it, for the package's `exports` with Node.js's conditions for
  * an import, else its `main` or `index.js`, to the file's real path. Not read: `imports`, a
- * package importing itself by name, and the `browser` and `module` fields.
+ * package importing itself by name, and the `browser` and `module` fields. `found` saves the
+ * walk up when the caller has already found the package.
  */
-export async function resolveImport(id: string, parentURL: string): Promise<string> {
+export async function resolveImport(id: string, parentURL: string, found?: Found): Promise<string> {
   const { join } = builtin.path;
   const end = nameEnd(id);
   const name = end < 0 ? id : id.slice(0, end);
   const subpath = end < 0 ? "." : `.${id.slice(end)}`;
-  const { home, pkg = {} } = await nearest(fromFileURL(parentURL), name);
+  const { home, pkg = {} } = found ?? (await nearest(fromFileURL(parentURL), name));
   const { exports, main } = pkg as { exports?: unknown; main?: unknown };
   let tries: string[];
   if (exports !== undefined) {
-    const target = exportsTarget(exports, subpath);
+    let target: string | undefined;
+    try {
+      target = exportsTarget(exports, subpath);
+    } catch (error) {
+      throw fail(`${join(home, "package.json")}: ${(error as Error).message}`, "EMANIFEST");
+    }
     if (target === undefined) throw fail(`${name} does not export ${subpath}`, "ENOEXPORT");
     tries = [target];
   } else if (subpath !== ".") {
@@ -179,9 +204,8 @@ export async function resolveImport(id: string, parentURL: string): Promise<stri
     tries = typeof main === "string" && main ? ends.map((end) => main + end) : [];
     tries.push("index.js", "index.json", "index.node");
   }
-  for (const file of tries) {
-    const found = join(home, file);
-    if (await isFile(found)) return toFileURL(await builtin.fsp.realpath(found));
+  for (const file of tries.map((path) => join(home, path))) {
+    if (await isFile(file)) return toFileURL(await builtin.fsp.realpath(file));
   }
   throw fail(`${id} names no file in ${home}`, "ENOEXPORT");
 }

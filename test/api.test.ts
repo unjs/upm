@@ -1933,6 +1933,17 @@ describe("resolvex", () => {
     expect(served).toEqual([]);
   });
 
+  it("refuses an `exports` target outside the package, naming its package.json", async () => {
+    const exports = { ".": "../secret.js", "./ok": ["../x.js", "./ok.js"] };
+    const home = await local("bad", { version: "1.0.0", exports }, ["ok.js"]);
+    await writeFile(join(dir, "node_modules", "secret.js"), "");
+    await expect(upm.resolvex("bad", base)).rejects.toMatchObject({
+      code: "EMANIFEST",
+      message: expect.stringContaining(join(home, "package.json")),
+    });
+    expect(await upm.resolvex("bad/ok", base)).toBe(url(join(home, "ok.js")));
+  });
+
   it("lands on `main` as Node.js looks for it, or on any file without `exports`", async () => {
     const home = await local("old", { version: "1.0.0", main: "lib/main" }, [
       "lib/main.js",

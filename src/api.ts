@@ -108,7 +108,10 @@ export interface Progress {
 export type ErrorCode =
   /** An option or argument the command cannot take. */
   | "EOPTION"
-  /** package.json cannot be read, parsed or written. */
+  /**
+   * package.json cannot be read, parsed or written, or the `exports` target an import takes is
+   * not a path inside the package.
+   */
   | "EMANIFEST"
   /** `.npmrc` holds something upm refuses, such as a credential with no registry url. */
   | "ECONFIG"
@@ -1453,15 +1456,15 @@ export async function exec(command: string, options: ExecOptions = {}): Promise<
  * version or range to what is there when it fits; a tag always asks the registry.
  */
 export async function resolvex(specifier: string, options: ResolvexOptions = {}): Promise<string> {
-  const { dirURL, hasPackage, parseImport, resolveImport, startDir } = await import("./exec.ts");
-  const { spec, subpath } = parseImport(specifier);
-  const start = startDir(options.from, options.dir);
+  const { dirURL, findImport, resolveImport } = await import("./exec.ts");
+  const { spec, id, start, found } = await findImport(specifier, options.from, options.dir);
   let at = start;
-  if (!(await hasPackage(start, spec))) {
+  if (!found) {
     const dir = options.dir ?? (await (await import("./workspaces.ts")).findRoot(start)).dir;
     at = await execProject({ ...options, dir }, [spec.raw]);
   }
-  return await (options.resolve ?? resolveImport)(spec.name + subpath, dirURL(at));
+  if (options.resolve) return await options.resolve(id, dirURL(at));
+  return await resolveImport(id, dirURL(at), found);
 }
 
 /** A package's module, as `import()` gives it: what `resolvex` finds, imported. */

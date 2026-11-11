@@ -52,9 +52,33 @@ describe("exportsTarget", () => {
     expect(exportsTarget({ ".": [[null], { import: "./a.mjs" }] }, ".")).toBe("./a.mjs");
   });
 
-  it("passes over targets outside the package", () => {
-    expect(exportsTarget("a.js", ".")).toBeUndefined();
+  it("refuses a target that is not a path inside the package, as Node.js does", () => {
+    const invalid = expect.objectContaining({ code: "EMANIFEST" });
+    for (const target of ["a.js", "../a.js", "./a/../../b.js", "./node_modules/x/a.js", 1, true]) {
+      expect(() => exportsTarget({ ".": target }, "."), String(target)).toThrow(invalid);
+    }
+    // In a condition too: Node.js does not go on to the next.
+    const conditions = { import: "pkg/a.js", default: "./a.js" };
+    expect(() => exportsTarget(conditions, ".")).toThrow(invalid);
+    // A target never taken is never read.
+    expect(exportsTarget({ require: "../a.cjs", default: "./a.js" }, ".")).toBe("./a.js");
+    expect(exportsTarget({ ".": "./a.js", "./x": "../x.js" }, ".")).toBe("./a.js");
+  });
+
+  it("passes over an invalid target in a list, unless it is the last word", () => {
+    const invalid = expect.objectContaining({ code: "EMANIFEST" });
     expect(exportsTarget(["../a.js", "./b.js"], ".")).toBe("./b.js");
-    expect(exportsTarget({ ".": 1 }, ".")).toBeUndefined();
+    expect(exportsTarget([{ import: 1 }, "./b.js"], ".")).toBe("./b.js");
+    expect(() => exportsTarget([{ require: "./a.cjs" }, "../b.js"], ".")).toThrow(invalid);
+    expect(exportsTarget(["../b.js", null], ".")).toBeUndefined();
+    expect(() => exportsTarget([null, "../b.js"], ".")).toThrow(invalid);
+    expect(exportsTarget({ ".": [] }, ".")).toBeUndefined();
+  });
+
+  it("does not fill a `*` with a segment that leaves the package", () => {
+    const exports = { "./x*": "./dist/*.js" };
+    expect(exportsTarget(exports, "./xa")).toBe("./dist/a.js");
+    expect(exportsTarget(exports, "./x./y")).toBeUndefined();
+    expect(exportsTarget(exports, "./x/../y")).toBeUndefined();
   });
 });
