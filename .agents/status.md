@@ -25,8 +25,9 @@ compatibility. Keep this page about open work, not completed implementation step
   (`src/exports.ts`) and `resolveImport` (`src/exec.ts`) read `exports` and `main`. Not read:
   `imports`, a package importing itself by name, `--conditions`, percent-encoded segments
   (`%2e%2e`), and Node.js's refusal of an `exports` that mixes subpaths and conditions. `importx` loads through the runtime's own
-  `import()`, so in a tab, where `fs` is a shim, it needs a loader that reads the file instead,
-  such as a `Blob` url. Compare against Node.js with `import.meta.resolve(id, parent)` under
+  `import()`, so in a tab, where `fs` is a shim, it needs a loader that reads the file instead:
+  the website has one, `web/src/lib/modules.ts`, on Blob urls, which cannot express an ES
+  module import cycle. Compare against Node.js with `import.meta.resolve(id, parent)` under
   `--experimental-import-meta-resolve`; without the flag Node.js drops the parent.
 - **Switching package managers:** unrelated real directories in an old `node_modules`
   can survive and remain importable. Use a clean `node_modules` when switching today.

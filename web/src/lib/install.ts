@@ -122,6 +122,7 @@ export function installInTab(
   lockfile?: string,
   logged?: typeof fetch,
 ): Promise<Installed> {
+  let exposed: Promise<void> | undefined;
   const run = running.then(async () => {
     const node = await ready();
     const storeBackend = await opfsBackend();
@@ -166,6 +167,11 @@ export function installInTab(
     const ms = performance.now() - start;
     // The store now holds something worth keeping.
     if (storeBackend?.set) persist();
+    // Each dependency as a global, to try in the devtools console. Its code loads only now,
+    // and nothing here waits for it or fails with it.
+    exposed = import("./globals.ts")
+      .then((globals) => globals.exposeDependencies(Object.keys(dependencies), PROJECT))
+      .catch((error) => console.warn("upm: could not import the dependencies:", error));
     const files = new Map<string, InstalledFile>();
     const links = new Map<string, string>();
     const top = /^node_modules\/(@[^/]+\/)?[^/.@][^/]*$/;
@@ -187,6 +193,11 @@ export function installInTab(
     list(STORE.slice(0, -1), "~/.upm/store/");
     return { files, links, result, ms };
   });
-  running = run.catch(() => {});
+  // The next run also waits for the imports, which read this run's files; not for long, as a
+  // package's top-level await may never settle.
+  running = run.then(
+    () => Promise.race([exposed, new Promise((done) => setTimeout(done, 3000))]),
+    () => {},
+  );
   return run;
 }

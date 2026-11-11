@@ -69,6 +69,15 @@ The bottom panel's Storage tab (`src/components/storage.tsx`) lists what OPFS ho
 packages and the kept documents with how long each stays fresh, each part's size, the site's
 quota and whether the browser keeps it when the disk runs low. It clears a part or all of it.
 
+After an install, each dependency is imported and set as a global of the tab, to try in the
+devtools console: `yaml.parse("a: 1")` after installing `yaml` (`@vue/shared` is `vueShared`).
+`src/lib/globals.ts` finds the entry with upm's `resolvex`, and `src/lib/modules.ts` loads it:
+the browser cannot import a file of the in-memory `fs`, so each file becomes a Blob url, its
+imports rewritten to the Blob urls of the files they name, with a browser's conditions for
+`exports`. CommonJS runs in a function with a `require`. An import cycle between ES modules
+cannot be written as Blob urls; such a package loads from its CommonJS build when it has one.
+A package that fails logs a warning in the console. Both load only after an install.
+
 `public/install.sh` and `public/install.ps1` are the installers behind
 `curl -fsSL https://upm.sh/install.sh | sh` and `irm https://upm.sh/install.ps1 | iex`, which the
 install card (`src/components/install.ts`) offers next to `npm i -g upm`.
