@@ -12,24 +12,6 @@ export function yaml(text: string): unknown {
     if (rest !== "") return scalar(rest);
     return next !== undefined && indentOf(next) > indent ? block(indentOf(next)) : {};
   }
-  /** The value of an explicit key: inline, empty, or a block opening on its `:` line. */
-  function explicitValue(separator: string, indent: number): unknown {
-    const colon = separator.indexOf(":");
-    const raw = separator.slice(colon + 1);
-    const rest = raw.trim();
-    const next = lines[i];
-    if (rest === "") {
-      return next !== undefined && indentOf(next) > indent ? block(indentOf(next)) : {};
-    }
-    // A block map or list can open on the separator line (`: dependencies:`), and its siblings
-    // continue at the column where that first key starts.
-    if (rest.startsWith("- ") || isMappingEntry(rest)) {
-      const valueIndent = colon + 1 + (raw.length - raw.trimStart().length);
-      lines.splice(i, 0, " ".repeat(valueIndent) + rest);
-      return block(valueIndent);
-    }
-    return scalar(rest);
-  }
   function block(indent: number): unknown {
     if (lines[i]?.trim().startsWith("- ")) {
       const out: unknown[] = [];
@@ -56,8 +38,16 @@ export function yaml(text: string): unknown {
         ) {
           throw new Error(`Invalid YAML: explicit key without a value: ${key}`);
         }
-        i++;
-        out[key] = explicitValue(separator, indent);
+        const rest = separator.trim().slice(1).trim();
+        if (rest.startsWith("- ") || isMappingEntry(rest)) {
+          // A block opens on the `:` line (`: dependencies:`). Blank the `:` so the block starts
+          // at the column its sibling entries share.
+          lines[i] = separator.replace(":", " ");
+          out[key] = block(indentOf(lines[i]!));
+        } else {
+          i++;
+          out[key] = value(rest, indent);
+        }
         continue;
       }
       const colon = keyEnd(line);
@@ -90,8 +80,11 @@ function keyEnd(line: string): number {
 function isMappingEntry(text: string): boolean {
   const first = text[0];
   if (first === "{" || first === "[") return false;
-  // A quoted scalar ends at its closing quote; a quoted key continues with a mapping colon.
-  if ((first === "'" || first === '"') && text.at(-1) === first) return false;
+  if (first === "'" || first === '"') {
+    // A quoted key is followed by a mapping colon; a quoted scalar is not.
+    const end = text.indexOf(first + ":", 1);
+    return end > 0 && (end + 2 === text.length || text[end + 2] === " ");
+  }
   const colon = keyEnd(text);
   return colon >= 0 && (colon === text.length - 1 || text[colon + 1] === " ");
 }

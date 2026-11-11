@@ -37,6 +37,12 @@ describe("yaml", () => {
     });
   });
 
+  it("reads a compact mapping whose first key and value are both quoted", () => {
+    expect(yaml("a:\n  ? k\n  : 'x: y': 'z: w'\n    b: c\n  d: e\n")).toEqual({
+      a: { k: { "x: y": "z: w", b: "c" }, d: "e" },
+    });
+  });
+
   it("keeps a quoted scalar on the separator line", () => {
     expect(yaml("a:\n  ? k\n  : 'text: here'\n")).toEqual({ a: { k: "text: here" } });
   });
