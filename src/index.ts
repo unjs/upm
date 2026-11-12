@@ -11,6 +11,8 @@ export {
   remove,
   resolve,
   run,
+  upmImport,
+  upmResolve,
 } from "./api.ts";
 
 export type { LockEntry, Lockfile, WorkspaceEntry } from "./lock.ts";
@@ -57,5 +59,7 @@ export type {
   ScriptStart,
   SpecOptions,
   StoreAccess,
+  UpmImportOptions,
+  UpmResolveOptions,
   WorkspaceOptions,
 } from "./api.ts";

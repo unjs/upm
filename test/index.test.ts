@@ -17,6 +17,8 @@ describe("public api", () => {
       "remove",
       "resolve",
       "run",
+      "upmImport",
+      "upmResolve",
     ]);
   });
 
