@@ -1,6 +1,6 @@
 // `upm exec`'s lookups: which installed bin a command means, which bin a package runs, and
-// where a package installs; and `resolvex`'s: which import it takes and the file it lands on.
-// Its own module, loaded by `exec` and `resolvex` alone: no other command pays for it at startup.
+// where a package installs; and `upmResolve`'s: which import it takes and the file it lands on.
+// Its own module, loaded by `exec` and `upmResolve` alone: no other command pays for it at startup.
 import { normalizeBin } from "./normalize-bin.ts";
 import { builtin } from "./builtin.ts";
 import { exportsTarget } from "./exports.ts";
@@ -120,7 +120,7 @@ const nameEnd = (id: string): number =>
   id.indexOf("/", id.startsWith("@") ? id.indexOf("/") + 1 : 0);
 
 /**
- * What `resolvex` knows before any install: the spec, the import as `name` or `name/subpath`,
+ * What `upmResolve` knows before any install: the spec, the import as `name` or `name/subpath`,
  * the directory it is resolved from, and the package found above it when it is a version the
  * spec takes.
  */
@@ -175,7 +175,7 @@ async function hasPackage(dir: string, spec: Spec): Promise<Found | undefined> {
 }
 
 /**
- * `resolvex`'s own resolution of `id`, `name` or `name/subpath`, imported from the directory
+ * `upmResolve`'s own resolution of `id`, `name` or `name/subpath`, imported from the directory
  * `parentURL`: as Node.js resolves it, for the package's `exports` with Node.js's conditions for
  * an import, else its `main` or `index.js`, to the file's real path. Not read: `imports`, a
  * package importing itself by name, and the `browser` and `module` fields. `found` saves the

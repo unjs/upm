@@ -145,7 +145,7 @@ export type ErrorCode =
   /** The runtime has no Node.js builtin the call needs. */
   | "ENOBUILTIN"
   /**
-   * `resolvex` found no file for the import: the package does not export it, or the file that
+   * `upmResolve` found no file for the import: the package does not export it, or the file that
    * `exports` or `main` names is missing.
    */
   | "ENOEXPORT"
@@ -313,7 +313,7 @@ export interface ExecOptions extends ProjectOptions, RegistryAccess, StoreAccess
   experimental?: Experimental;
 }
 
-export interface ResolvexOptions extends ProjectOptions, RegistryAccess, StoreAccess {
+export interface UpmResolveOptions extends ProjectOptions, RegistryAccess, StoreAccess {
   /**
    * Where the import is resolved from: a directory, or a module's path or `file://` url, such
    * as `import.meta.url`. Default: `dir`, else cwd. Without `dir`, the project root, and with it
@@ -329,7 +329,7 @@ export interface ResolvexOptions extends ProjectOptions, RegistryAccess, StoreAc
   experimental?: Experimental;
 }
 
-export interface ImportxOptions extends ResolvexOptions {}
+export interface UpmImportOptions extends UpmResolveOptions {}
 
 export interface ExecResult {
   /** The command's exit code. */
@@ -1456,7 +1456,10 @@ export async function exec(command: string, options: ExecOptions = {}): Promise<
  * name without a version resolves to what the nearest `node_modules` above `from` has, and a
  * version or range to what is there when it fits; a tag always asks the registry.
  */
-export async function resolvex(specifier: string, options: ResolvexOptions = {}): Promise<string> {
+export async function upmResolve(
+  specifier: string,
+  options: UpmResolveOptions = {},
+): Promise<string> {
   const { dirURL, findImport, resolveImport } = await import("./exec.ts");
   const { spec, id, start, found } = await findImport(specifier, options.from, options.dir);
   let at = start;
@@ -1468,12 +1471,12 @@ export async function resolvex(specifier: string, options: ResolvexOptions = {})
   return await resolveImport(id, dirURL(at), found);
 }
 
-/** A package's module, as `import()` gives it: what `resolvex` finds, imported. */
-export async function importx<T = Record<string, any>>(
+/** A package's module, as `import()` gives it: what `upmResolve` finds, imported. */
+export async function upmImport<T = Record<string, any>>(
   specifier: string,
-  options: ImportxOptions = {},
+  options: UpmImportOptions = {},
 ): Promise<T> {
-  return import(await resolvex(specifier, options));
+  return import(await upmResolve(specifier, options));
 }
 
 /**

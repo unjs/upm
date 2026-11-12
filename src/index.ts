@@ -4,15 +4,15 @@ export {
   exec,
   fetchLockfile,
   fetchPackages,
-  importx,
   install,
   listScripts,
   lock,
   prune,
   remove,
   resolve,
-  resolvex,
   run,
+  upmImport,
+  upmResolve,
 } from "./api.ts";
 
 export type { LockEntry, Lockfile, WorkspaceEntry } from "./lock.ts";
@@ -38,7 +38,6 @@ export type {
   FetchLockfileOptions,
   FetchPackagesOptions,
   Group,
-  ImportxOptions,
   InstallOptions,
   InstallResult,
   InstallStats,
@@ -53,7 +52,6 @@ export type {
   RegistryAccess,
   RemoveOptions,
   RemoveResult,
-  ResolvexOptions,
   RunOptions,
   RunResult,
   ScriptList,
@@ -61,5 +59,7 @@ export type {
   ScriptStart,
   SpecOptions,
   StoreAccess,
+  UpmImportOptions,
+  UpmResolveOptions,
   WorkspaceOptions,
 } from "./api.ts";

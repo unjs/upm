@@ -1184,55 +1184,56 @@ describe("exec", () => {
     },
   );
 
-  describe("importx", () => {
+  describe("upmImport", () => {
     /**
-     * Prints the default export of what `importx` gave for the specifier, from `work`, or what
-     * `resolvex` gave; `prelude` runs first.
+     * Prints the default export of what `upmImport` gave for the specifier, from `work`, or what
+     * `upmResolve` gave; `prelude` runs first.
      */
-    async function importx(specifier: string, fn = "importx", options = {}, prelude = "") {
-      const file = join(dir, "importx.mjs");
+    async function upmImport(specifier: string, fn = "upmImport", options = {}, prelude = "") {
+      const file = join(dir, "upmImport.mjs");
       const index = pathToFileURL(fileURLToPath(new URL("../src/index.ts", import.meta.url)));
       const code = [
         prelude,
-        `const { importx, resolvex } = await import(${JSON.stringify(index.href)});`,
+        `const { upmImport, upmResolve } = await import(${JSON.stringify(index.href)});`,
         "const [fn, specifier, store, registry, json] = process.argv.slice(2);",
         "const log = (message) => console.error(message);",
         "const options = { store, registry, log, ...JSON.parse(json) };",
-        "if (fn === 'resolvex') console.log(await resolvex(specifier, options));",
-        "else console.log(JSON.stringify((await importx(specifier, options)).default));",
+        "if (fn === 'upmResolve') console.log(await upmResolve(specifier, options));",
+        "else console.log(JSON.stringify((await upmImport(specifier, options)).default));",
       ];
       await writeFile(file, code.join("\n"));
       const args = [fn, specifier, join(dir, "store"), registry, JSON.stringify(options)];
       return upm(file, args, {}, [], join(dir, "work"));
     }
-    const resolvex = (specifier: string, options = {}) => importx(specifier, "resolvex", options);
+    const upmResolve = (specifier: string, options = {}) =>
+      upmImport(specifier, "upmResolve", options);
 
     it("installs a package once per version, then imports it or a file of it", async () => {
-      expect(await importx("hi@1.0.0")).toEqual({
+      expect(await upmImport("hi@1.0.0")).toEqual({
         code: 0,
         stdout: '"hi"\n',
         stderr: "installed hi@1.0.0\n",
       });
       requests = [];
       for (const specifier of ["hi@1.0.0/hi.js", "npm:hi@1.0.0/hi.js"]) {
-        const { stdout, stderr } = await importx(specifier);
+        const { stdout, stderr } = await upmImport(specifier);
         expect(JSON.parse(stdout.split("\n")[0]!)).toMatchObject({ at: "hi@1.0.0" });
         expect(stderr).toBe("");
       }
       // Resolved, it is the file's real url, as node gives it, and none of its code runs.
       const [project] = await readdir(join(dir, "cache", "upm", "exec"));
       const at = join(dir, "cache", "upm", "exec", project!, "node_modules", "hi", "hi.js");
-      expect(await resolvex("hi@1.0.0/hi.js")).toEqual({
+      expect(await upmResolve("hi@1.0.0/hi.js")).toEqual({
         code: 0,
         stdout: `${pathToFileURL(await realpath(at)).href}\n`,
         stderr: "",
       });
       expect(requests).toEqual([]);
       expect(await readdir(join(dir, "cache", "upm", "exec"))).toHaveLength(1);
-      expect(await importx("npm:hi@latest")).toMatchObject({ code: 0, stdout: '"hi"\n' });
+      expect(await upmImport("npm:hi@latest")).toMatchObject({ code: 0, stdout: '"hi"\n' });
       expect(requests).toEqual(["/hi", "/hi/-/hi-1.1.0.tgz"]);
-      expect((await importx("hi@2")).stderr).toContain("ETARGET");
-      expect((await importx("jsr:@std/path")).stderr).toContain("EINVALIDSPEC");
+      expect((await upmImport("hi@2")).stderr).toContain("ETARGET");
+      expect((await upmImport("jsr:@std/path")).stderr).toContain("EINVALIDSPEC");
     });
 
     it("imports a package already installed above the directory when it fits", async () => {
@@ -1240,22 +1241,22 @@ describe("exec", () => {
       await mkdir(hi, { recursive: true });
       await writeFile(join(hi, "package.json"), JSON.stringify({ name: "hi", version: "1.0.0" }));
       await writeFile(join(hi, "index.js"), 'module.exports = "local";\n');
-      expect(await importx("hi")).toEqual({ code: 0, stdout: '"local"\n', stderr: "" });
-      expect(await importx("hi@^1.0.0")).toMatchObject({ stdout: '"local"\n' });
+      expect(await upmImport("hi")).toEqual({ code: 0, stdout: '"local"\n', stderr: "" });
+      expect(await upmImport("hi@^1.0.0")).toMatchObject({ stdout: '"local"\n' });
       const local = pathToFileURL(join(hi, "index.js")).href;
-      expect(await resolvex("npm:hi")).toMatchObject({ code: 0, stdout: `${local}\n` });
+      expect(await upmResolve("npm:hi")).toMatchObject({ code: 0, stdout: `${local}\n` });
       expect(requests).toEqual([]);
       // A version it is not, or a tag, installs.
-      expect(await importx("hi@1.1.0")).toMatchObject({ stdout: '"hi"\n' });
-      expect(await importx("hi@latest")).toMatchObject({ stdout: '"hi"\n' });
+      expect(await upmImport("hi@1.1.0")).toMatchObject({ stdout: '"hi"\n' });
+      expect(await upmImport("hi@latest")).toMatchObject({ stdout: '"hi"\n' });
       // Node takes the nearest directory of the name, so a nearer one that does not fit
       // installs, as does one with no package.json.
       const near = join(dir, "work", "node_modules", "hi");
       await mkdir(near, { recursive: true });
       await writeFile(join(near, "package.json"), JSON.stringify({ name: "hi", version: "0.1.0" }));
-      expect(await importx("hi@1.0.0")).toMatchObject({ stdout: '"hi"\n' });
+      expect(await upmImport("hi@1.0.0")).toMatchObject({ stdout: '"hi"\n' });
       await rm(join(near, "package.json"));
-      expect(await importx("hi")).toMatchObject({ code: 0, stdout: '"hi"\n' });
+      expect(await upmImport("hi")).toMatchObject({ code: 0, stdout: '"hi"\n' });
     });
 
     it("resolves from `from`, and installs in the project found above it", async () => {
@@ -1265,7 +1266,7 @@ describe("exec", () => {
       await writeFile(join(app, "package.json"), "{}");
       await writeFile(join(app, "src", "mod.mjs"), "");
       const from = pathToFileURL(join(app, "src", "mod.mjs")).href;
-      const installed = await resolvex("hi@1.0.0", { from });
+      const installed = await upmResolve("hi@1.0.0", { from });
       expect(installed.stdout).toContain(
         pathToFileURL(join(app, "node_modules", ".upm", ".exec")).href,
       );
@@ -1275,7 +1276,7 @@ describe("exec", () => {
       await writeFile(join(hi, "index.js"), "");
       const local = pathToFileURL(join(hi, "index.js")).href;
       for (const at of [from, join(app, "src"), join(app, "src", "mod.mjs")]) {
-        expect(await resolvex("hi", { from: at })).toMatchObject({ stdout: `${local}\n` });
+        expect(await upmResolve("hi", { from: at })).toMatchObject({ stdout: `${local}\n` });
       }
     });
   });
@@ -1375,12 +1376,12 @@ describe("startup budget", () => {
     // `~/.upm` that is a file passed over on older Node. 172,263 with that check kept for the
     // process. 172,464 with undici's untouched default agent detected when node:http is loaded.
     // 172,817 with undici 8's dispatcher slot and handler callbacks (Node 26), `--help` within
-    // noise (46.3/45.1 and 119.9/119.2 ms). 173,506 with `importx` and `resolvex`, `--help`
+    // noise (46.3/45.1 and 119.9/119.2 ms). 173,512 with `upmImport` and `upmResolve`, `--help`
     // within noise (74.5/71.6 and 72.9/73.5 ms).
     const modules = await reachable();
     const bytes = [...modules.values()].reduce((total, size) => total + size, 0);
     expect(modules.size).toBeLessThanOrEqual(27); // `upm.ts` is the bin, `cli.ts` the program
-    expect(bytes).toBeLessThanOrEqual(173_506);
+    expect(bytes).toBeLessThanOrEqual(173_512);
     // Found through `import()` by the commands that read a project, like the pools: each holds
     // its worker's whole code in the build.
     const lazy = [

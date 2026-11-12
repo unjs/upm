@@ -138,25 +138,28 @@ describe("dist", () => {
   // In a CommonJS bundle upm's own code has no `import.meta` to resolve with.
   for (const format of ["esm", "cjs"] as const) {
     it(`resolves an import from a directory in an app's ${format} bundle`, async () => {
-      const app = join(dir, `resolvex-${format}`);
+      const app = join(dir, `upmResolve-${format}`);
       const hi = join(app, "node_modules", "hi");
       await mkdir(hi, { recursive: true });
       await writeFile(join(hi, "package.json"), '{"name":"hi","version":"1.0.0"}');
       await writeFile(join(hi, "index.js"), "");
       const input = join(app, "entry.mjs");
-      await writeFile(input, `export { resolvex } from ${JSON.stringify(join(out, "index.mjs"))};`);
+      await writeFile(
+        input,
+        `export { upmResolve } from ${JSON.stringify(join(out, "index.mjs"))};`,
+      );
       const { rolldown } = await loadRolldown();
       const bundle = await rolldown({ input, platform: "node", logLevel: "silent" });
       const ext = format === "esm" ? "mjs" : "cjs";
       await bundle.write({ dir: join(app, "out"), format, entryFileNames: `app.${ext}` });
       await bundle.close();
       const file = join(app, "out", `app.${ext}`);
-      const { resolvex } = (
+      const { upmResolve } = (
         format === "cjs"
           ? createRequire(import.meta.url)(file)
           : await import(pathToFileURL(file).href)
-      ) as { resolvex: (specifier: string, options: object) => Promise<string> };
-      const url = await resolvex("hi", { from: app, registry });
+      ) as { upmResolve: (specifier: string, options: object) => Promise<string> };
+      const url = await upmResolve("hi", { from: app, registry });
       expect(url).toBe(pathToFileURL(join(hi, "index.js")).href);
     });
   }

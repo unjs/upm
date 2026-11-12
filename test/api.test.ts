@@ -1907,7 +1907,7 @@ describe("tarball dependencies", () => {
   });
 });
 
-describe("resolvex", () => {
+describe("upmResolve", () => {
   /** A package installed under `dir`, from its package.json and files. */
   async function local(name: string, manifest: object, files: string[]): Promise<string> {
     const home = join(dir, "node_modules", name);
@@ -1929,12 +1929,12 @@ describe("resolvex", () => {
     const files = ["i.cjs", "i.mjs", "dist/utils/a.js", "internal/x.js", "dist/raw.js"];
     const home = await local("@s/pkg", { version: "1.0.0", exports }, files);
     const options = { ...base, from: join(dir, "src") };
-    expect(await upm.resolvex("@s/pkg", options)).toBe(url(join(home, "i.mjs")));
-    expect(await upm.resolvex("npm:@s/pkg@^1/utils/a", options)).toBe(
+    expect(await upm.upmResolve("@s/pkg", options)).toBe(url(join(home, "i.mjs")));
+    expect(await upm.upmResolve("npm:@s/pkg@^1/utils/a", options)).toBe(
       url(join(home, "dist", "utils", "a.js")),
     );
     for (const specifier of ["@s/pkg/internal/x", "@s/pkg/dist/raw.js", "@s/pkg/utils/b"]) {
-      await expect(upm.resolvex(specifier, options)).rejects.toMatchObject({ code: "ENOEXPORT" });
+      await expect(upm.upmResolve(specifier, options)).rejects.toMatchObject({ code: "ENOEXPORT" });
     }
     expect(served).toEqual([]);
   });
@@ -1943,11 +1943,11 @@ describe("resolvex", () => {
     const exports = { ".": "../secret.js", "./ok": ["../x.js", "./ok.js"] };
     const home = await local("bad", { version: "1.0.0", exports }, ["ok.js"]);
     await writeFile(join(dir, "node_modules", "secret.js"), "");
-    await expect(upm.resolvex("bad", base)).rejects.toMatchObject({
+    await expect(upm.upmResolve("bad", base)).rejects.toMatchObject({
       code: "EMANIFEST",
       message: expect.stringContaining(join(home, "package.json")),
     });
-    expect(await upm.resolvex("bad/ok", base)).toBe(url(join(home, "ok.js")));
+    expect(await upm.upmResolve("bad/ok", base)).toBe(url(join(home, "ok.js")));
   });
 
   it("lands on `main` as Node.js looks for it, or on any file without `exports`", async () => {
@@ -1955,14 +1955,14 @@ describe("resolvex", () => {
       "lib/main.js",
       "x.js",
     ]);
-    expect(await upm.resolvex("old", base)).toBe(url(join(home, "lib", "main.js")));
-    expect(await upm.resolvex("old/x.js", base)).toBe(url(join(home, "x.js")));
+    expect(await upm.upmResolve("old", base)).toBe(url(join(home, "lib", "main.js")));
+    expect(await upm.upmResolve("old/x.js", base)).toBe(url(join(home, "x.js")));
     // Node.js adds no extension to a subpath.
-    await expect(upm.resolvex("old/x", base)).rejects.toMatchObject({ code: "ENOEXPORT" });
+    await expect(upm.upmResolve("old/x", base)).rejects.toMatchObject({ code: "ENOEXPORT" });
     await writeFile(join(home, "package.json"), '{"name":"old","version":"1.0.0"}');
-    await expect(upm.resolvex("old", base)).rejects.toMatchObject({ code: "ENOEXPORT" });
+    await expect(upm.upmResolve("old", base)).rejects.toMatchObject({ code: "ENOEXPORT" });
     await writeFile(join(home, "index.js"), "");
-    expect(await upm.resolvex("old", base)).toBe(url(join(home, "index.js")));
+    expect(await upm.upmResolve("old", base)).toBe(url(join(home, "index.js")));
   });
 
   it("lands on the real file, as Node.js does", async () => {
@@ -1972,7 +1972,7 @@ describe("resolvex", () => {
     await writeFile(join(real, "index.js"), "");
     await mkdir(join(dir, "node_modules"), { recursive: true });
     await symlink(real, join(dir, "node_modules", "linked"), "junction");
-    expect(await upm.resolvex("linked", base)).toBe(url(join(await realpath(real), "index.js")));
+    expect(await upm.upmResolve("linked", base)).toBe(url(join(await realpath(real), "index.js")));
   });
 
   it("hands the last step to `resolve`, once the package is in place", async () => {
@@ -1983,7 +1983,7 @@ describe("resolvex", () => {
       return "file:///elsewhere.js";
     };
     const from = join(dir, "a", "b");
-    expect(await upm.resolvex("hi/x", { ...base, from, resolve })).toBe("file:///elsewhere.js");
+    expect(await upm.upmResolve("hi/x", { ...base, from, resolve })).toBe("file:///elsewhere.js");
     expect(calls).toEqual([["hi/x", `${url(from)}/`]]);
   });
 });
