@@ -209,27 +209,6 @@ html[data-theme="dark"] {
     &[data-loaded] > pre {
       visibility: hidden;
     }
-    & > .nodebox-run {
-      position: absolute;
-      top: 8px;
-      right: 8px;
-      padding: 2px 10px;
-      border-radius: 4px;
-      font: 500 12px/1.5 var(--font-sans);
-      color: light-dark(#ffffff, #18181b);
-      background: light-dark(#b45309, #fbbf24);
-      cursor: pointer;
-      opacity: 0.85;
-      transition: opacity 150ms ease-out;
-    }
-    & > .nodebox-run:hover,
-    & > .nodebox-run:focus-visible {
-      opacity: 1;
-    }
-    & > .nodebox-run:focus-visible {
-      outline: 2px solid light-dark(#b45309, #fbbf24);
-      outline-offset: 2px;
-    }
   }
   & blockquote {
     padding: 0 1em;

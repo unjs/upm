@@ -2,11 +2,9 @@ import { nodeboxHeight, nodeboxSrc } from "../lib/nodebox.ts";
 import { currentScheme, onSchemeChange, type Scheme } from "../theme.ts";
 
 const FRAME_TITLE = "Run this example in Nodebox";
-const RUN_LABEL = "Run";
 
 type Frame = {
   block: HTMLElement;
-  button: HTMLButtonElement;
   code: string;
   iframe?: HTMLIFrameElement;
   scheme?: Scheme;
@@ -14,32 +12,28 @@ type Frame = {
 };
 
 export function mountNodeboxes(root: HTMLElement): () => void {
-  const frames = [...root.querySelectorAll<HTMLElement>("[data-nodebox]")].map(mountRunButton);
+  const frames = [...root.querySelectorAll<HTMLElement>("[data-nodebox]")].map(reserveFrame);
   if (frames.length === 0) return () => {};
-  const unsubscribe = onSchemeChange(() => {
-    for (const frame of frames) if (frame.scheme) void showFrame(frame, currentScheme());
-  });
+  const showAll = () => {
+    for (const frame of frames) void showFrame(frame, currentScheme());
+  };
+  showAll();
+  const unsubscribe = onSchemeChange(showAll);
   return () => {
     unsubscribe();
     for (const frame of frames) unmount(frame);
   };
 }
 
-function mountRunButton(block: HTMLElement): Frame {
-  const button = document.createElement("button");
-  button.type = "button";
-  button.className = "nodebox-run";
-  button.textContent = RUN_LABEL;
-  button.setAttribute("aria-label", FRAME_TITLE);
-  const frame: Frame = { block, button, code: block.dataset.nodebox ?? "" };
-  button.addEventListener("click", () => void showFrame(frame, currentScheme()), { once: true });
-  block.append(button);
-  return frame;
+function reserveFrame(block: HTMLElement): Frame {
+  const code = block.dataset.nodebox ?? "";
+  block.style.height = `${nodeboxHeight(code)}px`;
+  block.dataset.open = "";
+  return { block, code };
 }
 
 function unmount(frame: Frame) {
   frame.disposed = true;
-  frame.button.remove();
   frame.iframe?.remove();
   frame.block.style.removeProperty("height");
   delete frame.block.dataset.open;
@@ -49,19 +43,17 @@ function unmount(frame: Frame) {
 async function showFrame(frame: Frame, scheme: Scheme) {
   if (frame.scheme === scheme) return;
   frame.scheme = scheme;
-  const src = await nodeboxSrc(frame.code, scheme, { autorun: !frame.iframe });
+  const src = await nodeboxSrc(frame.code, scheme);
   if (frame.disposed || frame.scheme !== scheme) return;
-  const iframe = frame.iframe ?? openFrame(frame);
+  const iframe = frame.iframe ?? appendFrame(frame);
   iframe.addEventListener("load", () => (frame.block.dataset.loaded = ""), { once: true });
   iframe.src = src;
 }
 
-function openFrame(frame: Frame): HTMLIFrameElement {
-  frame.button.remove();
-  frame.block.style.height = `${nodeboxHeight(frame.code)}px`;
-  frame.block.dataset.open = "";
+function appendFrame(frame: Frame): HTMLIFrameElement {
   const iframe = document.createElement("iframe");
   iframe.title = FRAME_TITLE;
+  iframe.loading = "lazy";
   iframe.allow = "clipboard-write";
   frame.block.append(iframe);
   frame.iframe = iframe;

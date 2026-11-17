@@ -66,14 +66,10 @@ describe("nodeboxSrc", () => {
     });
   });
 
-  it("runs on load only when the reader asked to run it", async () => {
-    expect(new URL(await nodeboxSrc(code, "light")).searchParams.has("autorun")).toBe(false);
-    expect(
-      new URL(await nodeboxSrc(code, "light", { autorun: false })).searchParams.has("autorun"),
-    ).toBe(false);
-    expect(
-      new URL(await nodeboxSrc(code, "dark", { autorun: true })).searchParams.get("autorun"),
-    ).toBe("1");
+  it("never runs on load, the reader presses run inside the embed", async () => {
+    for (const scheme of ["light", "dark"] as const) {
+      expect(new URL(await nodeboxSrc(code, scheme)).searchParams.has("autorun")).toBe(false);
+    }
   });
 
   it("matches the README's light and dark code backgrounds", async () => {

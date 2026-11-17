@@ -29,17 +29,12 @@ export function nodeboxPlaceholder(code: string, highlighted: string): string {
   return `<div class="nodebox" data-nodebox="${escapeAttribute(code)}">${highlighted}</div>`;
 }
 
-export async function nodeboxSrc(
-  code: string,
-  scheme: Scheme,
-  { autorun = false }: { autorun?: boolean } = {},
-): Promise<string> {
+export async function nodeboxSrc(code: string, scheme: Scheme): Promise<string> {
   const url = new URL("/e", NODEBOX_ORIGIN);
   url.searchParams.set("q", await encodeShareCode(code));
   for (const [key, value] of Object.entries(APPEARANCE_BY_SCHEME[scheme])) {
     url.searchParams.set(key, value);
   }
-  if (autorun) url.searchParams.set("autorun", "1");
   return url.href;
 }
 
