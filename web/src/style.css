@@ -188,8 +188,10 @@ html[data-theme="dark"] {
     position: relative;
     margin: 0 0 1em;
     & > pre {
-      height: 100%;
       margin: 0;
+    }
+    &[data-open] > pre {
+      height: 100%;
       overflow: hidden;
     }
     & > iframe {
