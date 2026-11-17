@@ -1,7 +1,17 @@
 // A package's Markdown, rendered by md4x's wasm build (its `browser` export).
 import { highlightText } from "rangi";
-import { useEffect, useMemo, useState, type MouseEvent, type ReactNode } from "react";
+import {
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type MouseEvent,
+  type ReactNode,
+} from "react";
+import { isRunnable, nodeboxPlaceholder } from "../lib/nodebox.ts";
 import { schemeMedia } from "../theme.ts";
+import { mountNodeboxes } from "./nodebox.ts";
 import { Pulse, Waiting } from "./ui.tsx";
 
 /**
@@ -43,6 +53,7 @@ export function Markdown(props: {
 }) {
   const { text, link, onOpen } = props;
   const [loaded, setLoaded] = useState<Renderer | Error>();
+  const article = useRef<HTMLElement>(null);
   useEffect(() => {
     loadMarkdown().then(
       (render) => setLoaded(() => render),
@@ -53,6 +64,7 @@ export function Markdown(props: {
     () => (typeof loaded === "function" ? loaded(text, link) : ""),
     [loaded, text, link],
   );
+  useLayoutEffect(() => (article.current ? mountNodeboxes(article.current) : undefined), [html]);
   if (!loaded) return <MarkdownSkeleton />;
   if (loaded instanceof Error) return <Waiting>md4x failed to load: {loaded.message}</Waiting>;
   return (
@@ -61,7 +73,7 @@ export function Markdown(props: {
       onClick={(e) => jump(e, onOpen)}
     >
       {props.children}
-      <article className="readme" dangerouslySetInnerHTML={{ __html: html }} />
+      <article ref={article} className="readme" dangerouslySetInnerHTML={{ __html: html }} />
     </div>
   );
 }
@@ -182,8 +194,10 @@ function renderer(
     const html = renderToHtml(text, {
       headingIds: true,
       // rangi escapes the code; md4x puts what this returns in place of its own block.
-      highlighter: (code, { lang }) =>
-        `<pre>${highlightText(code, { lang: lang || "plain", lineNumbers: false })}</pre>`,
+      highlighter: (code, { lang }) => {
+        const pre = `<pre>${highlightText(code, { lang: lang || "plain", lineNumbers: false })}</pre>`;
+        return isRunnable(lang) ? nodeboxPlaceholder(code, pre) : pre;
+      },
     });
     link = to;
     // Page-wide styles and forms stay out; ids get a prefix so they cannot clash with the app's.
