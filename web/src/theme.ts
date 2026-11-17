@@ -1,9 +1,24 @@
 // The light and dark toggle. With no theme stored, the page follows the system; index.html
 // sets the stored one before the page paints, and src/style.css reads it.
-type Scheme = "light" | "dark";
+export type Scheme = "light" | "dark";
 
 const html = document.documentElement;
 const system = matchMedia("(prefers-color-scheme: dark)");
+const schemeListeners = new Set<() => void>();
+
+export function currentScheme(): Scheme {
+  const theme = html.dataset.theme as Scheme | undefined;
+  return theme ?? (system.matches ? "dark" : "light");
+}
+
+export function onSchemeChange(listener: () => void): () => void {
+  schemeListeners.add(listener);
+  return () => schemeListeners.delete(listener);
+}
+
+function notifySchemeChange() {
+  for (const listener of schemeListeners) listener();
+}
 
 /** The media query that shows content made for `scheme`, e.g. a README's `<picture>` source. */
 export function schemeMedia(scheme: Scheme): string {
@@ -20,6 +35,7 @@ function apply(theme: Scheme | undefined) {
   )) {
     el.media = schemeMedia(el.dataset.scheme as Scheme);
   }
+  notifySchemeChange();
 }
 
 // Any `[data-theme-toggle]` flips the theme. One that matches the system goes back to following it.
@@ -33,6 +49,10 @@ addEventListener("click", (e) => {
     else localStorage.removeItem("theme");
   } catch {}
   apply(theme);
+});
+
+system.addEventListener("change", () => {
+  if (!html.dataset.theme) notifySchemeChange();
 });
 
 apply(html.dataset.theme as Scheme | undefined);
