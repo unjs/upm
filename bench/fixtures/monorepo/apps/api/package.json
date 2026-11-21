@@ -7,7 +7,7 @@
     "@acme/db": "*",
     "@acme/errors": "*",
     "@acme/logger": "*",
-    "@fastify/cors": "11.4.1",
+    "@fastify/cors": "11.4.3",
     "fastify": "5.12.8",
     "pino": "10.4.0",
     "zod": "4.6.7"

@@ -17,9 +17,9 @@
     "@acme/ui-button": "*",
     "@acme/ui-card": "*",
     "@acme/utils": "*",
-    "@tanstack/react-query": "5.107.1",
+    "@tanstack/react-query": "5.108.0",
     "clsx": "2.1.1",
-    "next": "16.4.5",
+    "next": "16.4.6",
     "react": "19.3.1",
     "react-dom": "19.3.1",
     "zod": "4.6.7"
@@ -30,7 +30,7 @@
     "@types/react": "19.3.0",
     "@types/react-dom": "19.3.0",
     "autoprefixer": "10.6.2",
-    "postcss": "8.5.32",
+    "postcss": "8.5.33",
     "tailwindcss": "4.3.5"
   }
 }
