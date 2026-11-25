@@ -12,12 +12,14 @@ export function createLimiter(limit: number): Limiter {
   let active = 0;
   return async <T>(task: () => Promise<T>): Promise<T> => {
     if (active >= limit) await new Promise<void>((resolve) => queue.push(resolve));
-    active++;
+    else active++;
     try {
       return await task();
     } finally {
-      active--;
-      queue.shift()?.();
+      // A waiter takes the slot over as it is woken, so a task arriving now cannot take it first.
+      const next = queue.shift();
+      if (next) next();
+      else active--;
     }
   };
 }

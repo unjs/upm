@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { createAdaptiveLimiter, fsConcurrency, retryAfter } from "../src/limit.ts";
+import { createAdaptiveLimiter, createLimiter, fsConcurrency, retryAfter } from "../src/limit.ts";
 
 /** A task that resolves only when released, so a test can hold slots open on purpose. */
 function held(): { task: () => Promise<void>; release: () => void } {
@@ -29,6 +29,50 @@ async function saturate(
 }
 
 const fails = (status: number) => Object.assign(new Error(`HTTP ${status}`), { status });
+
+describe("createLimiter", () => {
+  it("never runs more than the limit at once", async () => {
+    expect(await saturate(createLimiter(3), 12, 1)).toBe(3);
+  });
+
+  it("keeps a freed slot for the task that waited for it", async () => {
+    const limit = createLimiter(1);
+    const order: string[] = [];
+    let active = 0;
+    let peak = 0;
+    const run = (name: string, until: Promise<void>) =>
+      limit(async () => {
+        order.push(name);
+        peak = Math.max(peak, ++active);
+        await until;
+        active--;
+      });
+    const a = held();
+    const b = held();
+    const first = run("first", a.task());
+    const second = run("second", b.task());
+    // Arrives once the first is done, before the second got to run.
+    const third = a
+      .task()
+      .then(() => {})
+      .then(() => run("third", Promise.resolve()));
+    a.release();
+    await first;
+    b.release();
+    await Promise.all([second, third]);
+    expect(order).toEqual(["first", "second", "third"]);
+    expect(peak).toBe(1);
+  });
+
+  it("frees the slot of a task that failed", async () => {
+    const limit = createLimiter(1);
+    const failing = limit(() => Promise.reject(new Error("no")));
+    const waiting = limit(() => Promise.resolve("yes"));
+    await expect(failing).rejects.toThrow("no");
+    expect(await waiting).toBe("yes");
+    expect(await limit(() => Promise.resolve("again"))).toBe("again");
+  });
+});
 
 describe("createAdaptiveLimiter", () => {
   it("never runs more than the current limit at once", async () => {
